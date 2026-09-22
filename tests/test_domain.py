@@ -102,6 +102,13 @@ def test_monthly_gives_partial_first_and_last_month_equal_weight():
     assert sum(months.values()) == Decimal("300")
 
 
+def test_prorated_calendar_months_weight_partial_months_and_reconcile():
+    item = contract(price="300", obligations=[obligation(method="prorated_monthly", start_date="2026-01-20", end_date="2026-03-02")])
+    months = revenue_by_month(report(item))
+    assert {period: value for period, value in months.items() if value} == {"2026-01": Decimal("80.00"), "2026-02": Decimal("206.67"), "2026-03": Decimal("13.33")}
+    assert sum(months.values()) == Decimal("300.00")
+
+
 def test_point_in_time_requires_satisfaction_and_billing_never_implies_it():
     item = contract(obligations=[obligation(method="point_in_time")], activities=[event("billing", amount="1200")])
     assert summary(item)["revenue"] == "0.00"
@@ -281,6 +288,68 @@ def test_material_right_recognizes_when_exercise_and_delivery_are_recorded():
                     activities=[event("milestone", "2026-05-01", obligation_id="service")])
     assert summary(item, "2026-05")["revenue"] == "1200.00"
     assert summary(item, "2026-09")["revenue"] == "0.00"
+
+
+def test_material_right_exercise_defers_recognition_until_later_service_delivery():
+    item = contract(obligations=[obligation(kind="material_right", method="point_in_time", exercise_start="2026-04-01", exercise_end="2026-06-30")],
+                    activities=[event("right_exercise", "2026-06-15", obligation_id="service", delivery_method="exact_days",
+                                      delivery_start="2026-07-01", delivery_end="2026-12-31", rationale="Option exercised for second-half service")])
+    assert summary(item, "2026-06")["recognized_to_date"] == "0.00"
+    july = report(item, "2026-07")
+    assert Decimal(july["summary"]["revenue"]) > 0
+    assert_balanced(july)
+    assert summary(item, "2026-12")["recognized_to_date"] == "1200.00"
+    assert summary(item, "2027-01")["revenue"] == "0.00"
+
+
+def test_exercised_material_right_point_in_time_delivery_after_option_expiry():
+    item = contract(obligations=[obligation(kind="material_right", method="point_in_time", exercise_start="2026-04-01", exercise_end="2026-06-30")],
+                    activities=[event("right_exercise", "2026-06-15", obligation_id="service", delivery_method="point_in_time",
+                                      delivery_start="2026-09-01", delivery_end="2026-09-01", rationale="Option exercised for September delivery"),
+                                event("milestone", "2026-09-01", obligation_id="service", percentage="100")])
+    assert summary(item, "2026-06")["recognized_to_date"] == "0.00"
+    assert summary(item, "2026-08")["recognized_to_date"] == "0.00"
+    assert summary(item, "2026-09")["revenue"] == "1200.00"
+
+
+def test_material_right_exercise_rejects_duplicate_and_unreviewed_term_replacement():
+    exercise = event("right_exercise", "2026-06-15", obligation_id="service", delivery_method="exact_days",
+                     delivery_start="2026-07-01", delivery_end="2026-12-31", rationale="Reviewed second-half service")
+    right = obligation(kind="material_right", method="point_in_time", exercise_start="2026-04-01", exercise_end="2026-06-30")
+    with pytest.raises(ValueError, match="only once"):
+        validate_contract(contract(obligations=[right], activities=[exercise, deepcopy(exercise)]))
+    with pytest.raises(ValueError, match="separate reviewed treatment"):
+        validate_contract(contract(obligations=[right], activities=[exercise, event("modification", "2026-08-01", treatment="catch_up", rationale="Change right", obligations=[{**right, "ssp": "1300"}])]))
+    with pytest.raises(ValueError, match="delivery method"):
+        validate_contract(contract(obligations=[right], activities=[{**exercise, "delivery_method": "usage"}]))
+
+
+def test_exercised_right_keeps_delivery_pattern_after_price_catch_up():
+    item = contract(obligations=[obligation(kind="material_right", method="point_in_time", exercise_start="2026-04-01", exercise_end="2026-06-30")],
+                    activities=[event("right_exercise", "2026-06-15", obligation_id="service", delivery_method="monthly",
+                                      delivery_start="2026-07-01", delivery_end="2026-12-31", rationale="Reviewed renewal exercise"),
+                                event("modification", "2026-08-01", treatment="catch_up", rationale="Revised allocated price",
+                                      consideration=[{"id": "fixed", "kind": "fixed", "amount": "1300.00"}])])
+    assert summary(item, "2026-06")["revenue"] == "0.00"
+    assert summary(item, "2026-07")["revenue"] == "200.00"
+    assert summary(item, "2026-12")["recognized_to_date"] == "1300.00"
+    assert_balanced(report(item, "2026-08"))
+
+
+def test_opening_material_right_cannot_be_partly_recognized_or_exercised_after_delivery():
+    right = obligation(kind="material_right", method="point_in_time", exercise_start="2026-04-01", exercise_end="2026-09-30")
+    opening = event("opening_position", "2026-06-01", billed_to_date="0.00", contract_asset="600.00", deferred_revenue="0.00",
+                    source_name="Legacy schedule", rationale="May close tie-out",
+                    opening_obligations=[{"obligation_id": "service", "recognized_to_date": "600.00", "measure": "0"}])
+    with pytest.raises(ValueError, match="partial breakage"):
+        validate_contract(contract(obligations=[right], activities=[opening]))
+    delivered = deepcopy(opening)
+    delivered["opening_obligations"][0] = {"obligation_id": "service", "recognized_to_date": "1200.00", "measure": "100"}
+    delivered["contract_asset"] = "1200.00"
+    exercise = event("right_exercise", "2026-06-15", obligation_id="service", delivery_method="monthly",
+                     delivery_start="2026-07-01", delivery_end="2026-12-31", rationale="Duplicate option")
+    with pytest.raises(ValueError, match="only once"):
+        validate_contract(contract(obligations=[right], activities=[delivered, exercise]))
 
 
 def test_manual_adjustment_is_immediate_and_remaining_schedule_reconciles():

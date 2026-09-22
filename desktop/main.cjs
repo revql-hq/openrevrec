@@ -19,11 +19,19 @@ let switching = false;
 function metadata() {
   let name = path.basename(workspacePath || '', '.orr');
   try { name = JSON.parse(fs.readFileSync(path.join(workspacePath, 'workspace.json'), 'utf8')).name || name; } catch { /* Defaults cover new workspaces. */ }
-  return { path: workspacePath, name };
+  return { path: workspacePath, name, needsSetup: workspacePath === bootstrapPath() };
 }
 
 function settingsPath() { return path.join(app.getPath('userData'), 'workspace.json'); }
+function bootstrapPath() { return path.join(app.getPath('userData'), 'Setup.orr'); }
 function appIconPath() { return app.isPackaged ? path.join(process.resourcesPath, 'app-icon.png') : path.join(root, 'assets', 'icon.png'); }
+function backendRuntime() {
+  const executable = app.isPackaged
+    ? path.join(process.resourcesPath, 'backend', process.platform === 'win32' ? 'openrevrec-server.exe' : 'openrevrec-server')
+    : path.join(root, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+  if (!fs.existsSync(executable)) throw new Error('OpenRevRec could not find its Python runtime. In a source checkout, run npm run setup.');
+  return { executable, args: app.isPackaged ? [] : ['-m', 'openrevrec'] };
+}
 
 function initialWorkspace() {
   if (process.env.ORR_WORKSPACE) return path.resolve(process.env.ORR_WORKSPACE);
@@ -31,10 +39,11 @@ function initialWorkspace() {
     const recent = JSON.parse(fs.readFileSync(settingsPath(), 'utf8')).path;
     if (recent && fs.existsSync(path.join(recent, 'workspace.sqlite3'))) return recent;
   } catch { /* First launch has no recent workspace. */ }
-  return path.join(app.getPath('documents'), 'OpenRevRec', 'My company.orr');
+  return bootstrapPath();
 }
 
 function rememberWorkspace() {
+  if (workspacePath === bootstrapPath()) return;
   fs.mkdirSync(app.getPath('userData'), { recursive: true });
   fs.writeFileSync(settingsPath(), JSON.stringify({ path: workspacePath }, null, 2));
 }
@@ -51,12 +60,8 @@ async function stopServer() {
 }
 
 async function startServer(selectedPath) {
-  const executable = app.isPackaged
-    ? path.join(process.resourcesPath, 'backend', process.platform === 'win32' ? 'openrevrec-server.exe' : 'openrevrec-server')
-    : path.join(root, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
-  if (!fs.existsSync(executable)) throw new Error('OpenRevRec could not find its Python runtime. In a source checkout, run npm run setup.');
+  const { executable, args } = backendRuntime();
   const token = randomBytes(32).toString('hex');
-  const args = app.isPackaged ? [] : ['-m', 'openrevrec'];
   args.push('serve', '--workspace', selectedPath, '--port', developmentUrl ? '4318' : '0', '--token', token);
   if (!developmentUrl) args.push('--static-dir', app.isPackaged ? path.join(process.resourcesPath, 'ui') : path.join(root, 'frontend/dist'));
   const child = spawn(executable, args, { cwd: app.isPackaged ? app.getPath('userData') : root, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
@@ -102,6 +107,26 @@ async function startServer(selectedPath) {
   throw new Error('The accounting engine started but did not pass its health check.');
 }
 
+async function initializeWorkspace(selectedPath, setup) {
+  const name = typeof setup?.name === 'string' ? setup.name.trim() : '';
+  const currency = setup?.currency;
+  const openingPeriod = setup?.openingPeriod;
+  const accounts = setup?.accounts;
+  if (!name || !['USD', 'EUR', 'GBP', 'CAD', 'AUD'].includes(currency) || !/^\d{4}-(0[1-9]|1[0-2])$/.test(openingPeriod || '') ||
+      !accounts || ['revenue', 'deferred_revenue', 'contract_asset', 'billing_clearing'].some((role) => typeof accounts[role] !== 'string' || !accounts[role].trim())) {
+    throw new Error('Enter a company name, supported currency, account effective month, and all four default account codes.');
+  }
+  const { executable, args } = backendRuntime();
+  args.push('init', selectedPath, '--name', name, '--currency', currency, '--account-effective-period', openingPeriod, '--accounts-json', JSON.stringify(accounts));
+  await new Promise((resolveInit, reject) => {
+    const child = spawn(executable, args, { cwd: app.isPackaged ? app.getPath('userData') : root, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    let diagnostics = '';
+    child.stderr.on('data', (chunk) => { diagnostics = (diagnostics + chunk.toString()).slice(-6000); });
+    child.once('error', reject);
+    child.once('exit', (code) => code === 0 ? resolveInit() : reject(new Error(diagnostics || 'Workspace initialization failed.')));
+  });
+}
+
 async function loadWorkspace(selectedPath) {
   if (switching) return null;
   switching = true;
@@ -122,14 +147,17 @@ async function loadWorkspace(selectedPath) {
   } finally { switching = false; }
 }
 
-async function chooseWorkspace(create) {
+async function chooseWorkspace(create, setup) {
   const parent = path.join(app.getPath('documents'), 'OpenRevRec');
   fs.mkdirSync(parent, { recursive: true });
   if (create) {
-    const result = await dialog.showSaveDialog(mainWindow, { title: 'Create workspace', buttonLabel: 'Create workspace', defaultPath: path.join(parent, 'Untitled.orr'), filters: [{ name: 'OpenRevRec workspace', extensions: ['orr'] }] });
+    if (!setup) throw new Error('Complete the workspace setup form before creating a workspace.');
+    const suggested = String(setup.name || 'Untitled').replace(/[^a-z0-9 -]/gi, '').trim().replace(/\s+/g, '-') || 'Untitled';
+    const result = await dialog.showSaveDialog(mainWindow, { title: 'Create workspace', buttonLabel: 'Create workspace', defaultPath: path.join(parent, suggested + '.orr'), filters: [{ name: 'OpenRevRec workspace', extensions: ['orr'] }] });
     if (result.canceled || !result.filePath) return null;
     const selected = result.filePath.toLowerCase().endsWith('.orr') ? result.filePath : `${result.filePath}.orr`;
     if (fs.existsSync(selected)) throw new Error('That location already exists. Use Open workspace to open an existing .orr folder.');
+    await initializeWorkspace(selected, setup);
     return loadWorkspace(selected);
   }
   const result = await dialog.showOpenDialog(mainWindow, { title: 'Open workspace', buttonLabel: 'Open workspace', defaultPath: parent, properties: ['openDirectory', 'treatPackageAsDirectory'] });
@@ -139,14 +167,14 @@ async function chooseWorkspace(create) {
   return loadWorkspace(selected);
 }
 
-async function guardedPicker(create) {
-  try { return await chooseWorkspace(create); }
+async function guardedPicker(create, setup) {
+  try { return await chooseWorkspace(create, setup); }
   catch (error) { await dialog.showMessageBox(mainWindow, { type: 'error', message: 'Unable to open workspace', detail: error.message }); return null; }
 }
 
 function setupMenu() {
   const file = { label: 'File', submenu: [
-    { label: 'New workspace…', accelerator: 'CmdOrCtrl+Shift+N', click: () => guardedPicker(true) },
+    { label: 'New workspace…', accelerator: 'CmdOrCtrl+Shift+N', click: () => mainWindow?.webContents.send('workspace:request-create') },
     { label: 'Open workspace…', accelerator: 'CmdOrCtrl+O', click: () => guardedPicker(false) },
     { type: 'separator' }, { role: process.platform === 'darwin' ? 'close' : 'quit' },
   ] };
@@ -175,7 +203,7 @@ else {
     });
     ipcMain.handle('workspace:get', (event) => { validateSender(event); return metadata(); });
     ipcMain.handle('workspace:open', (event) => { validateSender(event); return guardedPicker(false); });
-    ipcMain.handle('workspace:create', (event) => { validateSender(event); return guardedPicker(true); });
+    ipcMain.handle('workspace:create', (event, setup) => { validateSender(event); return guardedPicker(true, setup); });
     await loadWorkspace(initialWorkspace());
     mainWindow = new BrowserWindow({ width: 1440, height: 960, minWidth: 1000, minHeight: 680, backgroundColor: '#f9f9f8', title: `${metadata().name} — OpenRevRec`, icon: appIconPath(), show: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
     mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -210,12 +238,24 @@ else {
             if (judgment.entity_id) support.append('entity_id', judgment.entity_id);
             support.append('rationale', 'Desktop close support smoke');
             await request('/api/evidence', { method: 'POST', body: support });
+            await request('/api/commands', { method: 'POST', body: JSON.stringify({
+              command: 'record_judgment_review',
+              period: '2026-09',
+              payload: {
+                target_change_set_id: judgment.change_set_id,
+                reviewer: 'Desktop smoke',
+                disposition: 'supported',
+                conclusion: `Reviewed the accounting judgment for ${judgment.change_set_id}.`,
+                support_memo: 'Reviewed the attached desktop smoke support file.'
+              }
+            }) });
           }
           const supported = await (await request('/api/reports?period=2026-09')).json();
-          if (supported.exceptions.evidence.length || supported.checks.find((check) => check.id === 'evidence')?.status !== 'pass') throw new Error('Desktop smoke judgment support did not clear the close exception.');
-          const preview = await (await request('/api/preview', { method: 'POST', body: JSON.stringify({ command: 'close_period', payload: { period: '2026-09', rationale: 'Desktop smoke preview' }, period: '2026-09' }) })).json();
+          if (supported.exceptions.evidence.length || supported.checks.find((check) => check.id === 'evidence')?.status !== 'pass') throw new Error('Desktop smoke judgment review did not clear the close exception.');
+          const dispositions = Object.fromEntries(supported.checks.filter((check) => check.status === 'review').map((check) => [check.id, { disposition: 'accepted', reason: 'Desktop smoke reviewed ' + check.label }]));
+          const preview = await (await request('/api/preview', { method: 'POST', body: JSON.stringify({ command: 'close_period', payload: { period: '2026-09', rationale: 'Desktop smoke preview', review_dispositions: dispositions }, period: '2026-09' }) })).json();
           if (!preview.state.report.closed) throw new Error('Desktop smoke close preview did not produce a checkpoint.');
-          const close = await (await request('/api/commands', { method: 'POST', body: JSON.stringify({ command: 'close_period', payload: { period: '2026-09', rationale: 'Desktop smoke reviewed support' }, period: '2026-09' }) })).json();
+          const close = await (await request('/api/commands', { method: 'POST', body: JSON.stringify({ command: 'close_period', payload: { period: '2026-09', rationale: 'Desktop smoke reviewed support', review_dispositions: dispositions }, period: '2026-09' }) })).json();
           if (!close.state.report.closed) throw new Error('Desktop smoke did not close the period.');
         }
         const workbook = Buffer.from(await (await request('/api/export?period=2026-09')).arrayBuffer());

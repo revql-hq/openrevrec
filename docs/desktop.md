@@ -12,6 +12,8 @@ npm run desktop
 
 The desktop development command starts Vite on port 5173. Electron starts the accounting engine on port 4318 and attaches its API token to requests. Frontend edits update through Vite; restart the command after changing Python or desktop-shell code.
 
+On first launch, choose a company name, reporting currency, month when the default account mapping takes effect, and the four default journal account codes. The four codes are fallback roles; contract-level mapping and obligation-level revenue mapping can assign additional accounts later. The setup month is not a cutover or opening-balance import. OpenRevRec uses calendar months and one reporting currency per workspace; foreign-currency contract accounting and parallel books are outside this workflow.
+
 For a specific workspace on macOS:
 
 ```sh
@@ -70,6 +72,6 @@ npm run smoke:backend
 
 The smoke script launches the frozen backend from a temporary directory whose name contains spaces. It verifies authentication, example contracts, Excel export, template delivery, and static UI delivery. This catches missing bundled dependencies and paths that work only from the source checkout.
 
-The desktop shell also accepts `ORR_SMOKE_TEST=1`, which opens the real application, loads the demo, inspects each unsupported judgment, attaches support, confirms the exception clears, closes the period, navigates to Reports, exports the closed workbook, tests recovery after a failed workspace switch, prints a result, and quits. Set `ORR_WORKSPACE` to a disposable directory and `ORR_USER_DATA` to a separate preferences directory for this check. Run again with `ORR_SMOKE_REOPEN=1` and without `ORR_WORKSPACE` to verify that preferences reopen the closed workspace. The Windows script performs both runs for the installed app and the portable executable.
+The desktop shell also accepts `ORR_SMOKE_TEST=1`, which opens the real application, loads the demo, inspects each unsupported judgment, attaches support, records a supported review, confirms the exception clears, closes the period, navigates to Reports, exports the closed workbook, tests recovery after a failed workspace switch, prints a result, and quits. Set `ORR_WORKSPACE` to a disposable directory and `ORR_USER_DATA` to a separate preferences directory for this check. Run again with `ORR_SMOKE_REOPEN=1` and without `ORR_WORKSPACE` to verify that preferences reopen the closed workspace. The Windows script performs both runs for the installed app and the portable executable.
 
 Electron uses a sandboxed renderer, context isolation, and a narrow preload bridge for native workspace dialogs. See [Electron's context-isolation documentation](https://www.electronjs.org/docs/latest/tutorial/context-isolation) for the underlying mechanism.

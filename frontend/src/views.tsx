@@ -33,6 +33,7 @@ import {
   Empty,
   ErrorMessage,
   ExportButton,
+  FinancialPreview,
   JournalsTable,
   JumpButton,
   Metrics,
@@ -45,10 +46,12 @@ import type {
   Contract,
   ContractReport,
   Comparison,
+  Report,
   Note,
   Schedule,
 } from "./types";
 import { methods } from "./forms";
+import { contractTerms } from "./contractTerms";
 import { EvidencePanel } from "./EvidencePanel";
 import { ChangeDetail } from "./ChangeDetail";
 import { ReportsWorkspace } from "./ReportsWorkspace";
@@ -133,8 +136,7 @@ function ContractTable({
                       {contract.name}
                     </button>
                     <small className="cell-subtitle">
-                      {contract.obligations.length} obligation
-                      {contract.obligations.length === 1 ? "" : "s"}
+                      {!report && contract.cutover_date ? `Awaiting opening position · ${contract.cutover_date}` : `${contract.obligations.length} obligation${contract.obligations.length === 1 ? "" : "s"}`}
                     </small>
                   </td>
                   <td>
@@ -150,14 +152,14 @@ function ContractTable({
                     </button>
                   </td>
                   <td className="number">
-                    {money(report?.transaction_price, currency)}
+                    {report ? money(report.transaction_price, currency) : "—"}
                   </td>
-                  <td className="number">{money(report?.revenue, currency)}</td>
+                  <td className="number">{report ? money(report.revenue, currency) : "—"}</td>
                   <td className="number">
-                    {money(report?.deferred_revenue, currency)}
+                    {report ? money(report.deferred_revenue, currency) : "—"}
                   </td>
                   <td className="number">
-                    {money(report?.remaining_revenue, currency)}
+                    {report ? money(report.remaining_revenue, currency) : "—"}
                   </td>
                   <td className="muted nowrap">
                     <DateText value={contract.start_date} />
@@ -171,10 +173,12 @@ function ContractTable({
           </tbody>
         </table>
         {!filtered.length && (
-          <Empty title={query ? "No matching contracts" : "No contracts yet"}>
+          <Empty title={query ? "No matching contracts" : state.contracts.length ? "No contracts in this view" : "No contracts yet"}>
             {query
               ? "Try a different name or customer."
-              : "Create a contract to define your first revenue schedule."}
+              : state.contracts.length
+                ? "Choose another filter to see more contracts."
+                : "Create a contract to define your first revenue schedule."}
           </Empty>
         )}
       </div>
@@ -312,6 +316,22 @@ export function HomeView(props: ViewProps) {
   const { state, period, dialog, navigate } = props;
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const [contractFilter, setContractFilter] = useState<"service" | "balance" | "all">("service");
+  const periodStart = `${period}-01`;
+  const periodEnd = `${period}-31`;
+  const homeContracts = state.contracts.filter((contract) => {
+    if (contractFilter === "all") return true;
+    if (contractFilter === "service") {
+      const opening = contract.activities.find((activity) => activity.type === "opening_position");
+      if (opening && opening.effective_date.slice(0, 7) > period) return false;
+      return contractTerms(contract, periodEnd).obligations.some(
+        (obligation) => obligation.start_date <= periodEnd && obligation.end_date >= periodStart,
+      );
+    }
+    const report = state.report.contracts.find((item) => item.id === contract.id);
+    return Boolean(report && [report.deferred_revenue, report.contract_asset, report.remaining_revenue]
+      .some((amount) => Math.abs(Number(amount)) > 0.005));
+  });
   const closes = state.closes.filter(
     (c) => c.status !== "reopened" && !c.reopened_at,
   );
@@ -366,7 +386,7 @@ export function HomeView(props: ViewProps) {
             <h3>Already working in a spreadsheet?</h3>
             <p>
               Use the Excel template to bring structured accounting data into
-              this workspace.
+              this workspace. For established contracts, include a reviewed opening position with legacy recognized revenue, billing, and contract balance at a monthly cutover.
             </p>
             <button className="text-button" onClick={() => navigate("Imports")}>
               Import a workbook
@@ -487,14 +507,22 @@ export function HomeView(props: ViewProps) {
         </Section>
       </div>
       <Section
-        title="Contracts in this period"
+        title="Contracts"
         action={
           <JumpButton onClick={() => navigate("Contracts")}>
             View all contracts
           </JumpButton>
         }
       >
-        <ContractTable contracts={state.contracts} props={props} />
+        <div className="table-toolbar">
+          <label>Show <select value={contractFilter} onChange={(event) => setContractFilter(event.target.value as "service" | "balance" | "all")}>
+            <option value="service">Service terms in this month</option>
+            <option value="balance">Outstanding balance or remaining revenue</option>
+            <option value="all">All contracts</option>
+          </select></label>
+          <span className="muted">{homeContracts.length} of {state.contracts.length} contracts</span>
+        </div>
+        <ContractTable contracts={homeContracts} props={props} />
       </Section>
       <Section
         title="Recent activity"
@@ -622,7 +650,7 @@ export function CustomersView(props: ViewProps) {
                       </button>
                       <small className="cell-subtitle">{customer.email}</small>
                     </td>
-                    <td className="muted">{customer.reference || "—"}</td>
+                    <td className="muted">{customer.reference ? `${customer.source_system ? `${customer.source_system} · ` : ""}${customer.reference}` : "—"}</td>
                     <td className="number">
                       {
                         state.contracts.filter(
@@ -691,6 +719,7 @@ export function ContractsView(props: ViewProps) {
 export function ContractView(props: ViewProps) {
   const { state, selected, dialog } = props;
   const [tab, setTab] = useState(props.tab || "Overview"),
+    [termsView, setTermsView] = useState<"effective" | "baseline">("effective"),
     [action, setAction] = useState("billing");
   const contract = state.contracts.find((c) => c.id === selected);
   if (!contract)
@@ -702,6 +731,12 @@ export function ContractView(props: ViewProps) {
   const report = state.report.contracts.find((c) => c.id === contract.id);
   const currency = state.workspace.currency;
   const customer = state.customers.find((c) => c.id === contract.customer_id);
+  const effectiveTerms = contractTerms(contract, `${props.period}-31`);
+  const shownTerms = termsView === "effective" ? effectiveTerms : contract;
+  const serviceDates = effectiveTerms.obligations.flatMap((obligation) => [obligation.start_date, obligation.end_date]).sort();
+  const openingActivity = contract.activities.find((activity) => activity.type === "opening_position");
+  const pendingOpening = Boolean(contract.cutover_date && !openingActivity);
+  const termsToggle = <div className="button-group"><Button type="button" primary={termsView === "effective"} onClick={() => setTermsView("effective")}>Effective at {props.period} end</Button><Button type="button" primary={termsView === "baseline"} onClick={() => setTermsView("baseline")}>Original baseline</Button></div>;
   return (
     <>
       <Heading
@@ -714,10 +749,12 @@ export function ContractView(props: ViewProps) {
           Edit details
         </Button>
         <Button
+          disabled={pendingOpening}
           onClick={() => dialog({ type: "contract", contractId: contract.id })}
         >
           Record accounting change
         </Button>
+        {!contract.activities.length && (contract.cutover_date || contract.start_date < `${props.period}-01`) && <Button onClick={() => dialog({ type: "opening_position", contractId: contract.id })}>Record opening position</Button>}
         <div className="split-action">
           <select
             aria-label="Activity type"
@@ -728,11 +765,13 @@ export function ContractView(props: ViewProps) {
             <option value="progress">Progress</option>
             <option value="usage">Units delivered</option>
             <option value="milestone">Satisfaction milestone</option>
+            {effectiveTerms.obligations.some((item) => item.kind === "material_right") && <option value="right_exercise">Exercise material right</option>}
             <option value="reassessment">Consideration reassessment</option>
             <option value="adjustment">Revenue adjustment</option>
           </select>
           <Button
             primary
+            disabled={pendingOpening}
             onClick={() =>
               dialog({
                 type: "activity",
@@ -747,6 +786,8 @@ export function ContractView(props: ViewProps) {
         </div>
       </Heading>
       {report && <Metrics summary={report} currency={currency} compact />}
+      {pendingOpening && <p className="notice">Opening position due at {dateLabel(contract.cutover_date)}. Record and reconcile it before post-cutover activity; this contract is excluded from accounting reports until then.</p>}
+      {openingActivity && <p className="notice">This contract starts from an accepted legacy position on {dateLabel(openingActivity.effective_date)}. Earlier periods are outside this workspace's reported population.</p>}
       <div className="tabs" role="tablist" aria-label="Contract sections">
         {[
           "Overview",
@@ -790,42 +831,39 @@ export function ContractView(props: ViewProps) {
                 </div>
                 <div>
                   <dt>Transaction price</dt>
-                  <dd>{money(report?.transaction_price, currency)}</dd>
+                  <dd>{report ? money(report.transaction_price, currency) : "Outside reported period"}</dd>
                 </div>
                 <div>
                   <dt>Recognized to date</dt>
-                  <dd>{money(report?.recognized_to_date, currency)}</dd>
+                  <dd>{report ? money(report.recognized_to_date, currency) : "Outside reported period"}</dd>
                 </div>
                 <div>
                   <dt>Billed to date</dt>
-                  <dd>{money(report?.billed_to_date, currency)}</dd>
+                  <dd>{report ? money(report.billed_to_date, currency) : "Outside reported period"}</dd>
                 </div>
                 <div>
-                  <dt>Contract term</dt>
+                  <dt>Original legal term</dt>
                   <dd>
                     {dateLabel(contract.start_date)} –{" "}
                     {dateLabel(contract.end_date)}
                   </dd>
                 </div>
+                {serviceDates.length > 0 && <div><dt>Current service span</dt><dd>{dateLabel(serviceDates[0])} – {dateLabel(serviceDates[serviceDates.length - 1])}</dd></div>}
               </dl>
               {contract.rationale && (
                 <p className="rationale">{contract.rationale}</p>
               )}
             </Section>
-            <Section title="Performance obligations">
+            <Section title={`Performance obligations · effective at ${props.period} end`}>
               <div className="obligation-list">
-                {contract.obligations.map((o) => (
+                {effectiveTerms.obligations.map((o) => (
                   <button key={o.id} onClick={() => setTab("Obligations")}>
                     <span>
                       <strong>{o.name}</strong>
                       <small>{methods[o.method]}</small>
                     </span>
                     <span>
-                      {money(
-                        report?.allocation.find((a) => a.obligation_id === o.id)
-                          ?.amount,
-                        currency,
-                      )}
+                      {report ? money(report.allocation.find((a) => a.obligation_id === o.id)?.amount, currency) : "—"}
                       <ChevronRight size={13} />
                     </span>
                   </button>
@@ -834,7 +872,7 @@ export function ContractView(props: ViewProps) {
             </Section>
           </div>
           <Section title="Recent contract activity">
-            <ActivityTable contract={contract} currency={currency} limit={6} />
+            <ActivityTable contract={contract} currency={currency} limit={6} onCorrect={(activity) => dialog({ type: "activity", contractId: contract.id, activity: activity.type, action: "correct", entityId: activity.id })} />
           </Section>
           <Section
             title="Working context"
@@ -855,8 +893,9 @@ export function ContractView(props: ViewProps) {
       )}
       {tab === "Consideration" && (
         <Section
-          title="Baseline consideration"
-          subtitle="Later reassessments and modifications are preserved in Changes."
+          title={termsView === "effective" ? `Consideration · effective at ${props.period} end` : "Original baseline consideration"}
+          subtitle="Changes are preserved in the accounting activity history."
+          action={termsToggle}
         >
           <div className="table-wrap">
             <table>
@@ -870,7 +909,7 @@ export function ContractView(props: ViewProps) {
                 </tr>
               </thead>
               <tbody>
-                {contract.consideration.map((c) => (
+                {shownTerms.consideration.map((c) => (
                   <tr key={c.id}>
                     <td className="strong">{c.label}</td>
                     <td>{humanize(c.kind)}</td>
@@ -888,8 +927,9 @@ export function ContractView(props: ViewProps) {
       )}
       {tab === "Obligations" && (
         <Section
-          title="Performance obligations"
-          subtitle="Baseline satisfaction methods and standalone selling prices."
+          title={termsView === "effective" ? `Performance obligations · effective at ${props.period} end` : "Original baseline obligations"}
+          subtitle="Service dates and standalone selling prices reflect the selected terms view."
+          action={termsToggle}
         >
           <div className="table-wrap">
             <table>
@@ -903,7 +943,7 @@ export function ContractView(props: ViewProps) {
                 </tr>
               </thead>
               <tbody>
-                {contract.obligations.map((o) => (
+                {shownTerms.obligations.map((o) => (
                   <tr key={o.id}>
                     <td>
                       <strong>{o.name}</strong>
@@ -930,7 +970,7 @@ export function ContractView(props: ViewProps) {
                       {o.rationale || "—"}
                       {o.kind === "material_right" && (
                         <small className="cell-subtitle">
-                          Exercise by {dateLabel(o.exercise_end || o.end_date)}
+                          {(() => { const exercise = contract.activities.find((item) => item.type === "right_exercise" && item.obligation_id === o.id && item.effective_date <= `${props.period}-31`); return exercise ? `Exercised ${dateLabel(exercise.effective_date)} · ${methods[String(exercise.delivery_method)] || humanize(String(exercise.delivery_method))} delivery ${dateLabel(String(exercise.delivery_start))} to ${dateLabel(String(exercise.delivery_end))}` : `Exercise by ${dateLabel(o.exercise_end || o.end_date)}`; })()}
                         </small>
                       )}
                     </td>
@@ -943,10 +983,10 @@ export function ContractView(props: ViewProps) {
       )}
       {tab === "Allocation" && (
         <Section
-          title="Relative SSP allocation"
-          subtitle="The included transaction price is allocated at posting precision."
+          title="Transaction price allocation"
+          subtitle="The included transaction price is allocated at posting precision. Relative SSP is the default; eligible components can target specified obligations."
         >
-          <div className="table-wrap">
+          {!report ? <p className="notice">This contract is outside the selected period's reported population.</p> : <div className="table-wrap">
             <table>
               <thead>
                 <tr>
@@ -956,7 +996,7 @@ export function ContractView(props: ViewProps) {
                 </tr>
               </thead>
               <tbody>
-                {report?.allocation.map((a) => (
+                {report.allocation.map((a) => (
                   <tr key={a.obligation_id}>
                     <td>{a.name}</td>
                     <td className="number">{money(a.ssp, currency)}</td>
@@ -969,39 +1009,40 @@ export function ContractView(props: ViewProps) {
                   <th>Total</th>
                   <th className="number">
                     {money(
-                      total(report?.allocation.map((a) => a.ssp) || []),
+                      total(report.allocation.map((a) => a.ssp)),
                       currency,
                     )}
                   </th>
                   <th className="number">
                     {money(
-                      total(report?.allocation.map((a) => a.amount) || []),
+                      total(report.allocation.map((a) => a.amount)),
                       currency,
                     )}
                   </th>
                 </tr>
               </tfoot>
             </table>
-          </div>
+          </div>}
+          {Boolean(report?.allocation_components?.some((item) => item.scope === "specific")) && <><h3>Specific-allocation conclusions</h3><div className="table-wrap"><table><thead><tr><th>Component</th><th className="number">Included amount</th><th>Target obligations</th><th>Accounting rationale</th></tr></thead><tbody>{report?.allocation_components?.filter((item) => item.scope === "specific").map((item) => <tr key={item.component_id}><td>{item.label}</td><td className="number">{money(item.included_amount, currency)}</td><td>{item.target_obligation_ids.map((id) => report.allocation.find((row) => row.obligation_id === id)?.name || id).join(", ")}</td><td>{item.rationale}</td></tr>)}</tbody></table></div></>}
         </Section>
       )}
       {tab === "Recognition" && (
         <Section title="Revenue by performance obligation" subtitle={props.focus ? `Reviewing ${report?.allocation.find((item) => item.obligation_id === props.focus)?.name || props.focus}.` : undefined}>
-          <ScheduleTable
+          {!report ? <p className="notice">This contract is outside the selected period's reported population.</p> : <ScheduleTable
             rows={state.report.schedule.filter(
               (s) => s.contract_id === contract.id,
             )}
             props={props}
             byObligation
-            allIdentifiers={report?.allocation.map((item) => item.obligation_id)}
-          />
+            allIdentifiers={report.allocation.map((item) => item.obligation_id)}
+          />}
         </Section>
       )}
       {tab === "Billing" && (
         <Section
           title="Billing activity"
-          subtitle="Invoices affect contract balances independently of recognition."
-          action={
+          subtitle="Enter externally established invoice amounts and dates. This workbench does not track cash, receivables, or when an unbilled right becomes unconditional."
+          action={pendingOpening ? undefined :
             <AddButton
               onClick={() =>
                 dialog({
@@ -1019,13 +1060,14 @@ export function ContractView(props: ViewProps) {
             contract={contract}
             currency={currency}
             type="billing"
+            onCorrect={(activity) => dialog({ type: "activity", contractId: contract.id, activity: activity.type, action: "correct", entityId: activity.id })}
           />
         </Section>
       )}
       {tab === "Changes" && (
         <>
           <Section title="Accounting activity">
-            <ActivityTable contract={contract} currency={currency} />
+            <ActivityTable contract={contract} currency={currency} onCorrect={(activity) => dialog({ type: "activity", contractId: contract.id, activity: activity.type, action: "correct", entityId: activity.id })} />
           </Section>
           <Section title="Change history">
             <ChangesList props={props} contractId={contract.id} />
@@ -1060,11 +1102,13 @@ function ActivityTable({
   currency,
   type,
   limit,
+  onCorrect,
 }: {
   contract: Contract;
   currency: string;
   type?: string;
   limit?: number;
+  onCorrect?: (activity: Contract["activities"][number]) => void;
 }) {
   const activities = [...(contract.activities || [])]
     .filter((a) => !type || a.type === type)
@@ -1080,6 +1124,7 @@ function ActivityTable({
             <th>Obligation / reference</th>
             <th className="number">Value</th>
             <th>Rationale</th>
+            {onCorrect && <th>Source fact</th>}
           </tr>
         </thead>
         <tbody>
@@ -1098,10 +1143,15 @@ function ActivityTable({
                 {contract.obligations.find((o) => o.id === a.obligation_id)
                   ?.name ||
                   a.reference ||
+                  (a.type === "opening_position" ? String(a.source_name || "Legacy source") : "") ||
                   "—"}
               </td>
               <td className="number">
-                {a.amount !== undefined
+                {a.type === "opening_position"
+                  ? Number(a.contract_asset || 0) > 0 ? `Opening asset ${money(String(a.contract_asset), currency)}` : Number(a.deferred_revenue || 0) > 0 ? `Opening deferred ${money(String(a.deferred_revenue), currency)}` : "No opening net balance"
+                  : a.type === "right_exercise"
+                  ? `Delivery ${dateLabel(String(a.delivery_start))} to ${dateLabel(String(a.delivery_end))}`
+                  : a.amount !== undefined
                   ? money(a.amount, currency)
                   : a.percentage !== undefined
                     ? `${a.percentage}%`
@@ -1112,6 +1162,7 @@ function ActivityTable({
                         : "—"}
               </td>
               <td className="muted wrap">{a.rationale || "—"}</td>
+              {onCorrect && <td>{["billing", "progress", "usage", "milestone"].includes(a.type) && <Button type="button" onClick={() => onCorrect(a)}>Correct</Button>}{Boolean(a.corrects) && <small className="cell-subtitle">Corrected from {String(a.corrects)}</small>}</td>}
             </tr>
           ))}
         </tbody>
@@ -1128,23 +1179,33 @@ function ScheduleTable({
   props,
   byObligation = false,
   allIdentifiers = [],
+  shownPeriods,
 }: {
   rows: Schedule[];
   props: ViewProps;
   byObligation?: boolean;
   allIdentifiers?: string[];
+  shownPeriods?: string[];
 }) {
-  const periods = [...new Set(rows.length ? rows.map((r) => r.period) : [props.period])].sort();
+  const periods = shownPeriods || [...new Set(rows.length ? rows.map((r) => r.period) : [props.period])].sort();
+  const identifierFor = (row: Schedule) => byObligation ? `${row.contract_id}\u0000${row.obligation_id}` : row.contract_id;
   const identifiers = [
     ...new Set(
-      [...allIdentifiers, ...rows.map((r) => (byObligation ? r.obligation_id : r.contract_id))],
+      [...allIdentifiers.map((id) => byObligation && !id.includes("\u0000") ? `${rows[0]?.contract_id || props.selected || ""}\u0000${id}` : id), ...rows.map(identifierFor)],
     ),
   ];
   const currency = props.state.workspace.currency;
+  const values = new Map<string, string[]>();
+  const periodValues = new Map<string, string[]>();
+  for (const row of rows) {
+    const id = identifierFor(row);
+    const key = `${row.period}\u0000${id}`;
+    values.set(key, [...(values.get(key) || []), row.revenue]);
+    periodValues.set(row.period, [...(periodValues.get(row.period) || []), row.revenue]);
+  }
   const name = (id: string) =>
     byObligation
-      ? props.state.report.contracts.flatMap((c) => c.allocation).find((o) => o.obligation_id === id)?.name ||
-        props.state.contracts.flatMap((c) => c.obligations).find((o) => o.id === id)?.name || id
+      ? (() => { const [contractId, obligationId] = id.split("\u0000"); const contract = props.state.contracts.find((item) => item.id === contractId); const obligation = contract && contractTerms(contract, `${props.period}-31`).obligations.find((item) => item.id === obligationId); return `${props.selected === contractId ? "" : `${contract?.name || contractId} / `}${obligation?.name || obligationId}`; })()
       : props.state.contracts.find((c) => c.id === id)?.name || id;
   return identifiers.length ? (
     <div className="table-wrap schedule-table">
@@ -1170,7 +1231,7 @@ function ScheduleTable({
         </thead>
         <tbody>
           {identifiers.map((id) => (
-            <tr key={id} className={id === props.focus ? "focus-obligation" : ""}>
+            <tr key={id} className={id === props.focus || (byObligation && id.split("\u0000")[1] === props.focus) ? "focus-obligation" : ""}>
               <td className="sticky-column">
                 {byObligation ? (
                   name(id)
@@ -1189,31 +1250,14 @@ function ScheduleTable({
                   key={p}
                 >
                   {money(
-                    total(
-                      rows
-                        .filter(
-                          (r) =>
-                            r.period === p &&
-                            (byObligation ? r.obligation_id : r.contract_id) ===
-                              id,
-                        )
-                        .map((r) => r.revenue),
-                    ),
+                    total(values.get(`${p}\u0000${id}`) || []),
                     currency,
                   )}
                 </td>
               ))}
               <td className="number strong">
                 {money(
-                  total(
-                    rows
-                      .filter(
-                        (r) =>
-                          (byObligation ? r.obligation_id : r.contract_id) ===
-                          id,
-                      )
-                      .map((r) => r.revenue),
-                  ),
+                  total(periods.flatMap((period) => values.get(`${period}\u0000${id}`) || [])),
                   currency,
                 )}
               </td>
@@ -1229,15 +1273,13 @@ function ScheduleTable({
                 key={p}
               >
                 {money(
-                  total(
-                    rows.filter((r) => r.period === p).map((r) => r.revenue),
-                  ),
+                  total(periodValues.get(p) || []),
                   currency,
                 )}
               </th>
             ))}
             <th className="number">
-              {money(total(rows.map((r) => r.revenue)), currency)}
+              {money(total(periods.flatMap((period) => periodValues.get(period) || [])), currency)}
             </th>
           </tr>
         </tfoot>
@@ -1250,7 +1292,22 @@ function ScheduleTable({
   );
 }
 export function RevenueView(props: ViewProps) {
-  const [group, setGroup] = useState("contract");
+  const [group, setGroup] = useState("contract"),
+    [horizon, setHorizon] = useState("12"),
+    [customerFilter, setCustomerFilter] = useState("");
+  const months = Number(horizon);
+  const shownPeriods = Array.from({ length: months }, (_, index) => {
+    const [year, month] = props.period.split("-").map(Number);
+    const date = new Date(Date.UTC(year, month - 1 + index, 1));
+    return date.toISOString().slice(0, 7);
+  });
+  const visibleContracts = props.state.contracts.filter((contract) => !customerFilter || contract.customer_id === customerFilter);
+  const visibleIds = new Set(visibleContracts.map((contract) => contract.id));
+  const rows = props.state.report.schedule.filter((row) => visibleIds.has(row.contract_id) && shownPeriods.includes(row.period));
+  const unscheduled = props.state.report.contracts.filter((contract) => visibleIds.has(contract.id)).map((contract) => {
+    const future = total(props.state.report.schedule.filter((row) => row.contract_id === contract.id && row.period > props.period).map((row) => row.revenue));
+    return { contract, gap: total([contract.remaining_revenue, future.startsWith("-") ? future.slice(1) : `-${future}`]) };
+  }).filter((item) => Number(item.gap) > 0);
   return (
     <>
       <Heading
@@ -1282,18 +1339,19 @@ export function RevenueView(props: ViewProps) {
             By obligation
           </button>
         </div>
-        <span className="muted">
-          Full contract terms · {props.state.workspace.currency}
-        </span>
+        <label>Horizon <select value={horizon} onChange={(event) => setHorizon(event.target.value)}><option value="6">6 months</option><option value="12">12 months</option><option value="24">24 months</option><option value="60">60 months</option></select></label>
+        <label>Customer <select value={customerFilter} onChange={(event) => setCustomerFilter(event.target.value)}><option value="">All customers</option>{props.state.customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></label>
       </div>
       <ScheduleTable
-        rows={props.state.report.schedule}
+        rows={rows}
         props={props}
         byObligation={group === "obligation"}
+        shownPeriods={shownPeriods}
+        allIdentifiers={group === "contract" ? visibleContracts.map((contract) => contract.id) : visibleContracts.flatMap((contract) => contractTerms(contract, `${props.period}-31`).obligations.map((obligation) => `${contract.id}\u0000${obligation.id}`))}
       />
+      {unscheduled.length > 0 && <Section title="Unscheduled remaining revenue" subtitle="Recognition still depends on future recorded progress, finite units, or milestones; zero in the calendar does not mean none remains."><div className="table-wrap"><table><thead><tr><th>Contract</th><th className="number">Unscheduled</th></tr></thead><tbody>{unscheduled.map(({ contract, gap }) => <tr key={contract.id}><td><button className="table-link" onClick={() => props.navigate("Contracts", contract.id, "Recognition")}>{contract.name}</button></td><td className="number">{money(gap, props.state.workspace.currency)}</td></tr>)}</tbody></table></div></Section>}
       <p className="fine-print">
-        Selected period highlighted. Closed Main periods retain their accepted
-        results.
+        Calendar months only. Selected period highlighted; totals cover the displayed horizon. Closed Main periods retain their accepted results.
       </p>
     </>
   );
@@ -1474,6 +1532,10 @@ export function ScenarioView(props: ViewProps) {
           ) : (
             comparison && (
               <>
+                <Section title="Proposed accounting changes" subtitle="Every proposal recorded in this scenario remains visible even when financial effects offset.">
+                  {comparison.proposals?.length ? <div className="table-wrap"><table><thead><tr><th>Effective</th><th>Change</th><th>Entity</th><th>Review note</th></tr></thead><tbody>{comparison.proposals.map((proposal) => <tr key={proposal.id}><td>{dateLabel(proposal.effective_date)}</td><td><button className="table-link" onClick={() => navigate("Activity", proposal.id)}>{humanize(proposal.command)}</button></td><td>{state.contracts.find((contract) => contract.id === proposal.entity_id)?.name || state.customers.find((customer) => customer.id === proposal.entity_id)?.name || proposal.entity_id}</td><td>{proposal.rationale || "—"}</td></tr>)}</tbody></table></div> : <p className="muted">No accounting proposals recorded.</p>}
+                </Section>
+                {Boolean(comparison.conflicts?.length) && <Section title="Main changes requiring conflict review" subtitle="These accepted accounting changes touch the same records as this scenario."><div className="table-wrap"><table><thead><tr><th>Main version</th><th>Change</th><th>Entity</th></tr></thead><tbody>{comparison.conflicts?.map((conflict) => <tr key={conflict.version}><td>{conflict.version}</td><td>{humanize(conflict.command)}</td><td>{conflict.entity_id}</td></tr>)}</tbody></table></div></Section>}
                 <Section
                   title="Selected-period difference"
                   subtitle={monthLabel(period)}
@@ -1484,6 +1546,7 @@ export function ScenarioView(props: ViewProps) {
                     currency={currency}
                   />
                 </Section>
+                {Boolean(comparison.details?.length) && <Section title="Obligation-level recognition differences"><div className="table-wrap"><table><thead><tr><th>Period</th><th>Contract</th><th>Obligation</th><th className="number">Main</th><th className="number">Scenario</th><th className="number">Difference</th></tr></thead><tbody>{comparison.details?.map((row) => <tr key={`${row.period}:${row.contract_id}:${row.obligation_id}`}><td>{row.period}</td><td>{state.contracts.find((contract) => contract.id === row.contract_id)?.name || row.contract_id}</td><td>{row.obligation_id}</td><td className="number">{money(row.current, currency)}</td><td className="number">{money(row.proposed, currency)}</td><td className="number">{money(row.delta, currency)}</td></tr>)}</tbody></table></div></Section>}
                 <Section title="Revenue difference by period">
                   <div className="table-wrap">
                     <table>
@@ -1548,7 +1611,7 @@ export function JournalView(props: ViewProps) {
     <>
       <Heading
         title="Journal entries"
-        subtitle={`Derived from accepted accounting state for ${monthLabel(props.period)}.`}
+        subtitle={state.scenario_id === "main" ? "Derived from Main accounting state for " + monthLabel(props.period) + "." : "Hypothetical journal for " + monthLabel(props.period) + " in the selected scenario."}
       >
         <ExportButton
           scenario={state.scenario_id}
@@ -1586,12 +1649,58 @@ export function JournalView(props: ViewProps) {
           onContract={(id) => props.navigate("Contracts", id)}
         />
       </Section>
+      <JournalPostingRecord key={`${state.scenario_id}:${props.period}`} props={props} />
       <p className="fine-print">
-        Billing clearing is the offset for invoice activity. Map the four
-        semantic account roles to your general ledger in Settings.
+        Billing clearing assumes a complementary invoice posting outside OpenRevRec. Reconcile that account before posting this export; posting both full journals without mapping the offset can duplicate revenue or deferred balances. Contract asset here is a simplified revenue-less-billing position, not an assessment of unconditional receivables.
       </p>
     </>
   );
+}
+
+function JournalPostingRecord({ props }: { props: ViewProps }) {
+  const { state, period } = props;
+  const [reference, setReference] = useState("");
+  const [postedDate, setPostedDate] = useState(today());
+  const [rationale, setRationale] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const batchId = state.report.journal_batch_id || "";
+  const postings = state.scenario_id === "main" ? (state.postings || []).filter((item) => item.period === period) : [];
+  const current = postings.filter((item) => item.batch_id === batchId);
+  const comparisons = state.scenario_id === "main" ? state.posting_comparisons || [] : [];
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await post("/api/commands", { command: "record_export_posting", scenario_id: "main", period, payload: { period, batch_id: batchId, external_journal_reference: reference, posted_date: postedDate, rationale } });
+      setReference("");
+      setRationale("");
+      await props.refresh("External journal reference recorded.");
+    } catch (caught) { setError((caught as Error).message); }
+    finally { setBusy(false); }
+  };
+  return <><Section title="External posting record" subtitle="Record the ledger reference after posting a closed-period batch. OpenRevRec does not transmit or verify the journal in your ledger.">
+    <p className="muted">Current journal batch: <code>{batchId || "—"}</code></p>
+    {current.map((item) => <p key={item.external_journal_reference}><strong>{item.external_journal_reference}</strong> · posted {dateLabel(item.posted_date)} · {item.rationale}</p>)}
+    {comparisons.length > 0 && current.length === 0 && <p className="warning">A prior batch has an external posting record. Reconcile the ledger to that batch before using the replacement support below.</p>}
+    {state.scenario_id !== "main" ? <p className="notice">This is hypothetical scenario output.</p> : !state.report.closed ? <p className="notice">Close this period before recording an external posting.</p> : <form onSubmit={(event) => void submit(event)}>
+      <div className="form-grid"><label className="field">External journal reference<input required value={reference} onChange={(event) => setReference(event.target.value)} placeholder="ERP journal ID" /></label><label className="field">Posted date<input required type="date" value={postedDate} onChange={(event) => setPostedDate(event.target.value)} /></label></div>
+      <label className="field">Posting explanation<input required value={rationale} onChange={(event) => setRationale(event.target.value)} placeholder="Identify the ledger and reconciliation" /></label>
+      <Button primary type="submit" busy={busy}>Record posting reference</Button>
+    </form>}
+    <ErrorMessage error={error} />
+  </Section>
+    {comparisons.length > 0 && <Section title="Replacement journal support" subtitle="Each comparison nets the recorded posted close against the current journal by contract, account, and dimensions. Confirm which batch represents the ledger before using a delta.">
+      {comparisons.length > 1 && <p className="warning">More than one earlier batch has a posting reference. These are alternative comparisons, not amounts to combine. Confirm the ledger's current batch.</p>}
+      {comparisons.map((comparison) => <div key={comparison.source_batch_id} className="section">
+        <p><strong>{comparison.source_batch_id}</strong> → <strong>{comparison.target_batch_id}</strong> · {comparison.posting_references.join(", ")}</p>
+        {comparison.posting_references.length > 1 && <p className="warning">This source batch has multiple external references. Confirm which posting and ledger balance this comparison represents.</p>}
+        <p className="fine-print">{comparison.current_batch_posted ? "The current batch also has a posting reference; this comparison is historical." : comparison.target_closed ? "Compared with the accepted replacement close." : "Draft comparison while this period is open; recheck after close."}</p>
+        {!comparison.available ? <p className="warning">The posted batch's close snapshot is unavailable. Reconcile its original export before preparing a replacement.</p> : comparison.lines.length === 0 ? <p className="notice">No net ledger change at contract, account, and dimension detail.</p> : <div className="table-wrap"><table><thead><tr><th>Contract</th><th>Account</th><th>Dimensions</th><th className="number">Posted net</th><th className="number">Revised net</th><th className="number">Delta debit</th><th className="number">Delta credit</th></tr></thead><tbody>{comparison.lines.map((line) => <tr key={`${line.contract_id}:${line.account}:${JSON.stringify(line.dimensions)}`}><td>{state.contracts.find((contract) => contract.id === line.contract_id)?.name || line.contract_id}</td><td>{line.account}</td><td>{Object.entries(line.dimensions).map(([key, value]) => `${key}: ${value}`).join(" · ") || "—"}</td><td className="number">{money(line.posted_net, state.workspace.currency)}</td><td className="number">{money(line.revised_net, state.workspace.currency)}</td><td className="number">{money(line.debit, state.workspace.currency)}</td><td className="number">{money(line.credit, state.workspace.currency)}</td></tr>)}</tbody></table></div>}
+      </div>)}
+    </Section>}
+  </>;
 }
 
 export function ReportsView(props: ViewProps) {
@@ -1600,6 +1709,19 @@ export function ReportsView(props: ViewProps) {
 
 export function ImportsView(props: ViewProps) {
   const [file, setFile] = useState<File | null>(null),
+    [review, setReview] = useState<{
+      before: Report;
+      state: { report: Report };
+      comparison: Comparison & { affected_periods: string[] };
+      frontier: number;
+      result: {
+        file_hash: string;
+        imported: number;
+        controls: { counts: Record<string, number>; source_billing_total: string; source_usage_quantity: string; opening_positions?: { contract_id: string; cutover_date: string; recognized_to_date: string; billed_to_date: string; contract_asset: string; deferred_revenue: string; source_name: string; obligations: { obligation_id: string; recognized_to_date: string; measure?: string }[] }[] };
+        rows: { sheet: string; row: number; command: string; source_id: string; effective_date: string }[];
+      };
+      period_impacts: { period: string; delta: { revenue: string; billings: string; deferred_revenue: string; contract_asset: string; remaining_revenue: string }; journal_changed: boolean }[];
+    } | null>(null),
     [imports, setImports] = useState<
       {
         id: string;
@@ -1619,21 +1741,45 @@ export function ImportsView(props: ViewProps) {
   useEffect(() => {
     void load();
   }, [props.state.frontier]);
-  const upload = async () => {
+  useEffect(() => {
+    setReview(null);
+  }, [props.state.scenario_id, props.period, props.state.frontier]);
+  const reviewUpload = async () => {
     if (!file) return;
+    setBusy(true);
+    setError("");
+    setReview(null);
+    const data = new FormData();
+    data.append("file", file);
+    data.append("scenario_id", props.state.scenario_id);
+    data.append("period", props.period);
+    try {
+      setReview(await api<typeof review>("/api/import/preview", { method: "POST", body: data }));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const upload = async () => {
+    if (!file || !review) return;
     setBusy(true);
     setError("");
     const data = new FormData();
     data.append("file", file);
     data.append("scenario_id", props.state.scenario_id);
     data.append("period", props.period);
+    data.append("expected_frontier", String(review.frontier));
+    data.append("expected_hash", review.result.file_hash);
     try {
       await api("/api/import", { method: "POST", body: data });
       setFile(null);
+      setReview(null);
       await props.refresh("Workbook imported.");
       void load();
     } catch (e) {
       setError((e as Error).message);
+      setReview(null);
       void load();
     } finally {
       setBusy(false);
@@ -1652,7 +1798,7 @@ export function ImportsView(props: ViewProps) {
       </Heading>
       <Section
         title="Import workbook"
-        subtitle="All accounting rows commit together. If one row fails, no accounting changes are recorded."
+        subtitle="Review every row and the accounting impact before the workbook commits as one transaction."
       >
         <div className="upload-row">
           <label className="file-picker">
@@ -1661,14 +1807,32 @@ export function ImportsView(props: ViewProps) {
             <input
               type="file"
               accept=".xlsx"
-              onChange={(e) => setFile(e.target.files?.[0] || null)}
+              onChange={(e) => { setFile(e.target.files?.[0] || null); setReview(null); }}
             />
           </label>
-          <Button primary disabled={!file} busy={busy} onClick={upload}>
-            Review and import
+          <Button disabled={!file} busy={busy} onClick={reviewUpload}>
+            Preview workbook
           </Button>
         </div>
         <ErrorMessage error={error} />
+        {review && (
+          <div className="preview">
+            <h3>{review.result.imported} rows ready to import</h3>
+            <p className="fine-print">Target: {props.state.workspace.name} · {props.state.scenario_id === "main" ? "Main" : props.state.scenarios.find((scenario) => scenario.id === props.state.scenario_id)?.name || props.state.scenario_id} · {props.state.workspace.currency}. The source workbook will be retained with the import result.</p>
+            <p className="fine-print">Source controls: {Object.entries(review.result.controls.counts).map(([command, count]) => `${humanize(command)} ${count}`).join(" · ")}. Billing rows total {money(review.result.controls.source_billing_total, props.state.workspace.currency)}; usage rows total {review.result.controls.source_usage_quantity} units. Corrections are listed separately from original source rows.</p>
+            {Boolean(review.result.controls.opening_positions?.length) && <><h3>Opening positions to reconcile</h3><p className="fine-print">Tie these cumulative legacy amounts and the obligation detail to the accepted source and GL before import. They become beginning balances, not current-month postings.</p><div className="table-wrap"><table><thead><tr><th>Contract / source</th><th>Cutover</th><th className="number">Recognized</th><th className="number">Billed</th><th className="number">Asset</th><th className="number">Deferred</th></tr></thead><tbody>{review.result.controls.opening_positions?.map((item) => <tr key={`${item.contract_id}:${item.cutover_date}`}><td>{review.state.report.contracts.find((contract) => contract.id === item.contract_id)?.name || item.contract_id}<small className="cell-subtitle">{item.source_name}</small></td><td>{item.cutover_date}</td><td className="number">{money(item.recognized_to_date, props.state.workspace.currency)}</td><td className="number">{money(item.billed_to_date, props.state.workspace.currency)}</td><td className="number">{money(item.contract_asset, props.state.workspace.currency)}</td><td className="number">{money(item.deferred_revenue, props.state.workspace.currency)}</td></tr>)}</tbody></table></div><div className="table-wrap"><table><thead><tr><th>Contract</th><th>Obligation</th><th className="number">Recognized before cutover</th><th className="number">Cumulative measure</th></tr></thead><tbody>{review.result.controls.opening_positions?.flatMap((item) => item.obligations.map((row) => <tr key={`${item.contract_id}:${row.obligation_id}`}><td>{item.contract_id}</td><td>{row.obligation_id}</td><td className="number">{money(row.recognized_to_date, props.state.workspace.currency)}</td><td className="number">{row.measure || "—"}</td></tr>))}</tbody></table></div></>}
+            <div className="table-wrap"><table><thead><tr><th>Sheet / row</th><th>Command</th><th>Effective date</th><th>Source ID</th></tr></thead><tbody>
+              {review.result.rows.map((row) => <tr key={`${row.sheet}-${row.row}`}><td>{row.sheet} {row.row}</td><td>{humanize(row.command)}</td><td>{row.effective_date || "—"}</td><td>{row.source_id || "Content / reference"}</td></tr>)}
+            </tbody></table></div>
+            <FinancialPreview before={review.before} after={review.state.report} currency={props.state.workspace.currency} />
+            {review.period_impacts.length > 0 && <><h3>Financial changes by period</h3><div className="table-wrap"><table><thead><tr><th>Period</th><th className="number">Revenue change</th><th className="number">Billing change</th><th className="number">Deferred change</th><th className="number">Asset change</th><th>Journal</th></tr></thead><tbody>{review.period_impacts.map((row) => <tr key={row.period}><td>{row.period}</td><td className="number">{money(row.delta.revenue, props.state.workspace.currency)}</td><td className="number">{money(row.delta.billings, props.state.workspace.currency)}</td><td className="number">{money(row.delta.deferred_revenue, props.state.workspace.currency)}</td><td className="number">{money(row.delta.contract_asset, props.state.workspace.currency)}</td><td>{row.journal_changed ? "Changed" : "Unchanged"}</td></tr>)}</tbody></table></div></>}
+            <h3>Recognition by period</h3>
+            <div className="table-wrap"><table><thead><tr><th>Period</th><th className="number">Current</th><th className="number">After import</th><th className="number">Change</th></tr></thead><tbody>
+              {review.comparison.rows.filter((row) => Number(row.delta) !== 0).map((row) => <tr key={row.period}><td>{row.period}</td><td className="number">{money(row.main_revenue, props.state.workspace.currency)}</td><td className="number">{money(row.scenario_revenue, props.state.workspace.currency)}</td><td className="number">{money(row.delta, props.state.workspace.currency)}</td></tr>)}
+            </tbody></table></div>
+            <Button primary busy={busy} onClick={upload}>Import reviewed rows</Button>
+          </div>
+        )}
         <p className="fine-print">
           The source workbook and row result are retained under this workspace’s
           attachments. Formulas are rejected; import reviewed values.
@@ -1701,7 +1865,7 @@ export function ImportsView(props: ViewProps) {
                     </td>
                     <td className="number">{item.imported ?? "—"}</td>
                     <td className="muted">
-                      {item.error || "All rows accepted"}
+                      {item.error ? <>{item.error} <a href={"/api/imports/" + encodeURIComponent(item.id) + "/errors.csv"} download>Download error CSV</a></> : "All rows accepted"}
                     </td>
                   </tr>
                 ))}
@@ -1866,7 +2030,7 @@ export function SettingsView(props: ViewProps) {
       </div>
       <Section
         title="Journal account mapping"
-        subtitle={`Mapping effective for ${props.period}. Earlier periods retain their prior mapping.`}
+        subtitle={"Default roles, reusable profiles, and specific overrides effective for " + props.period + ". Earlier periods retain their prior mapping."}
       >
         <div className="table-wrap">
           <table>
@@ -1886,6 +2050,8 @@ export function SettingsView(props: ViewProps) {
             </tbody>
           </table>
         </div>
+        {Boolean(Object.keys(state.policy.account_profiles || {}).length) && <><h3>Reusable profiles</h3><div className="table-wrap"><table><thead><tr><th>Profile</th><th>Accounts</th><th>Dimensions</th><th>Assigned contracts</th></tr></thead><tbody>{Object.entries(state.policy.account_profiles || {}).map(([id, profile]) => <tr key={id}><td>{profile.name}</td><td>{Object.entries(profile.accounts).map(([role, code]) => `${humanize(role)}: ${code}`).join(" · ") || "Workspace defaults"}</td><td>{Object.entries(profile.dimensions).map(([key, value]) => `${key}: ${value}`).join(" · ") || "—"}</td><td>{Object.entries(state.policy.profile_assignments || {}).filter(([, profileId]) => profileId === id).map(([contractId]) => state.contracts.find((contract) => contract.id === contractId)?.name || contractId).join(", ") || "—"}</td></tr>)}</tbody></table></div><p className="fine-print">Profile dimensions apply to all journal lines of an assigned contract. Obligation revenue overrides can select a different account; they do not split the contract's balance by dimension.</p></>}
+        {Boolean(Object.keys(state.policy.account_overrides?.contracts || {}).length || Object.keys(state.policy.account_overrides?.obligations || {}).length) && <div className="table-wrap"><table><thead><tr><th>Scope</th><th>Contract</th><th>Role / obligation</th><th>Account</th></tr></thead><tbody>{Object.entries(state.policy.account_overrides?.contracts || {}).flatMap(([contractId, roles]) => Object.entries(roles).map(([role, account]) => <tr key={contractId + role}><td>Contract</td><td>{state.contracts.find((contract) => contract.id === contractId)?.name || contractId}</td><td>{humanize(role)}</td><td className="mono">{account}</td></tr>))}{Object.entries(state.policy.account_overrides?.obligations || {}).flatMap(([contractId, mapped]) => Object.entries(mapped).map(([obligationId, account]) => <tr key={contractId + obligationId}><td>Obligation revenue</td><td>{state.contracts.find((contract) => contract.id === contractId)?.name || contractId}</td><td>{obligationId}</td><td className="mono">{account}</td></tr>))}</tbody></table></div>}
       </Section>
       <Section title="Local-first operation">
         <p className="body-copy">

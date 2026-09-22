@@ -88,12 +88,12 @@ nav { display: flex; flex-direction: column; gap: 2px; }
 .scenario-select select { border: 0; background: transparent; height: 30px; outline: 0; color: inherit; padding: 0 23px 0 2px; max-width: 190px; }
 .topbar-divider { width: 1px; height: 20px; background: var(--line); }
 .period-picker { height: 30px; width: 125px; border: 0; background: transparent; outline: 0; color: #494e4a; }
-.scenario-banner { min-height: 34px; background: #edf0eb; border-bottom: 1px solid #d8ddd7; padding: 7px 22px; display: flex; align-items: center; gap: 8px; color: #4d5c52; font-size: 12px; }
+.scenario-banner { grid-row: 2; min-height: 34px; background: #edf0eb; border-bottom: 1px solid #d8ddd7; padding: 7px 22px; display: flex; align-items: center; gap: 8px; color: #4d5c52; font-size: 12px; }
 .scenario-banner span { flex: 1; }
 .scenario-banner button { border: 0; background: transparent; display: flex; align-items: center; gap: 3px; color: inherit; cursor: pointer; font-weight: 600; }
-.content { position: relative; overflow: auto; padding: 28px clamp(26px, 4vw, 60px) 52px; background: var(--bg); }
+.content { grid-row: 3; position: relative; overflow: auto; padding: 28px clamp(26px, 4vw, 60px) 52px; background: var(--bg); }
 .content > * { max-width: 1320px; margin-left: auto; margin-right: auto; }
-.statusbar { height: 25px; border-top: 1px solid var(--line); background: #f1f1ee; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; color: var(--quiet); font-size: 10px; }
+.statusbar { grid-row: 4; height: 25px; border-top: 1px solid var(--line); background: #f1f1ee; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; color: var(--quiet); font-size: 10px; }
 .statusbar > span { display: flex; align-items: center; gap: 5px; }
 .statusbar svg { fill: #728377; color: #728377; }
 .status-separator { margin: 0 3px; color: #b5b7b2; }
@@ -267,6 +267,10 @@ tfoot th, tfoot td { background: #f7f7f4; border-top: 1px solid var(--line); bor
 .readiness-counts span { margin-top: 3px; color: var(--quiet); font-size: 10px; }
 .check-list { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: white; }
 .check-row { min-height: 59px; padding: 10px 12px; display: grid; grid-template-columns: 27px minmax(0,1fr) auto auto; align-items: center; gap: 9px; border-bottom: 1px solid var(--line-soft); }
+.target-list { border: 1px solid var(--line-soft); border-radius: 8px; padding: 10px 12px; display: grid; gap: 7px; }
+.target-list legend { color: var(--muted); font-size: 12px; padding: 0 5px; }
+.target-list label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.target-list input { width: auto; }
 .check-row:last-child { border-bottom: 0; }
 .check-row p { margin-top: 2px; color: var(--muted); font-size: 11px; }
 .check-row .button { margin-left: 8px; }

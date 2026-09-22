@@ -8,6 +8,7 @@ import {
   Empty,
   ErrorMessage,
   ExportButton,
+  Field,
   Section,
   Tag,
 } from "./components";
@@ -69,7 +70,9 @@ export type Review = {
   billing_vs_revenue: Billing[];
   recognition_coverage: Coverage[];
   scenario_impacts: Impact[];
-  exceptions: { evidence: { change_set_id: string; entity_name: string; command: string }[] };
+  external_control?: { period: string; source_name: string; rationale: string; billings: string; contract_asset: string; deferred_revenue: string; close_cutoff_date?: string; recorded_at: string } | null;
+  external_control_comparison: Record<string, { derived: string; external: string; difference: string }>;
+  exceptions: { evidence: { change_set_id: string; entity_name: string; command: string; review_status: string; linked_file_count: number }[] };
   counts: {
     contracts: number;
     open_tasks: number;
@@ -85,6 +88,7 @@ const views = [
   "Close readiness",
   "Contract balance rollforward",
   "Billing vs revenue",
+  "External controls",
   "Recognition coverage",
   "Scenario impact",
   "SQL inspector",
@@ -93,7 +97,7 @@ type ReportView = (typeof views)[number];
 
 export function ReportsWorkspace(props: ViewProps) {
   const { state, period } = props;
-  const [view, setView] = useState<ReportView>("Close readiness"),
+  const [view, setView] = useState<ReportView>(props.tab === "External controls" ? "External controls" : "Close readiness"),
     [review, setReview] = useState<Review | null>(null),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true);
@@ -132,6 +136,7 @@ export function ReportsWorkspace(props: ViewProps) {
         </div>
         <div className="button-group">
           <ExportButton scenario={state.scenario_id} period={period} />
+          <a className="button" href={`/api/export-package?scenario_id=${encodeURIComponent(state.scenario_id)}&period=${period}`} download>Download support package</a>
         </div>
       </div>
       <div className="report-tabs" role="tablist" aria-label="Reports">
@@ -158,6 +163,43 @@ export function ReportsWorkspace(props: ViewProps) {
       )}
     </>
   );
+}
+
+function ExternalControls({ review, props }: { review: Review; props: ViewProps }) {
+  const [sourceName, setSourceName] = useState(review.external_control?.source_name || "");
+  const [rationale, setRationale] = useState(review.external_control?.rationale || "");
+  const [billings, setBillings] = useState(review.external_control?.billings || "");
+  const [asset, setAsset] = useState(review.external_control?.contract_asset || "");
+  const [deferred, setDeferred] = useState(review.external_control?.deferred_revenue || "");
+  const [cutoff, setCutoff] = useState(review.external_control?.close_cutoff_date || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const fields = [
+    ["billings", "Source billing total"],
+    ["contract_asset", "Contract asset GL balance"],
+    ["deferred_revenue", "Deferred revenue GL balance"],
+  ] as const;
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await post("/api/commands", { command: "record_control_totals", scenario_id: "main", period: props.period, payload: { period: props.period, source_name: sourceName, rationale, billings, contract_asset: asset, deferred_revenue: deferred, ...(cutoff ? { close_cutoff_date: cutoff } : {}) } });
+      await props.refresh("External controls recorded.");
+    } catch (caught) { setError((caught as Error).message); }
+    finally { setBusy(false); }
+  };
+  return <Section title="Independent source and GL controls" subtitle="Compare the model to totals prepared outside OpenRevRec on the same accounting basis. A match checks agreement, not completeness or classification.">
+    <p className="muted">The billing total is for {monthLabel(props.period)}. Asset and deferred balances are ending balances. Enter the corresponding external totals and retain the source name and review explanation.</p>
+    {review.external_control && <div className="table-wrap"><table><thead><tr><th>Measure</th><th className="number">Model</th><th className="number">External</th><th className="number">Difference</th></tr></thead><tbody>{fields.map(([key, label]) => <tr key={key}><td>{label}</td><td className="number">{money(review.external_control_comparison[key]?.derived, props.state.workspace.currency)}</td><td className="number">{money(review.external_control_comparison[key]?.external, props.state.workspace.currency)}</td><td className="number">{money(review.external_control_comparison[key]?.difference, props.state.workspace.currency)}</td></tr>)}</tbody></table></div>}
+    {props.state.scenario_id === "main" && !props.state.report.closed ? <form onSubmit={(event) => void submit(event)}>
+      <div className="form-grid"><Field label="External source name"><input required value={sourceName} onChange={(event) => setSourceName(event.target.value)} placeholder="ERP report or billing extract" /></Field><Field label="Review explanation"><input required value={rationale} onChange={(event) => setRationale(event.target.value)} placeholder="Identify the extract and reconciliation basis" /></Field></div>
+      <div className="form-grid"><Field label="Source billings"><input required type="number" step="0.01" value={billings} onChange={(event) => setBillings(event.target.value)} /></Field><Field label="Contract asset GL balance"><input required type="number" step="0.01" value={asset} onChange={(event) => setAsset(event.target.value)} /></Field><Field label="Deferred revenue GL balance"><input required type="number" step="0.01" value={deferred} onChange={(event) => setDeferred(event.target.value)} /></Field></div>
+      <Field label="Close cutoff date" hint="Entries recorded by this date are normal close work, rather than late entries. If blank, period end is used."><input type="date" min={`${props.period}-${new Date(Number(props.period.slice(0, 4)), Number(props.period.slice(5)), 0).getDate()}`} value={cutoff} onChange={(event) => setCutoff(event.target.value)} /></Field>
+      <Button primary type="submit" busy={busy}>Record controls</Button>
+    </form> : <p className="notice">Controls can be entered on an open Main period. Reopen a closed period before revising them.</p>}
+    <ErrorMessage error={error} />
+  </Section>;
 }
 
 function ReportContent({
@@ -234,9 +276,9 @@ function ReportContent({
             ))}
           </div>
         </Section>
-        {review.exceptions.evidence.length > 0 && <Section title="Judgments needing support">
+        {review.exceptions.evidence.length > 0 && <Section title="Judgments needing review">
           <div className="changes-list">{review.exceptions.evidence.map((item) => <div className="change-row support-row" key={item.change_set_id}>
-            <div><strong>{item.entity_name}</strong><span>{item.command.replaceAll("_", " ")}</span></div>
+            <div><strong>{item.entity_name}</strong><span>{item.command.replaceAll("_", " ")} · {item.review_status === "exception" ? "open exception" : "review missing"} · {item.linked_file_count} linked file(s)</span></div>
             <Button onClick={() => props.navigate("Activity", item.change_set_id)}>Review change</Button>
           </div>)}</div>
         </Section>}
@@ -337,6 +379,7 @@ function ReportContent({
         </div>
       </Section>
     );
+  if (view === "External controls") return <ExternalControls review={review} props={props} />;
   if (view === "Billing vs revenue")
     return (
       <Section

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
+import zipfile
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -11,23 +13,31 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 
 from .workspace import dumps, now
+from .application import JUDGMENT_COMMANDS
 
-TEMPLATE_VERSION = "1"
+TEMPLATE_VERSION = "2"
 SHEETS = {
-    "Customers": ["id", "name", "email", "reference"],
-    "Contracts": ["id", "customer_id", "name", "start_date", "end_date", "rationale"],
-    "Consideration": ["contract_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale"],
+    "Customers": ["id", "name", "email", "reference", "source_system"],
+    "Contracts": ["id", "customer_id", "name", "start_date", "end_date", "rationale", "cutover_date"],
+    "Consideration": ["contract_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale"],
     "Obligations": ["contract_id", "id", "name", "kind", "ssp", "method", "start_date", "end_date", "total_units", "exercise_start", "exercise_end", "rationale"],
-    "Billing": ["contract_id", "effective_date", "amount", "reference", "rationale"],
-    "Progress": ["contract_id", "obligation_id", "effective_date", "percentage", "rationale"],
-    "Usage": ["contract_id", "obligation_id", "effective_date", "quantity", "reference", "rationale"],
-    "Milestones": ["contract_id", "obligation_id", "effective_date", "percentage", "rationale"],
-    "Adjustments": ["contract_id", "obligation_id", "effective_date", "amount", "rationale"],
-    "Reassessments": ["contract_id", "component_id", "effective_date", "included_amount", "rationale"],
-    "Notes": ["entity_id", "kind", "body", "due_date"],
-    "Commands": ["command", "payload_json"],
+    "Opening Positions": ["source_id", "contract_id", "effective_date", "billed_to_date", "contract_asset", "deferred_revenue", "source_name", "rationale"],
+    "Opening Obligations": ["opening_source_id", "obligation_id", "recognized_to_date", "measure"],
+    "Amendments": ["source_id", "contract_id", "effective_date", "treatment", "replace_consideration", "replace_obligations", "rationale"],
+    "Amendment Consideration": ["amendment_source_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale"],
+    "Amendment Obligations": ["amendment_source_id", "id", "name", "kind", "ssp", "method", "start_date", "end_date", "total_units", "exercise_start", "exercise_end", "rationale"],
+    "Billing": ["contract_id", "effective_date", "amount", "reference", "applies_to_change_set_id", "applies_to_reference", "rationale", "source_id"],
+    "Progress": ["contract_id", "obligation_id", "effective_date", "percentage", "rationale", "source_id"],
+    "Usage": ["contract_id", "obligation_id", "effective_date", "quantity", "reference", "rationale", "source_id"],
+    "Right Exercises": ["contract_id", "obligation_id", "effective_date", "delivery_method", "delivery_start", "delivery_end", "rationale", "source_id"],
+    "Milestones": ["contract_id", "obligation_id", "effective_date", "percentage", "rationale", "source_id"],
+    "Adjustments": ["contract_id", "obligation_id", "effective_date", "amount", "rationale", "source_id"],
+    "Reassessments": ["contract_id", "component_id", "effective_date", "included_amount", "rationale", "source_id"],
+    "Corrections": ["source_id", "target_change_set_id", "target_source_id", "activity_type", "contract_id", "obligation_id", "effective_date", "amount", "percentage", "quantity", "reference", "rationale"],
+    "Notes": ["entity_id", "kind", "body", "due_date", "source_id"],
+    "Commands": ["command", "payload_json", "source_id"],
 }
-COMMAND_BY_SHEET = {"Customers": "create_customer", "Billing": "record_billing", "Progress": "record_progress", "Usage": "record_usage", "Milestones": "record_milestone", "Adjustments": "record_adjustment", "Reassessments": "reassess_variable_consideration", "Notes": "add_note"}
+COMMAND_BY_SHEET = {"Customers": "create_customer", "Billing": "record_billing", "Progress": "record_progress", "Usage": "record_usage", "Right Exercises": "record_right_exercise", "Milestones": "record_milestone", "Adjustments": "record_adjustment", "Reassessments": "reassess_variable_consideration", "Notes": "add_note"}
 
 
 def safe_cell(value):
@@ -65,11 +75,17 @@ def template_bytes():
         ["Dates", "YYYY-MM-DD. Service start and end dates are inclusive."],
         ["Relationships", "Supply IDs for customers, contracts, consideration, and obligations; reference these IDs on related sheets."],
         ["Contract setup", "Contracts, Consideration and Obligations are combined into one create_contract command."],
-        ["Recognition methods", "exact_days, monthly, point_in_time, progress, usage, milestone"],
+        ["Recognition methods", "exact_days, monthly, prorated_monthly, point_in_time, progress, usage, milestone"],
+        ["Opening positions", "For a migrated contract, supply current terms, then one Opening Positions row dated the first day of the cutover month and one Opening Obligations row per obligation. A matching opening row sets the new contract's cutover date automatically. Enter cumulative legacy recognition, billing, net asset/deferred balance, and measures before post-cutover activity. Pre-cutover periods are excluded."],
         ["Progress", "Cumulative percentage 0–100. Usage quantity is incremental; set total_units on its obligation."],
+        ["Right exercises", "For a material right exercised before delivery, enter the exercise date, future delivery method and delivery dates on Right Exercises. A point-in-time delivery also needs a 100% Milestones row on its delivery date. Unexercised rights recognize at expiry."],
         ["Consideration kinds", "fixed, variable, usage, credit. Use included_amount for constrained consideration."],
-        ["Modifications and policy", "Use Commands with command and payload_json. Any canonical command is supported except close/reopen and scenario lifecycle."],
-        ["Import behavior", "All rows validate and commit together. A failed import commits no accounting changes."],
+        ["Specific allocation", "For an eligible variable, usage, or credit component, set allocation_scope to specific, list target_obligation_ids separated by commas, and record allocation_rationale. Otherwise leave these fields blank for relative SSP allocation."],
+        ["Amendments", "Each amendment needs a stable source_id, effective date, treatment, and rationale. Set replace_consideration and/or replace_obligations to yes. Related rows must list the COMPLETE replacement set for that section."],
+        ["Corrections", "Supply the original change set ID or its prior source_id, the activity type, replacement facts, and a new source_id. The original remains in history."],
+        ["Other commands", "Use Commands with command, payload_json, and source_id for policies or advanced actions. Close/reopen and scenario lifecycle require separate review."],
+        ["Import behavior", "Preview first. All rows then commit together; a failed import commits no accounting changes."],
+        ["Source identity", "Use a stable, system-prefixed source_id for every activity, amendment, correction, or command. A billing invoice reference can substitute for source_id. Reimporting the same source fact is rejected."],
         ["Review", "Always review totals and accounting judgments after import. Amount cells may be numbers or decimal text."],
     ])
     for name, headers in SHEETS.items():
@@ -79,14 +95,23 @@ def template_bytes():
     return output.getvalue()
 
 
+def journal_batch_id(state):
+    report = state["report"]
+    return "orr-" + hashlib.sha256(dumps({"workspace_id": state["workspace"]["id"], "scenario_id": state["scenario_id"], "period": report["period"], "policy_version": report.get("policy_version"), "journals": report["journals"]}).encode()).hexdigest()[:20]
+
+
 def export_bytes(state, review=None):
     report = state["report"]
+    batch_id = journal_batch_id(state)
     book = Workbook()
     book.remove(book.active)
-    _sheet(book, "Workspace", ["Field", "Value"], [["Company", state["workspace"]["name"]], ["Workspace ID", state["workspace"]["id"]], ["Currency", state["policy"]["currency"]], ["Period", report["period"]], ["Scenario", state["scenario_id"]], ["Version", state["frontier"]], ["Policy version", report.get("policy_version", state["policy"]["version"])], ["Policy effective period", report.get("policy_effective_period", state["policy"]["effective_period"])], ["Ruleset", "orr-0.1"], ["Engine", "0.1.0"], ["Exported at", now()], ["Accepted close", bool(report.get("closed"))], ["Support metadata", "Evidence recorded after close is shown with its own recorded date; financial values use the accepted checkpoint." if report.get("closed") else "Current accepted workspace state."]])
+    _sheet(book, "Workspace", ["Field", "Value"], [["Company", state["workspace"]["name"]], ["Workspace ID", state["workspace"]["id"]], ["Currency", state["policy"]["currency"]], ["Period", report["period"]], ["Scenario", state["scenario_id"]], ["Version", state["frontier"]], ["Policy version", report.get("policy_version", state["policy"]["version"])], ["Policy effective period", report.get("policy_effective_period", state["policy"]["effective_period"])], ["Ruleset", "orr-0.1"], ["Engine", "0.1.0"], ["Exported at", now()], ["Accepted close", bool(report.get("closed"))], ["Support metadata", "Evidence recorded after close is shown with its own recorded date; financial values use the accepted checkpoint." if report.get("closed") else "Current accepted workspace state."], ["Output status", "Hypothetical scenario support" if state["scenario_id"] != "main" else "Accepted Main close" if report.get("closed") else "Open Main support; subject to change"], ["Journal batch ID", batch_id]])
     _sheet(book, "Summary", ["Measure", "Amount"], [[k.replace("_", " ").capitalize(), Decimal(v)] for k, v in report["summary"].items() if isinstance(v, (str, int))])
     if review:
         _sheet(book, "Close readiness", ["Check", "Status", "Detail", "Exceptions"], [[row["label"], row["status"], row["detail"], row["count"]] for row in review["checks"]])
+        _sheet(book, "External controls", ["Measure", "Model", "External", "Difference", "Source", "Review explanation", "Close cutoff date"],
+               [[field, Decimal(values["derived"]), Decimal(values["external"]), Decimal(values["difference"]), review["external_control"]["source_name"], review["external_control"]["rationale"], review["external_control"].get("close_cutoff_date", "")]
+                for field, values in review.get("external_control_comparison", {}).items()])
         money_keys = {"opening_contract_asset", "opening_deferred_revenue", "revenue", "billings", "closing_contract_asset", "closing_deferred_revenue"}
         rollforward_keys = ["contract_id", "contract_name", "opening_contract_asset", "opening_deferred_revenue", "revenue", "billings", "closing_contract_asset", "closing_deferred_revenue"]
         _sheet(book, "Contract rollforward", rollforward_keys, [[Decimal(row[k]) if k in money_keys else row[k] for k in rollforward_keys] for row in review["rollforward"]])
@@ -101,30 +126,114 @@ def export_bytes(state, review=None):
     for row in sheet.iter_rows(min_row=2, min_col=4):
         for cell in row:
             cell.number_format = '#,##0.00;[Red](#,##0.00);–'
+    openings = [change for change in state["change_sets"] if change["command"] == "record_opening_position"]
+    _sheet(book, "Opening positions", ["Contract ID", "Cutover date", "Legacy billed to date", "Legacy contract asset", "Legacy deferred revenue", "Legacy source", "Reconciliation rationale", "Change set ID"],
+           [[item["payload"].get(key, "") for key in ("contract_id", "effective_date", "billed_to_date", "contract_asset", "deferred_revenue", "source_name", "rationale")] + [item["id"]] for item in openings])
+    _sheet(book, "Opening obligation balances", ["Contract ID", "Obligation ID", "Recognized to date", "Cumulative measure", "Cutover date", "Change set ID"],
+           [[item["payload"]["contract_id"], row["obligation_id"], row["recognized_to_date"], row.get("measure", ""), item["payload"]["effective_date"], item["id"]]
+            for item in openings for row in item["payload"]["opening_obligations"]])
+    _sheet(book, "Right exercises", ["Contract ID", "Obligation ID", "Exercise date", "Delivery method", "Delivery start", "Delivery end", "Rationale", "Change set ID"],
+           [[item["payload"].get(key, "") for key in ("contract_id", "obligation_id", "effective_date", "delivery_method", "delivery_start", "delivery_end", "rationale")] + [item["id"]]
+            for item in reversed(state["change_sets"]) if item["command"] == "record_right_exercise"])
     _sheet(book, "Recognition schedule", ["period", "contract_id", "obligation_id", "revenue"], [[r["period"], r["contract_id"], r["obligation_id"], Decimal(r["revenue"])] for r in report["schedule"]])
-    journal_keys = ["period", "contract_id", "account", "account_name", "role", "debit", "credit", "description", "policy_version", "policy_effective_period"]
-    _sheet(book, "Journal entries", journal_keys, [[Decimal(r.get(k, "0")) if k in {"debit", "credit"} else report.get(k, "") if k in {"policy_version", "policy_effective_period"} else r.get(k, "") for k in journal_keys] for r in report["journals"]])
+    dimension_keys = sorted({key for row in report["journals"] for key in row.get("dimensions", {})})
+    journal_keys = ["period", "contract_id", "account", "account_name", "role", "debit", "credit", "description", "policy_version", "policy_effective_period", "obligation_ids", "batch_id", "account_profile_id"] + [f"dimension:{key}" for key in dimension_keys]
+    def journal_cell(row, key):
+        if key in {"debit", "credit"}:
+            return Decimal(row.get(key, "0"))
+        if key in {"policy_version", "policy_effective_period"}:
+            return report.get(key, "")
+        if key == "obligation_ids":
+            return ", ".join(row.get(key, []))
+        if key == "batch_id":
+            return batch_id
+        if key.startswith("dimension:"):
+            return row.get("dimensions", {}).get(key.removeprefix("dimension:"), "")
+        return row.get(key, "")
+    _sheet(book, "Journal entries", journal_keys, [[journal_cell(row, key) for key in journal_keys] for row in report["journals"]])
+    _sheet(book, "Posting guide", ["Step", "Treatment"], [["1", "Confirm how your billing system posts invoices before using journal entries."], ["2", "Example for a 1,200 invoice and 100 recognized revenue: OpenRevRec derives debit billing clearing 1,200; credit deferred revenue 1,100; credit revenue 100."], ["3", "If the external invoice posting is debit accounts receivable 1,200 and credit the mapped billing clearing account 1,200, the clearing account nets to zero."], ["4", "If external invoices credit revenue or deferred revenue instead, map or transform the offset and reconcile before posting. Do not post both full outputs unchanged."], ["5", "Review profile dimensions and any cross-dimension opening transfer against the ledger's segment-balancing rules."], ["6", "Record the external journal reference against this batch ID after posting. Reexporting the same batch is not a new posting instruction."], ["7", "If a posted close is revised, the replacement sheet compares each recorded source batch with this version. Confirm which batch represents the ledger before using its delta."], ["Boundary", "OpenRevRec does not post to the ledger or independently verify a user-entered posting reference."]])
+    _sheet(book, "External posting records", ["Period", "Batch ID", "Close ID", "External journal reference", "Posted date", "Rationale", "Recorded at", "Current batch"],
+           [[item.get("period", ""), item.get("batch_id", ""), item.get("close_id", ""), item.get("external_journal_reference", ""), item.get("posted_date", ""), item.get("rationale", ""), item.get("recorded_at", ""), item.get("batch_id") == batch_id if item.get("period") == report["period"] else ""] for item in state.get("postings", [])])
+    comparisons = state.get("posting_comparisons", [])
+    replacement_dimensions = sorted({key for item in comparisons for line in item["lines"] for key in line["dimensions"]})
+    replacement_headers = ["Source batch", "Target batch", "Status", "Source references", "Contract ID", "Account", "Roles", "Obligation IDs", "Posted net", "Revised net", "Adjustment debit", "Adjustment credit"] + [f"dimension:{key}" for key in replacement_dimensions]
+    replacement_rows = []
+    for item in comparisons:
+        status = "Source checkpoint unavailable" if not item["available"] else "Current batch already posted" if item["current_batch_posted"] else "Accepted replacement" if item["target_closed"] else "Draft comparison"
+        for line in item["lines"] or [{}]:
+            replacement_rows.append([item["source_batch_id"], item["target_batch_id"], status, ", ".join(item["posting_references"]), line.get("contract_id", ""), line.get("account", ""), ", ".join(line.get("roles", [])), ", ".join(line.get("obligation_ids", [])), Decimal(line["posted_net"]) if line else "", Decimal(line["revised_net"]) if line else "", Decimal(line["debit"]) if line else "", Decimal(line["credit"]) if line else ""] + [line.get("dimensions", {}).get(key, "") for key in replacement_dimensions])
+    _sheet(book, "Replacement journal", replacement_headers, replacement_rows)
     _sheet(book, "Account policy", ["Role", "Account", "Policy version", "Effective period"], [[role, account, report.get("policy_version", state["policy"]["version"]), report.get("policy_effective_period", state["policy"]["effective_period"])] for role, account in report.get("policy_accounts", state["policy"]["accounts"]).items()])
+    overrides = report.get("policy_account_overrides", {"contracts": {}, "obligations": {}})
+    profiles = report.get("policy_account_profiles", {})
+    assignments = report.get("policy_profile_assignments", {})
+    _sheet(book, "Account profiles", ["Profile ID", "Profile name", "Role", "Account"],
+           [[profile_id, profile["name"], role, account] for profile_id, profile in sorted(profiles.items()) for role, account in sorted(profile["accounts"].items())])
+    _sheet(book, "Profile dimensions", ["Profile ID", "Dimension", "Value"],
+           [[profile_id, key, value] for profile_id, profile in sorted(profiles.items()) for key, value in sorted(profile["dimensions"].items())])
+    _sheet(book, "Profile assignments", ["Contract ID", "Profile ID"], [[contract_id, profile_id] for contract_id, profile_id in sorted(assignments.items())])
+    _sheet(book, "Account overrides", ["Scope", "Contract ID", "Obligation ID", "Role", "Account"],
+           [["Contract", contract_id, "", role, account] for contract_id, roles in overrides.get("contracts", {}).items() for role, account in roles.items()] +
+           [["Obligation", contract_id, obligation_id, "revenue", account] for contract_id, items in overrides.get("obligations", {}).items() for obligation_id, account in items.items()])
+    _sheet(book, "Account transitions", ["Contract ID", "Role", "From account", "To account", "Opening balance", "Treatment", "From dimensions", "To dimensions"],
+           [[row[k] for k in ("contract_id", "role", "from_account", "to_account", "opening_balance", "treatment")] + [row.get("from_dimensions", {}), row.get("to_dimensions", {})] for row in report.get("account_transitions", [])])
     _sheet(book, "Allocation support", ["contract_id", "obligation_id", "name", "ssp", "amount"], [[c["id"], a["obligation_id"], a["name"], Decimal(a["ssp"]), Decimal(a["amount"])] for c in report["contracts"] for a in c["allocation"]])
+    _sheet(book, "Component allocation", ["Contract ID", "Component ID", "Component", "Kind", "Included amount", "Scope", "Target obligation IDs", "Accounting rationale"],
+           [[contract["id"], item["component_id"], item["label"], item["kind"], Decimal(item["included_amount"]), item["scope"], ", ".join(item["target_obligation_ids"]), item["rationale"]]
+            for contract in report["contracts"] for item in contract.get("allocation_components", [])])
     _sheet(book, "Activity", ["version", "change_set_id", "scenario_id", "command", "entity_id", "effective_date", "recorded_at", "rationale", "source", "payload"], [[r.get(k, "") for k in ["version", "id", "scenario_id", "command", "entity_id", "effective_date", "recorded_at", "rationale", "source", "payload"]] for r in reversed(state["change_sets"])])
     entity_names = {row["id"]: row["name"] for row in state["contracts"] + state["customers"]}
     period_end = report["period"] + "-31"
-    judgment_commands = {"modify_contract", "reassess_variable_consideration", "record_adjustment", "set_policy", "reopen_period"}
-    changes = [row for row in reversed(state["change_sets"]) if row["effective_date"] <= period_end and row["command"] not in {"add_note", "edit_note", "edit_details", "attach_evidence"}]
+    changes = [row for row in reversed(state["change_sets"]) if row["effective_date"] <= period_end and row["command"] not in {"add_note", "edit_note", "edit_details", "attach_evidence", "record_judgment_review"}]
     evidence_by_change = {}
     for item in state["evidence"]:
         evidence_by_change.setdefault(item.get("target_change_set_id"), []).append(item)
+    reviews_by_change = {}
+    for item in state.get("judgment_reviews", []):
+        reviews_by_change[item["target_change_set_id"]] = item
     _sheet(book, "Change lineage", ["Version", "Change set ID", "Scenario", "Command", "Entity", "Entity ID", "Effective date", "Recorded at", "Rationale", "Treatment", "Originating change ID", "Evidence files"],
            [[row["version"], row["id"], row["scenario_id"], row["command"], entity_names.get(row["entity_id"], row["entity_id"]), row["entity_id"], row["effective_date"], row["recorded_at"], row.get("rationale", ""), row["payload"].get("treatment", ""), row.get("originating_change_set_id", ""), ", ".join(item["name"] for item in evidence_by_change.get(row["id"], []))] for row in changes])
-    _sheet(book, "Judgment support", ["Change set ID", "Command", "Entity", "Effective date", "Rationale", "Treatment", "Support status", "Evidence IDs", "Evidence files"],
-           [[row["id"], row["command"], entity_names.get(row["entity_id"], row["entity_id"]), row["effective_date"], row.get("rationale", ""), row["payload"].get("treatment", ""), "Supported" if evidence_by_change.get(row["id"]) else "Needs support", ", ".join(item["id"] for item in evidence_by_change.get(row["id"], [])), ", ".join(item["name"] for item in evidence_by_change.get(row["id"], []))] for row in changes if row["command"] in judgment_commands])
+    _sheet(book, "Judgment support", ["Change set ID", "Command", "Entity", "Effective date", "Rationale", "Treatment", "Review disposition", "Reviewer", "Conclusion", "Support memo", "Exception reason", "Reviewed at", "Review change set ID", "Evidence IDs", "Evidence files"],
+           [[row["id"], row["command"], entity_names.get(row["entity_id"], row["entity_id"]), row["effective_date"], row.get("rationale", ""), row["payload"].get("treatment", ""), reviews_by_change.get(row["id"], {}).get("disposition", "missing"), reviews_by_change.get(row["id"], {}).get("reviewer", ""), reviews_by_change.get(row["id"], {}).get("conclusion", ""), reviews_by_change.get(row["id"], {}).get("support_memo", ""), reviews_by_change.get(row["id"], {}).get("exception_reason", ""), reviews_by_change.get(row["id"], {}).get("recorded_at", ""), reviews_by_change.get(row["id"], {}).get("change_set_id", ""), ", ".join(item["id"] for item in evidence_by_change.get(row["id"], [])), ", ".join(item["name"] for item in evidence_by_change.get(row["id"], []))] for row in changes if row["command"] in JUDGMENT_COMMANDS])
     _sheet(book, "Evidence index", ["Evidence ID", "File name", "Entity", "Entity ID", "Change set ID", "Obligation ID", "Period close ID", "Recorded at", "Workspace path", "Rationale", "Scenario"],
            [[item["id"], item["name"], entity_names.get(item.get("entity_id"), item.get("entity_id", "")), item.get("entity_id", ""), item.get("target_change_set_id", ""), item.get("obligation_id", ""), item.get("period_close_id", ""), item.get("recorded_at", ""), item["path"], item.get("rationale", ""), item.get("scenario_id", "")] for item in state["evidence"]])
-    _sheet(book, "Notes", ["id", "entity_id", "kind", "body", "due_date", "completed"], [[n.get(k, "") for k in ["id", "entity_id", "kind", "body", "due_date", "completed"]] for n in state["notes"]])
+    _sheet(book, "Notes", ["id", "entity_id", "kind", "body", "due_date", "period", "completed"], [[n.get(k, "") for k in ["id", "entity_id", "kind", "body", "due_date", "period", "completed"]] for n in state["notes"]])
     _sheet(book, "Closes", ["period", "status", "frontier", "recorded_at", "rationale"], [[c.get(k, "") for k in ["period", "status", "frontier", "recorded_at", "rationale"]] for c in state["closes"]])
+    _sheet(book, "Close dispositions", ["Period", "Change set ID", "Check", "Disposition", "Reason"],
+           [[change["payload"].get("period", ""), change["id"], check_id, item.get("disposition", ""), item.get("reason", "")]
+            for change in state["change_sets"] if change["command"] == "close_period"
+            for check_id, item in change["payload"].get("review_dispositions", {}).items()])
     _sheet(book, "Warnings", ["Accounting review"], [[w] for w in report["warnings"]])
     output = io.BytesIO()
     book.save(output)
+    return output.getvalue()
+
+
+def export_package_bytes(state, review, workspace):
+    """Bundle the workbook and every file named in its evidence index."""
+    output = io.BytesIO()
+    evidence = state.get("evidence", [])
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as package:
+        workbook = export_bytes(state, review)
+        package.writestr("OpenRevRec-support.xlsx", workbook)
+        files = {}
+        archive_paths = {}
+        for item in evidence:
+            relative = item["path"]
+            attachment = workspace.evidence_path(relative)
+            archive_name = attachment.relative_to(workspace.path).as_posix()
+            archive_paths[relative] = archive_name
+            if archive_name not in files:
+                content = attachment.read_bytes()
+                package.writestr(archive_name, content)
+                files[archive_name] = hashlib.sha256(content).hexdigest()
+        package.writestr("manifest.json", json.dumps({
+            "workspace_id": state["workspace"]["id"], "scenario_id": state["scenario_id"],
+            "period": state["report"]["period"], "frontier": state["frontier"],
+            "workbook_sha256": hashlib.sha256(workbook).hexdigest(),
+            "files_sha256": files,
+            "evidence": [{**{key: item.get(key) for key in ("id", "name", "path", "entity_id", "target_change_set_id", "recorded_at")}, "archive_path": archive_paths[item["path"]]} for item in evidence],
+        }, indent=2))
     return output.getvalue()
 
 
@@ -138,6 +247,13 @@ def _value(value):
     return str(value).strip() if value is not None else None
 
 
+def _component_row(values):
+    result = dict(values)
+    if "target_obligation_ids" in result:
+        result["target_obligation_ids"] = [item.strip() for item in str(result["target_obligation_ids"]).split(",") if item.strip()]
+    return result
+
+
 def parse_workbook(data):
     try:
         book = load_workbook(io.BytesIO(data), read_only=True, data_only=False)
@@ -145,9 +261,10 @@ def parse_workbook(data):
         raise ValueError("This file is not a readable .xlsx workbook.") from exc
     try:
         parsed = {}
+        version = "1"
         if "Instructions" in book.sheetnames:
-            version = book["Instructions"]["B2"].value
-            if str(version) != TEMPLATE_VERSION:
+            version = str(book["Instructions"]["B2"].value)
+            if str(version) not in {"1", TEMPLATE_VERSION}:
                 raise ValueError(f"Unsupported template version {version}.")
         for name, headers in SHEETS.items():
             parsed[name] = []
@@ -178,44 +295,193 @@ def parse_workbook(data):
             for row, item in parsed[sheet]:
                 if item.get("contract_id") not in contract_ids:
                     raise ValueError(f"{sheet} row {row}: terms must reference a contract on the Contracts sheet; use a modification for an existing contract.")
+        opening_dates = {}
+        for row, opening in parsed["Opening Positions"]:
+            contract_id = opening.get("contract_id")
+            if contract_id in opening_dates:
+                raise ValueError(f"Opening Positions row {row}: one opening position is allowed per contract.")
+            opening_dates[contract_id] = opening.get("effective_date")
         for row, contract in parsed["Contracts"]:
+            if contract.get("id") in opening_dates and not contract.get("cutover_date"):
+                contract["cutover_date"] = opening_dates[contract["id"]]
             for field, sheet in (("consideration", "Consideration"), ("obligations", "Obligations")):
-                contract[field] = [{k: v for k, v in p.items() if k != "contract_id"} for _, p in parsed[sheet] if p.get("contract_id") == contract.get("id")]
+                contract[field] = [_component_row({k: v for k, v in p.items() if k != "contract_id"}) if field == "consideration" else {k: v for k, v in p.items() if k != "contract_id"}
+                                   for _, p in parsed[sheet] if p.get("contract_id") == contract.get("id")]
             commands.append(("Contracts", row, "create_contract", contract))
-        for sheet, command in COMMAND_BY_SHEET.items():
-            if sheet != "Customers":
-                commands.extend((sheet, row, command, p) for row, p in parsed[sheet])
+        opening_ids = set()
+        for row, opening in parsed["Opening Positions"]:
+            source_id = opening.get("source_id")
+            if not source_id or source_id in opening_ids:
+                raise ValueError(f"Opening Positions row {row}: provide a unique, stable source_id.")
+            opening_ids.add(source_id)
+            opening["opening_obligations"] = [{key: value for key, value in item.items() if key != "opening_source_id"}
+                                      for _, item in parsed["Opening Obligations"] if item.get("opening_source_id") == source_id]
+            commands.append(("Opening Positions", row, "record_opening_position", opening))
+        for row, item in parsed["Opening Obligations"]:
+            if item.get("opening_source_id") not in opening_ids:
+                raise ValueError(f"Opening Obligations row {row}: opening_source_id must reference an Opening Positions row.")
+        amendment_ids = set()
+        for row, amendment in parsed["Amendments"]:
+            source_id = amendment.get("source_id")
+            if not source_id or source_id in amendment_ids:
+                raise ValueError(f"Amendments row {row}: provide a unique, stable source_id.")
+            amendment_ids.add(source_id)
+            payload = {key: amendment[key] for key in ("contract_id", "effective_date", "treatment", "rationale", "source_id") if key in amendment}
+            replaced = False
+            for flag, sheet, target in (("replace_consideration", "Amendment Consideration", "consideration"), ("replace_obligations", "Amendment Obligations", "obligations")):
+                value = (amendment.get(flag) or "").casefold()
+                if value not in {"", "no", "yes"}:
+                    raise ValueError(f"Amendments row {row}: {flag} must be yes or no.")
+                rows = [(number, item) for number, item in parsed[sheet] if item.get("amendment_source_id") == source_id]
+                if rows and value != "yes":
+                    raise ValueError(f"Amendments row {row}: set {flag} to yes when {sheet} contains replacement rows.")
+                if value == "yes":
+                    payload[target] = [_component_row({key: item for key, item in values.items() if key != "amendment_source_id"}) if target == "consideration" else {key: item for key, item in values.items() if key != "amendment_source_id"} for _, values in rows]
+                    replaced = True
+            if not replaced:
+                raise ValueError(f"Amendments row {row}: choose at least one section to replace.")
+            commands.append(("Amendments", row, "modify_contract", payload))
+        for sheet in ("Amendment Consideration", "Amendment Obligations"):
+            for row, item in parsed[sheet]:
+                if item.get("amendment_source_id") not in amendment_ids:
+                    raise ValueError(f"{sheet} row {row}: amendment_source_id must reference an Amendments row.")
         for row, p in parsed["Commands"]:
             try:
                 payload = json.loads(p.get("payload_json", "{}"))
             except json.JSONDecodeError as exc:
                 raise ValueError(f"Commands row {row}: payload_json is not valid JSON.") from exc
+            if not isinstance(payload, dict):
+                raise ValueError(f"Commands row {row}: payload_json must be an object.")
             if p.get("command") in {"close_period", "reopen_period", "create_scenario", "apply_scenario", "rebase_scenario", "archive_scenario", "restore_scenario"}:
                 raise ValueError(f"Commands row {row}: review this workspace operation separately from an import.")
+            if p.get("source_id"):
+                payload["source_id"] = p["source_id"]
             commands.append(("Commands", row, p.get("command"), payload))
+        for sheet, command in COMMAND_BY_SHEET.items():
+            if sheet != "Customers":
+                commands.extend((sheet, row, command, p) for row, p in parsed[sheet])
+        for row, item in parsed["Corrections"]:
+            activity_type = item.get("activity_type")
+            if activity_type not in {"billing", "progress", "usage", "milestone"}:
+                raise ValueError(f"Corrections row {row}: choose billing, progress, usage, or milestone activity_type.")
+            replacement = {key: item[key] for key in ("contract_id", "obligation_id", "effective_date", "amount", "percentage", "quantity", "reference") if key in item}
+            payload = {"replacement": replacement, "rationale": item.get("rationale", ""), "source_id": item.get("source_id", "")}
+            if item.get("target_change_set_id"):
+                payload["target_change_set_id"] = item["target_change_set_id"]
+            if item.get("target_source_id"):
+                payload["target_source_id"] = item["target_source_id"]
+                payload["target_command"] = f"record_{activity_type}"
+            if bool(payload.get("target_change_set_id")) == bool(payload.get("target_source_id")):
+                raise ValueError(f"Corrections row {row}: choose exactly one original change set ID or source_id.")
+            commands.append(("Corrections", row, "correct_activity", payload))
         if not commands:
             raise ValueError("The workbook contains no rows to import.")
-        return commands
+        return commands, version
     finally:
         book.close()
 
 
-def import_bytes(app, data, filename="import.xlsx", scenario_id="main", period=None):
-    commands = parse_workbook(data)
+def _source_key(scenario_id, command, payload):
+    source_id = payload.pop("source_id", None)
+    if source_id is not None and not isinstance(source_id, str):
+        raise ValueError("source_id must be text.")
+    source_id = (source_id or "").strip()
+    if source_id:
+        identity = ["source_id", source_id]
+    elif command == "record_billing" and payload.get("reference"):
+        identity = ["invoice_reference", payload.get("contract_id"), payload["reference"]]
+    else:
+        identity = ["contents", dumps(payload)]
+    return "import:" + hashlib.sha256(dumps([scenario_id, command, identity]).encode()).hexdigest(), source_id, identity
+
+
+def _import_bytes(app, data, filename, scenario_id, period, preview, expected_frontier=None, expected_hash=None):
+    from .application import compare_reports, valid_period
+
+    commands, template_version = parse_workbook(data)
     results = []
+    counts = {}
+    input_billing = Decimal(0)
+    input_units = Decimal(0)
+    opening_positions = []
+    selected_period = valid_period(period or date.today().strftime("%Y-%m"))
+    file_hash = hashlib.sha256(data).hexdigest()
+    if expected_hash is not None and expected_hash != file_hash:
+        raise ValueError("The workbook changed since review. Preview it again.")
     with app.workspace.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         try:
-            backup = app.workspace.backup("import")
+            before = app._state(db, scenario_id, selected_period)
+            if expected_frontier is not None and str(expected_frontier) != str(before["frontier"]):
+                raise ValueError("The workspace changed since review. Preview the workbook again.")
+            backup = None if preview else app.workspace.backup("import")
             for sheet, row, command, payload in commands:
                 try:
-                    result = app._execute_in(db, command, payload, scenario_id, f"excel:{filename}:v{TEMPLATE_VERSION}:{sheet}:{row}")
-                    results.append({"sheet": sheet, "row": row, "status": "accepted", **result})
+                    payload = dict(payload)
+                    if sheet == "Corrections" and payload.get("target_source_id"):
+                        target_source_id = payload.pop("target_source_id")
+                        target_command = payload.pop("target_command")
+                        target_key, _, _ = _source_key(scenario_id, target_command, {"source_id": target_source_id})
+                        target = db.execute("SELECT id FROM change_sets WHERE idempotency_key=?", (target_key,)).fetchone()
+                        if target is None:
+                            raise ValueError("Original source_id was not found in this scenario; import the original activity first")
+                        payload["target_change_set_id"] = target["id"]
+                    if template_version == TEMPLATE_VERSION and sheet in {"Opening Positions", "Progress", "Usage", "Right Exercises", "Milestones", "Adjustments", "Reassessments", "Amendments", "Corrections", "Commands"} and not payload.get("source_id"):
+                        raise ValueError("This activity requires a stable source_id")
+                    if template_version == TEMPLATE_VERSION and sheet == "Billing" and not (payload.get("source_id") or payload.get("reference")):
+                        raise ValueError("Billing requires a source_id or invoice reference")
+                    key, source_id, identity = _source_key(scenario_id, command, payload)
+                    if db.execute("SELECT 1 FROM change_sets WHERE idempotency_key=?", (key,)).fetchone():
+                        raise ValueError("This source row was already imported. Use a source correction for changed facts; give genuinely distinct identical rows unique source_id values")
+                    if scenario_id != "main":
+                        main_key = "import:" + hashlib.sha256(dumps(["main", command, identity]).encode()).hexdigest()
+                        if db.execute("SELECT 1 FROM change_sets WHERE idempotency_key=?", (main_key,)).fetchone():
+                            raise ValueError("This source row is already accepted in Main")
+                    payload["import_source_identity"] = identity
+                    request_hash = hashlib.sha256(dumps({"command": command, "payload": payload, "scenario_id": scenario_id}).encode()).hexdigest()
+                    result = app._execute_in(db, command, payload, scenario_id, f"excel:{filename}:v{template_version}:{sheet}:{row}", key, request_hash)
+                    results.append({"sheet": sheet, "row": row, "command": command, "source_id": source_id, "effective_date": payload.get("effective_date") or payload.get("start_date") or "", "status": "accepted", **result})
+                    counts[command] = counts.get(command, 0) + 1
+                    if command == "record_billing":
+                        input_billing += Decimal(payload["amount"])
+                    elif command == "record_usage":
+                        input_units += Decimal(payload["quantity"])
+                    elif command == "record_opening_position":
+                        opening_positions.append({
+                            "contract_id": payload["contract_id"], "cutover_date": payload["effective_date"],
+                            "recognized_to_date": f"{sum((Decimal(item['recognized_to_date']) for item in payload['opening_obligations']), Decimal(0)):.2f}",
+                            "billed_to_date": payload["billed_to_date"], "contract_asset": payload["contract_asset"],
+                            "deferred_revenue": payload["deferred_revenue"], "source_name": payload["source_name"],
+                            "obligations": payload["opening_obligations"],
+                        })
                 except (ValueError, KeyError, TypeError) as exc:
                     raise ValueError(f"{sheet} row {row}: {exc}. No accounting rows were imported.") from exc
-            state = app._state(db, scenario_id, period or date.today().strftime("%Y-%m"))
+            state = app._state(db, scenario_id, selected_period)
+            comparison = compare_reports(before["report"], state["report"])
+            candidate_periods = {selected_period, *comparison["affected_periods"]}
+            candidate_periods.update(row["effective_date"][:7] for row in results if row["effective_date"])
+            period_impacts = []
+            for candidate in sorted(candidate_periods):
+                prior_report = before["report"] if candidate == selected_period else app._state(db, scenario_id, candidate, before["frontier"])["report"]
+                next_report = state["report"] if candidate == selected_period else app._state(db, scenario_id, candidate)["report"]
+                delta = {key: f"{Decimal(next_report['summary'][key]) - Decimal(prior_report['summary'][key]):.2f}" for key in ("revenue", "billings", "deferred_revenue", "contract_asset", "remaining_revenue")}
+                if any(Decimal(value) != 0 for value in delta.values()) or prior_report["journals"] != next_report["journals"]:
+                    period_impacts.append({"period": candidate, "delta": delta, "journal_changed": prior_report["journals"] != next_report["journals"]})
+            comparison["affected_periods"] = sorted(set(comparison["affected_periods"]) | {row["period"] for row in period_impacts})
+            result = {"imported": len(results), "rows": results, "template_version": template_version, "file_hash": file_hash,
+                      "controls": {"counts": counts, "source_billing_total": f"{input_billing:.2f}", "source_usage_quantity": str(input_units), "opening_positions": opening_positions}}
+            if preview:
+                return {"result": result, "before": before["report"], "state": state, "comparison": comparison, "period_impacts": period_impacts, "frontier": before["frontier"]}
             db.commit()
-            return {"result": {"imported": len(results), "rows": results, "template_version": TEMPLATE_VERSION, "backup_path": str(backup)}, "state": state}
+            return {"result": {**result, "backup_path": str(backup)}, "state": state}
         finally:
             if db.in_transaction:
                 db.rollback()
+
+
+def preview_import_bytes(app, data, filename="import.xlsx", scenario_id="main", period=None):
+    return _import_bytes(app, data, filename, scenario_id, period, True)
+
+
+def import_bytes(app, data, filename="import.xlsx", scenario_id="main", period=None, expected_frontier=None, expected_hash=None):
+    return _import_bytes(app, data, filename, scenario_id, period, False, expected_frontier, expected_hash)

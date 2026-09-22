@@ -327,6 +327,7 @@ export function JournalsTable({
             <th>Account</th>
             <th>Contract</th>
             <th>Description</th>
+            <th>Dimensions</th>
             <th className="number">Debit</th>
             <th className="number">Credit</th>
           </tr>
@@ -353,6 +354,7 @@ export function JournalsTable({
                 )}
               </td>
               <td className="muted">{row.description}</td>
+              <td>{Object.entries(row.dimensions || {}).map(([key, value]) => `${key}: ${value}`).join(" · ") || "—"}{row.account_profile_id && <small className="cell-subtitle">Profile {row.account_profile_id}</small>}</td>
               <td className="number">
                 {Number(row.debit) === 0 ? "—" : money(row.debit, currency)}
               </td>
@@ -364,7 +366,7 @@ export function JournalsTable({
         </tbody>
         <tfoot>
           <tr>
-            <th colSpan={3}>Total</th>
+            <th colSpan={4}>Total</th>
             <th className="number">
               {money(total(rows.map((row) => row.debit)), currency)}
             </th>

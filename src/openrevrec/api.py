@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import io
+import csv
 import json
+import re
 import secrets
 from pathlib import Path
 from urllib.parse import urlparse
@@ -15,7 +17,7 @@ from werkzeug.utils import secure_filename
 from . import __version__
 from .application import Application
 from .demo import load_demo
-from .interchange import export_bytes, import_bytes, template_bytes
+from .interchange import export_bytes, export_package_bytes, import_bytes, preview_import_bytes, template_bytes
 from .workspace import identifier, now
 
 
@@ -95,6 +97,13 @@ def create_app(application: Application, token=None, static_dir=None):
         filename = secure_filename(f"OpenRevRec-{state['report']['period']}-{state['scenario_id']}.xlsx")
         return send_file(io.BytesIO(export_bytes(state, bundle["review"])), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name=filename)
 
+    @app.get("/api/export-package")
+    def export_package():
+        bundle = application.report_bundle(request.args.get("scenario_id", "main"), request.args.get("period"))
+        state = bundle["state"]
+        filename = secure_filename(f"OpenRevRec-{state['report']['period']}-{state['scenario_id']}-support.zip")
+        return send_file(io.BytesIO(export_package_bytes(state, bundle["review"], application.workspace)), mimetype="application/zip", as_attachment=True, download_name=filename)
+
     @app.post("/api/import")
     def import_workbook():
         file = request.files.get("file")
@@ -102,6 +111,8 @@ def create_app(application: Application, token=None, static_dir=None):
             raise ValueError("Choose an .xlsx import workbook.")
         name = secure_filename(file.filename) or "import.xlsx"
         data = file.read()
+        if not request.form.get("expected_hash") or not request.form.get("expected_frontier"):
+            raise ValueError("Preview this workbook before importing it.")
         # Retain source and row outcome independently of the all-or-nothing accounting import.
         import_id = identifier("import")
         folder = application.workspace.path / "attachments" / import_id
@@ -109,12 +120,22 @@ def create_app(application: Application, token=None, static_dir=None):
         (folder / name).write_bytes(data)
         result_path = folder / "result.json"
         try:
-            response = import_bytes(application, data, name, request.form.get("scenario_id", "main"), request.form.get("period"))
+            response = import_bytes(application, data, name, request.form.get("scenario_id", "main"), request.form.get("period"), request.form["expected_frontier"], request.form["expected_hash"])
             result_path.write_text(json.dumps({"id": import_id, "source": name, "recorded_at": now(), "status": "accepted", **response["result"]}, indent=2))
             return jsonify(response)
         except ValueError as exc:
-            result_path.write_text(json.dumps({"id": import_id, "source": name, "recorded_at": now(), "status": "rejected", "error": str(exc)}, indent=2))
+            match = re.match(r"^(.+?) row (\d+): (.+)$", str(exc))
+            errors = [{"sheet": match.group(1), "row": int(match.group(2)), "message": match.group(3)}] if match else [{"sheet": "Workbook", "row": "", "message": str(exc)}]
+            result_path.write_text(json.dumps({"id": import_id, "source": name, "recorded_at": now(), "status": "rejected", "error": str(exc), "errors": errors}, indent=2))
             raise
+
+    @app.post("/api/import/preview")
+    def preview_import_workbook():
+        file = request.files.get("file")
+        if not file or not file.filename.lower().endswith(".xlsx"):
+            raise ValueError("Choose an .xlsx import workbook.")
+        name = secure_filename(file.filename) or "import.xlsx"
+        return jsonify(preview_import_bytes(application, file.read(), name, request.form.get("scenario_id", "main"), request.form.get("period")))
 
     @app.get("/api/imports")
     def imports():
@@ -122,6 +143,23 @@ def create_app(application: Application, token=None, static_dir=None):
         for file in application.workspace.path.glob("attachments/import_*/result.json"):
             records.append(json.loads(file.read_text()))
         return jsonify(imports=sorted(records, key=lambda r: r["recorded_at"], reverse=True))
+
+    @app.get("/api/imports/<import_id>/errors.csv")
+    def import_errors(import_id):
+        if not re.fullmatch(r"import_[a-f0-9]{16}", import_id):
+            raise ValueError("Import result was not found.")
+        result_path = application.workspace.path / "attachments" / import_id / "result.json"
+        if not result_path.is_file():
+            raise ValueError("Import result was not found.")
+        result = json.loads(result_path.read_text())
+        if result.get("status") != "rejected":
+            raise ValueError("This import has no error rows.")
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Sheet", "Row", "Error"])
+        for error in result.get("errors", []):
+            writer.writerow([error["sheet"], error["row"], error["message"]])
+        return send_file(io.BytesIO(output.getvalue().encode("utf-8-sig")), mimetype="text/csv", as_attachment=True, download_name=f"OpenRevRec-{import_id}-errors.csv")
 
     @app.post("/api/demo")
     def demo():
@@ -139,14 +177,20 @@ def create_app(application: Application, token=None, static_dir=None):
         query = request.args.get("q", "").casefold().strip()
         state = application.state(request.args.get("scenario_id", "main"), request.args.get("period"))
         found = []
-        def add(kind, id, name, **extra):
-            if query in str(name).casefold() or query in id.casefold():
+        seen = set()
+        def add(kind, id, name, *keywords, **extra):
+            identity = (kind, id, extra.get("contract_id"))
+            if identity in seen:
+                return
+            if any(query in str(value or "").casefold() for value in (name, id, *keywords)):
                 found.append({"type": kind, "id": id, "name": name, "entity_id": id, **extra})
+                seen.add(identity)
         for c in state["customers"]:
-            add("customer", c["id"], c["name"])
+            add("customer", c["id"], c["name"], c.get("reference"), c.get("source_system"))
         for c in state["contracts"]:
-            add("contract", c["id"], c["name"], contract_id=c["id"])
-            for o in c["obligations"]:
+            add("contract", c["id"], c["name"], c.get("reference"), contract_id=c["id"])
+            obligations = c["obligations"] + [o for event in c["activities"] for o in event.get("obligations", [])]
+            for o in obligations:
                 add("obligation", o["id"], o["name"], contract_id=c["id"])
             for event in c["activities"]:
                 if event.get("reference"):
@@ -175,6 +219,19 @@ def create_app(application: Application, token=None, static_dir=None):
         except Exception:
             full_path.unlink(missing_ok=True)
             raise
+
+    @app.post("/api/evidence/reuse")
+    def reuse_evidence():
+        body = request.get_json() or {}
+        scenario_id = body.get("scenario_id", "main")
+        source = next((item for item in application.state(scenario_id, body.get("period"))["evidence"] if item["id"] == body.get("evidence_id")), None)
+        if source is None:
+            raise ValueError("Choose an existing evidence file in this scenario.")
+        payload = {"name": source["name"], "path": source["path"], "rationale": body.get("rationale", "")}
+        payload.update({key: body[key] for key in ("entity_id", "target_change_set_id", "obligation_id", "period_close_id") if body.get(key)})
+        if not payload.get("target_change_set_id") and not payload.get("entity_id"):
+            raise ValueError("Choose a contract, customer, or accounting change to link this evidence to.")
+        return jsonify(application.execute("attach_evidence", payload, scenario_id=scenario_id, period=body.get("period"), source="desktop"))
 
     @app.get("/api/evidence/<evidence_id>")
     def get_evidence(evidence_id):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import date
 from pathlib import Path
 
 from .application import Application
@@ -18,6 +19,8 @@ def parser():
     init.add_argument("path")
     init.add_argument("--name", default="My company")
     init.add_argument("--currency", default="USD")
+    init.add_argument("--account-effective-period", "--opening-period", dest="account_effective_period")
+    init.add_argument("--accounts-json")
     for action in ("serve", "state", "command", "preview", "demo", "export", "import", "sql", "mcp"):
         p = sub.add_parser(action)
         p.add_argument("--workspace", required=True)
@@ -47,7 +50,14 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         if args.action == "init":
+            from .application import valid_period, DEFAULT_ACCOUNTS
+            account_effective_period = valid_period(args.account_effective_period) if args.account_effective_period else None
+            accounts = json.loads(args.accounts_json) if args.accounts_json else None
+            if accounts is not None and (not isinstance(accounts, dict) or set(accounts) != set(DEFAULT_ACCOUNTS) or any(not isinstance(value, str) or not value.strip() for value in accounts.values())):
+                raise ValueError("Initial account mappings must provide all four nonempty journal roles.")
             workspace = Workspace.create(args.path, args.name, args.currency)
+            if accounts is not None or account_effective_period is not None:
+                Application(workspace.path).execute("set_policy", {"effective_period": account_effective_period or date.today().strftime("%Y-%m"), "accounts": accounts or DEFAULT_ACCOUNTS, "account_transition": "transfer", "rationale": "Initial workspace account mapping"})
             print(json.dumps({"path": str(workspace.path)}))
             return 0
         if args.action == "template":

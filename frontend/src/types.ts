@@ -3,6 +3,7 @@ export type Customer = {
   name: string;
   email?: string;
   reference?: string;
+  source_system?: string;
   description?: string;
 };
 export type Component = {
@@ -14,6 +15,9 @@ export type Component = {
   potential_amount?: string;
   estimated_amount?: string;
   estimation_method?: string;
+  allocation_scope?: "relative_ssp" | "specific";
+  target_obligation_ids?: string[];
+  allocation_rationale?: string;
   rationale?: string;
 };
 export type Obligation = {
@@ -48,6 +52,7 @@ export type Contract = {
   customer_id: string;
   start_date: string;
   end_date: string;
+  cutover_date?: string;
   consideration: Component[];
   obligations: Obligation[];
   activities: Activity[];
@@ -75,6 +80,15 @@ export type ContractReport = Totals & {
     ssp: string;
     amount: string;
   }[];
+  allocation_components?: {
+    component_id: string;
+    label: string;
+    kind: string;
+    included_amount: string;
+    scope: "relative_ssp" | "specific";
+    target_obligation_ids: string[];
+    rationale: string;
+  }[];
 };
 export type Journal = {
   id: string;
@@ -88,6 +102,13 @@ export type Journal = {
   debit_minor: number;
   credit_minor: number;
   description: string;
+  account_profile_id?: string;
+  dimensions?: Record<string, string>;
+};
+export type AccountProfile = {
+  name: string;
+  accounts: Record<string, string>;
+  dimensions: Record<string, string>;
 };
 export type Schedule = {
   period: string;
@@ -108,6 +129,7 @@ export type CatchUp = {
 };
 export type Report = {
   period: string;
+  journal_batch_id?: string;
   policy_version?: number;
   policy_effective_period?: string;
   policy_accounts?: Record<string, string>;
@@ -144,6 +166,7 @@ export type Note = {
   kind: string;
   body: string;
   due_date?: string;
+  period?: string;
   created_at?: string;
   completed?: boolean;
 };
@@ -169,6 +192,36 @@ export type Evidence = {
   rationale?: string;
   recorded_at?: string;
 };
+export type JudgmentReview = {
+  target_change_set_id: string;
+  reviewer: string;
+  disposition: "supported" | "exception";
+  conclusion: string;
+  support_memo: string;
+  exception_reason?: string;
+  recorded_at: string;
+  change_set_id: string;
+};
+export type PostingComparison = {
+  source_batch_id: string;
+  target_batch_id: string;
+  source_close_id?: string | null;
+  posting_references: string[];
+  current_batch_posted: boolean;
+  target_closed: boolean;
+  available: boolean;
+  lines: {
+    contract_id: string;
+    account: string;
+    dimensions: Record<string, string>;
+    roles: string[];
+    obligation_ids: string[];
+    posted_net: string;
+    revised_net: string;
+    debit: string;
+    credit: string;
+  }[];
+};
 export type State = {
   workspace: { id: string; name: string; currency: string; created_at: string };
   policy: {
@@ -177,11 +230,24 @@ export type State = {
     currency: string;
     rounding: string;
     accounts: Record<string, string>;
+    account_overrides?: {
+      contracts: Record<string, Record<string, string>>;
+      obligations: Record<string, Record<string, string>>;
+    };
+    account_profiles?: Record<string, AccountProfile>;
+    profile_assignments?: Record<string, string>;
+    account_transition?: "transfer" | "external";
   };
   policy_versions: {
     version: number;
     effective_period: string;
     accounts: Record<string, string>;
+    account_overrides?: {
+      contracts: Record<string, Record<string, string>>;
+      obligations: Record<string, Record<string, string>>;
+    };
+    account_profiles?: Record<string, AccountProfile>;
+    profile_assignments?: Record<string, string>;
     change_set_id?: string;
   }[];
   customers: Customer[];
@@ -191,6 +257,9 @@ export type State = {
   closes: Close[];
   notes: Note[];
   evidence?: Evidence[];
+  judgment_reviews?: JudgmentReview[];
+  postings?: { period: string; batch_id: string; close_id?: string; external_journal_reference: string; posted_date: string; rationale: string; recorded_at: string }[];
+  posting_comparisons?: PostingComparison[];
   report: Report;
   scenario_id: string;
   frontier: number;
@@ -203,10 +272,14 @@ export type Comparison = {
     scenario_revenue: string;
     delta: string;
   }[];
+  details?: { period: string; contract_id: string; obligation_id: string; current: string; proposed: string; delta: string }[];
+  affected_periods?: string[];
+  proposals?: { id: string; command: string; entity_id: string; effective_date: string; rationale: string }[];
+  conflicts?: { command: string; entity_id: string; version: number }[];
   summary: Partial<Totals>;
   [key: string]: unknown;
 };
-export type Preview = { before: Report; state: State; comparison?: Comparison };
+export type Preview = { before: Report; state: State; comparison?: Comparison; selected_period?: string; focus_period?: string };
 export type View =
   | "Home"
   | "Customers"

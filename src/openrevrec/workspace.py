@@ -76,7 +76,7 @@ CREATE VIEW IF NOT EXISTS accounting_activity AS
     SELECT version, id AS change_set_id, scenario_id, entity_id AS contract_id,
            command AS activity_type, effective_date, recorded_at, source, rationale, payload
     FROM change_sets WHERE command IN ('record_billing','record_progress','record_usage',
-       'record_milestone','record_adjustment','modify_contract','reassess_variable_consideration');
+       'record_milestone','record_adjustment','modify_contract','reassess_variable_consideration','correct_activity');
 CREATE VIEW IF NOT EXISTS accounting_versions AS
     SELECT entity_id, scenario_id, version, command, effective_date AS effective_from,
            lead(effective_date) OVER (PARTITION BY entity_id, scenario_id ORDER BY effective_date,version) AS next_effective_date,

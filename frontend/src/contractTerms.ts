@@ -40,5 +40,10 @@ export function changeComponentKind(item: Component, kind: string): Component {
     delete next.estimated_amount;
     delete next.estimation_method;
   }
+  if (kind === "fixed") {
+    delete next.allocation_scope;
+    delete next.target_obligation_ids;
+    delete next.allocation_rationale;
+  }
   return next;
 }

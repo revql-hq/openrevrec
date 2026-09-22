@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import io
+import json
+import zipfile
 import pytest
+from openpyxl import load_workbook
 
 from openrevrec.api import create_app
 from openrevrec.application import Application
+from openrevrec.interchange import template_bytes
 
 
 def client(tmp_path, token="secret", static_dir=None):
@@ -59,6 +63,30 @@ def test_static_app_and_json_errors(tmp_path):
     assert "Unknown command" in response.get_json()["error"]
 
 
+def test_import_route_requires_reviewed_file_and_workspace_frontier(tmp_path):
+    web, application = client(tmp_path)
+    headers = {"Authorization": "Bearer secret"}
+    book = load_workbook(io.BytesIO(template_bytes()))
+    book["Customers"].append(["cus_import", "Imported customer", "", "CRM-1", "CRM"])
+    data = io.BytesIO(); book.save(data); book.close()
+    source = data.getvalue()
+    review = web.post("/api/import/preview", data={"file": (io.BytesIO(source), "customers.xlsx"), "period": "2026-09"}, headers=headers, content_type="multipart/form-data")
+    assert review.status_code == 200
+    assert application.state(period="2026-09")["customers"] == []
+    unreviewed = web.post("/api/import", data={"file": (io.BytesIO(source), "customers.xlsx"), "period": "2026-09"}, headers=headers, content_type="multipart/form-data")
+    assert unreviewed.status_code == 400
+    preview = review.get_json()
+    accepted = web.post("/api/import", data={"file": (io.BytesIO(source), "customers.xlsx"), "period": "2026-09", "expected_hash": preview["result"]["file_hash"], "expected_frontier": str(preview["frontier"])}, headers=headers, content_type="multipart/form-data")
+    assert accepted.status_code == 200
+    assert application.state(period="2026-09")["customers"][0]["reference"] == "CRM-1"
+    duplicate = web.post("/api/import", data={"file": (io.BytesIO(source), "customers.xlsx"), "period": "2026-09", "expected_hash": preview["result"]["file_hash"], "expected_frontier": str(application.state(period="2026-09")["frontier"])}, headers=headers, content_type="multipart/form-data")
+    assert duplicate.status_code == 400
+    rejected = next(row for row in web.get("/api/imports", headers=headers).get_json()["imports"] if row["status"] == "rejected")
+    errors = web.get(f"/api/imports/{rejected['id']}/errors.csv", headers=headers)
+    assert errors.status_code == 200
+    assert b"Customers,2" in errors.data
+
+
 def test_evidence_upload_is_linked_and_downloadable(tmp_path):
     web, _ = client(tmp_path)
     headers = {"Authorization": "Bearer secret"}
@@ -78,9 +106,23 @@ def test_evidence_upload_is_linked_and_downloadable(tmp_path):
     downloaded = web.get(f"/api/evidence/{document['id']}", headers=headers)
     assert downloaded.status_code == 200
     assert downloaded.data == b"signed agreement"
+    reuse = web.post("/api/evidence/reuse", json={"evidence_id": document["id"], "entity_id": customer_id, "rationale": "Same signed agreement supports the legal entity record."}, headers=headers)
+    assert reuse.status_code == 200
+    linked = web.get("/api/state", headers=headers).get_json()["evidence"]
+    assert len(linked) == 2
+    assert linked[0]["path"] == linked[1]["path"]
+    assert linked[0]["id"] != linked[1]["id"]
+    package_response = web.get("/api/export-package?period=2026-09", headers=headers)
+    assert package_response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(package_response.data)) as package:
+        assert package.read(document["path"]) == b"signed agreement"
+        assert package.read("OpenRevRec-support.xlsx")[:2] == b"PK"
+        manifest = json.loads(package.read("manifest.json"))
+        assert len(manifest["evidence"]) == 2
+        assert len(manifest["files_sha256"]) == 1
 
 
-def test_evidence_upload_links_exact_judgment_and_clears_its_review_item(tmp_path):
+def test_evidence_upload_is_traceable_but_review_clears_judgment_item(tmp_path):
     web, _ = client(tmp_path)
     headers = {"Authorization": "Bearer secret"}
     web.post("/api/demo", json={}, headers=headers)
@@ -94,9 +136,16 @@ def test_evidence_upload_links_exact_judgment_and_clears_its_review_item(tmp_pat
     }, headers=headers, content_type="multipart/form-data")
     assert response.status_code == 200
     after = web.get("/api/reports?period=2026-09", headers=headers).get_json()
-    assert judgment["change_set_id"] not in {row["change_set_id"] for row in after["exceptions"]["evidence"]}
+    assert judgment["change_set_id"] in {row["change_set_id"] for row in after["exceptions"]["evidence"]}
     detail = web.get(f"/api/changes/{judgment['change_set_id']}?period=2026-09", headers=headers).get_json()
     assert detail["evidence"][0]["name"] == "calculation.txt"
+    recorded = web.post("/api/commands", json={"command": "record_judgment_review", "scenario_id": "main", "period": "2026-09", "payload": {
+        "target_change_set_id": judgment["change_set_id"], "reviewer": "Accountant", "disposition": "supported",
+        "conclusion": "Terms support the recorded treatment", "support_memo": "Reviewed calculation and signed terms",
+    }}, headers=headers)
+    assert recorded.status_code == 200
+    final = web.get("/api/reports?period=2026-09", headers=headers).get_json()
+    assert judgment["change_set_id"] not in {row["change_set_id"] for row in final["exceptions"]["evidence"]}
 
 
 @pytest.mark.parametrize("route,payload", [

@@ -1,0 +1,32 @@
+# Forms assumptions review: implementation status
+
+This tracks the September 22 screen-by-screen review. "Addressed" means the specific observed failure has a working path and regression coverage where accounting behavior changed. "Partial" means the remaining boundary is still real; a warning or a label is not accounting support.
+
+| Finding | Status | Current boundary or next work |
+| --- | --- | --- |
+| 1. Account mapping | Partial | Four roles now map through reusable profiles, contract overrides, and obligation revenue overrides. A profile carries named dimensions to its contracts' journal lines, with an explicit overall-balanced transfer when dimensions change. Obligation-specific dimensions and ERP segment balancing remain unsupported. |
+| 2. Mapping transitions | Partial | Opening balance transfer and external reconciliation are explicit. Historical-account runoff remains unmodeled. |
+| 3. Workspace setup | Partial | Desktop setup asks for company, reporting currency, account-effective month, and defaults. Contract-level monthly cutover is available; fiscal calendar, FX, and parallel books remain outside scope. |
+| 4. Opening positions | Partial | Home filters by active service terms or outstanding position. A contract can enter a reconciled monthly opening position through its form or workbook; pre-cutover periods are excluded, and a declared cutover requires the opening before further activity. Legacy source-population completeness and complex historical modifications still need review. |
+| 5. Customer identity | Addressed | Customer choice is deliberate; source-system references are unique within their source. |
+| 6. Contract defaults | Partial | Prices/SSP are blank, template is deliberate, annual end is inclusive and correct. Evergreen accounting terms remain unsupported. |
+| 7. Allocation exceptions | Partial | Variable, usage, and credit components can target current obligations with a rationale and exact reconciliation. Period-specific targeting and prospective modifications retaining targeted components remain unsupported. |
+| 8. Recognition entry | Addressed | Exact days, equal touched months, and normalized calendar-month proration are distinct choices with entry previews; activity measures show prior/proposed values. |
+| 9. Material rights | Partial | Exercise before later time-based or point-in-time delivery is recorded separately from satisfaction; unexercised rights still recognize at expiry. The right's allocation is scheduled through delivery, but additional renewal consideration and linkage to a separate renewal contract remain outside this path. |
+| 10. Usage | Partial | Finite-unit language is explicit. Metered rates, overages, and uncapped consumption remain unsupported. |
+| 11. Corrections | Addressed | Source facts can be corrected without rewriting history, including imported facts. Negative billing credits link to a workspace invoice or an external original invoice reference. |
+| 12. Balance classification | Partial | Journal screen labels contract asset as simplified revenue less billing. Unconditional receivables and cash-before-invoice events remain outside the model. |
+| 13. Modifications | Partial | Treatment is deliberate, empty-obligation termination is allowed, and date edits are guarded. Mixed treatments and linked separate contracts remain. |
+| 14. Temporal contract views | Addressed | Effective terms are the default, baseline remains available, and change detail shows before/after terms. |
+| 15. Financial preview | Addressed | Preview focuses the effective period and shows affected periods, obligations, and journal differences. |
+| 16. Revenue screen | Addressed | Unscheduled revenue is visible; horizon and customer filters limit the matrix; calendar-month scope is explicit. |
+| 17. Scenarios | Partial | Comparison lists proposals and accounting detail, and rebase ignores descriptive edits. Complex accounting conflicts still require review. |
+| 18. Journal handoff | Addressed | Posting guide, account detail, stable batch ID, and user-entered external journal references are available. A revised close now has a balanced replacement delta against each recorded posted checkpoint in the journal screen and workbook. The accountant must confirm which batch is in the ledger; the app does not post or verify it. |
+| 19. Close controls | Partial | Independent billing and GL totals, optional close cutoff, scenario relevance, period-linked tasks, and accepted exceptions are in place. Source population completeness still needs review. |
+| 20. Close enforcement | Addressed | Blocking checks prevent close and every review item needs a recorded reason. Prior-period catch-up policy remains a separate design question. |
+| 21. Import acceptance | Addressed | Read-only preview, atomic commit, source identity, duplicate detection, and stale-preview guard are in place. |
+| 22. Import usability | Addressed | Structured amendment/correction sheets, command ordering, and downloadable row errors are in place. |
+| 23. Change explanation | Addressed | Term comparisons, correction links, and broader reference search are available. |
+| 24. Evidence | Addressed | Existing files can be reused and a ZIP includes the workbook and indexed files. A named reviewer records a conclusion, basis, and supported or exception disposition for each judgment change; file presence alone never clears close review. The recorded conclusion remains the accountant's responsibility. |
+
+The [pilot boundary cases](accounting-boundary-cases.md) specify the examples and expected outputs to collect before extending the remaining calculations. The next accounting-model work should address period-specific allocation, mixed modifications, material-right delivery, and metered pricing. Legacy population completeness and historical amendments also require a migration review even when opening balances reconcile. Until then, the entry screens must keep these boundaries visible. [AASB 15 paragraphs 73 and 84–86](https://standards.aasb.gov.au/aasb-15-dec-2022) distinguish the relative-SSP default from the criteria for allocating variable consideration to particular obligations; the product should capture the accountant's conclusion rather than infer it from a price label.

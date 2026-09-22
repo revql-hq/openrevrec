@@ -28,6 +28,7 @@ import {
   CustomerForm,
   ContractForm,
   ActivityForm,
+  OpeningPositionForm,
   ScenarioForm,
   LifecycleForm,
   CloseForm,
@@ -54,9 +55,10 @@ declare global {
   interface Window {
     orrDesktop?: {
       platform: string;
-      getWorkspace: () => Promise<{ path: string; name: string }>;
+      getWorkspace: () => Promise<{ path: string; name: string; needsSetup: boolean }>;
       openWorkspace: () => Promise<unknown>;
-      createWorkspace: () => Promise<unknown>;
+      createWorkspace: (setup: { name: string; currency: string; openingPeriod: string; accounts: Record<string, string> }) => Promise<unknown>;
+      onCreateWorkspaceRequested: (callback: () => void) => () => void;
     };
   }
 }
@@ -65,6 +67,7 @@ export type Dialog = {
     | "customer"
     | "contract"
     | "activity"
+    | "opening_position"
     | "scenario"
     | "lifecycle"
     | "close"
@@ -116,6 +119,7 @@ export default function App() {
     [collapsed, setCollapsed] = useState(false),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true),
+    [setupRequired, setSetupRequired] = useState(false),
     [notice, setNotice] = useState("");
   // Never render commands for a new selection using the previous selection's data.
   const state =
@@ -170,6 +174,15 @@ export default function App() {
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
+  }, []);
+  useEffect(() => window.orrDesktop?.onCreateWorkspaceRequested(() => setDialog({ type: "workspace", action: "create" })), []);
+  useEffect(() => {
+    void window.orrDesktop?.getWorkspace().then((value) => {
+      if (value.needsSetup) {
+        setSetupRequired(true);
+        setDialog({ type: "workspace", action: "create" });
+      }
+    }).catch((e) => setError((e as Error).message));
   }, []);
   useEffect(() => {
     if (!notice) return;
@@ -484,7 +497,11 @@ export default function App() {
               {...formProps}
               contract={contract}
               activity={dialog.activity || "billing"}
+              correctionTarget={dialog.action === "correct" ? contract.activities.find((activity) => activity.id === dialog.entityId) : undefined}
             />
+          )}{" "}
+          {dialog.type === "opening_position" && contract && (
+            <OpeningPositionForm {...formProps} contract={contract} />
           )}{" "}
           {dialog.type === "scenario" && <ScenarioForm {...formProps} />}{" "}
           {dialog.type === "lifecycle" && (
@@ -505,7 +522,7 @@ export default function App() {
             <DetailsForm {...formProps} entity={detailEntity} />
           )}{" "}
           {dialog.type === "workspace" && (
-            <WorkspaceDialog state={state!} onClose={() => setDialog(null)} />
+            <WorkspaceDialog state={state!} initialCreate={dialog.action === "create"} setupRequired={setupRequired} onClose={() => { if (!setupRequired) setDialog(null); }} />
           )}
         </>
       )}
@@ -514,13 +531,23 @@ export default function App() {
 }
 function WorkspaceDialog({
   state,
+  initialCreate,
+  setupRequired,
   onClose,
 }: {
   state: State;
+  initialCreate: boolean;
+  setupRequired: boolean;
   onClose: () => void;
 }) {
   const [path, setPath] = useState(""),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [creating, setCreating] = useState(initialCreate),
+    [busy, setBusy] = useState(false),
+    [name, setName] = useState(""),
+    [currency, setCurrency] = useState("USD"),
+    [openingPeriod, setOpeningPeriod] = useState(new Date().toLocaleDateString("en-CA").slice(0, 7)),
+    [accounts, setAccounts] = useState<Record<string, string>>({ revenue: "4000", deferred_revenue: "2300", contract_asset: "1200", billing_clearing: "1100" });
   useEffect(() => {
     window.orrDesktop
       ?.getWorkspace()
@@ -528,22 +555,24 @@ function WorkspaceDialog({
       .catch((e) => setError(e.message));
   }, []);
   const change = async (create: boolean) => {
+    setBusy(true);
+    setError("");
     try {
-      if (create) await window.orrDesktop?.createWorkspace();
+      if (create) await window.orrDesktop?.createWorkspace({ name: name.trim(), currency, openingPeriod, accounts });
       else await window.orrDesktop?.openWorkspace();
     } catch (e) {
       setError((e as Error).message);
-    }
+    } finally { setBusy(false); }
   };
   return (
     <Modal title="Workspace" onClose={onClose}>
       <div className="modal-body">
-        <h3>{state.workspace.name}</h3>
+        <h3>{setupRequired ? "Set up your first workspace" : state.workspace.name}</h3>
         <p className="muted">
           Your accounting data lives in a local .orr directory.
         </p>
-        {path && <code className="path">{path}</code>}
-        <dl className="definition-list">
+        {!setupRequired && path && <code className="path">{path}</code>}
+        {!setupRequired && <dl className="definition-list">
           <div>
             <dt>Currency</dt>
             <dd>{state.workspace.currency}</dd>
@@ -552,17 +581,24 @@ function WorkspaceDialog({
             <dt>Workspace ID</dt>
             <dd className="mono">{state.workspace.id}</dd>
           </div>
-        </dl>
-        {window.orrDesktop ? (
-          <div className="button-group workspace-actions">
-            <Button onClick={() => change(false)}>
-              <FolderOpen size={15} />
-              Open workspace
-            </Button>
-            <Button primary onClick={() => change(true)}>
-              <Plus size={15} />
-              Create workspace
-            </Button>
+        </dl>}
+        {window.orrDesktop ? (creating ? (
+          <form onSubmit={(event) => { event.preventDefault(); void change(true); }}>
+            <label className="field">Company name<input required value={name} onChange={(event) => setName(event.target.value)} placeholder="Company name" /></label>
+            <div className="form-grid">
+              <label className="field">Reporting currency<select value={currency} onChange={(event) => setCurrency(event.target.value)}>{["USD", "EUR", "GBP", "CAD", "AUD"].map((code) => <option key={code}>{code}</option>)}</select></label>
+              <label className="field">Default accounts effective from<input required type="month" value={openingPeriod} onChange={(event) => setOpeningPeriod(event.target.value)} /></label>
+            </div>
+            <p className="muted">Choose the four default journal roles. You can assign more specific accounts to contracts and obligations later.</p>
+            <div className="form-grid">{([
+              ["revenue", "Revenue"], ["deferred_revenue", "Deferred revenue"], ["contract_asset", "Contract asset"], ["billing_clearing", "Billing clearing"],
+            ] as const).map(([role, label]) => <label className="field" key={role}>{label}<input required value={accounts[role]} onChange={(event) => setAccounts({ ...accounts, [role]: event.target.value })} /></label>)}</div>
+            <p className="muted">The workspace uses one reporting currency and calendar months. This setup does not import opening balances or configure foreign exchange.</p>
+            <div className="button-group workspace-actions"><Button type="button" onClick={() => setCreating(false)}>Back</Button><Button primary type="submit" disabled={busy}>Create workspace</Button></div>
+          </form>
+        ) : <div className="button-group workspace-actions">
+            <Button onClick={() => void change(false)} disabled={busy}><FolderOpen size={15} />Open workspace</Button>
+            <Button primary onClick={() => setCreating(true)} disabled={busy}><Plus size={15} />Create workspace</Button>
           </div>
         ) : (
           <p className="notice">

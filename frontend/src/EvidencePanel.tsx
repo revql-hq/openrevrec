@@ -3,7 +3,7 @@ import { ArrowDownToLine, FileText, Upload } from "lucide-react";
 
 import type { ViewProps } from "./App";
 import type { Evidence } from "./types";
-import { api, dateLabel } from "./api";
+import { api, dateLabel, post } from "./api";
 import { Button, Empty, ErrorMessage, Field, Section } from "./components";
 
 export function EvidencePanel({
@@ -22,6 +22,7 @@ export function EvidencePanel({
   onAttached?: () => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
+  const [reuseId, setReuseId] = useState("");
   const [rationale, setRationale] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -30,6 +31,12 @@ export function EvidencePanel({
       ? item.target_change_set_id === targetChangeSetId
       : item.entity_id === entityId,
   );
+  const seenPaths = new Set(evidence.map((item) => item.path));
+  const reusable = (props.state.evidence || []).filter((item) => {
+    if (seenPaths.has(item.path)) return false;
+    seenPaths.add(item.path);
+    return true;
+  });
 
   const upload = async () => {
     if (!file) return;
@@ -53,6 +60,19 @@ export function EvidencePanel({
     } finally {
       setBusy(false);
     }
+  };
+  const reuse = async () => {
+    if (!reuseId) return;
+    setBusy(true);
+    setError("");
+    try {
+      await post("/api/evidence/reuse", { evidence_id: reuseId, entity_id: entityId, target_change_set_id: targetChangeSetId, scenario_id: scenarioId || props.state.scenario_id, period: props.period, rationale });
+      setReuseId("");
+      setRationale("");
+      await props.refresh("Existing evidence linked.");
+      onAttached?.();
+    } catch (caught) { setError((caught as Error).message); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -81,6 +101,11 @@ export function EvidencePanel({
             placeholder="Optional evidence note"
           />
         </Field>
+        {reusable.length > 0 && <div className="upload-row">
+          <Field label="Or link a file already in this workspace"><select value={reuseId} onChange={(event) => setReuseId(event.target.value)}><option value="">Choose existing evidence</option>{reusable.map((item) => <option value={item.id} key={item.id}>{item.name} · {dateLabel(item.recorded_at)}</option>)}</select></Field>
+          <Button type="button" disabled={!reuseId} busy={busy} onClick={reuse}>Link existing</Button>
+        </div>}
+        <p className="fine-print">A linked file establishes traceability, not substantive approval of the accounting conclusion.</p>
         <ErrorMessage error={error} />
       </Section>
       <Section title="Linked evidence">

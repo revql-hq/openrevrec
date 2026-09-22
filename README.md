@@ -14,7 +14,7 @@ npm run setup
 npm run desktop
 ```
 
-The setup command creates a local Python 3.12 environment. The desktop application starts its accounting engine automatically and opens a workspace in `Documents/OpenRevRec/My company.orr`. Use **File → New workspace** or **File → Open workspace** to choose another one. The last workspace reopens on the next launch.
+The setup command creates a local Python 3.12 environment. On first desktop launch, choose a company name, reporting currency, and default account codes, then save the workspace in `Documents/OpenRevRec` or another location. Use **File → New workspace** or **File → Open workspace** later. The last workspace reopens on the next launch.
 
 For browser development:
 
@@ -31,8 +31,8 @@ Start with an empty workspace and load the example contracts from the workbench.
 1. Choose September 2026 and inspect the effective account mapping in Settings.
 2. Review each contract's consideration, obligations, allocation, billing, and revenue schedule.
 3. Record activity or create a scenario to try a different accounting conclusion.
-4. Open Reports to review close readiness, the contract balance rollforward, billing timing, recognition coverage, and active scenario impacts. Use **Open** on a check to reach the underlying record.
-5. Open an unsupported judgment, inspect its recorded rationale and financial effect, and attach the supporting file to that exact change. Review the journal, close the period, and export the support workbook.
+4. Open Reports to review close readiness, the contract balance rollforward, billing timing, recognition coverage, and active scenario impacts. Enter independent source and GL control totals for the period. Use **Open** on a check to reach the underlying record.
+5. Open each judgment change, inspect its rationale and financial effect, and record the reviewer, conclusion, and support memo. Link supporting files to the exact change when applicable. Review the journal, record reasons for any open review items, close the period, and export the workbook or evidence package.
 
 You can also create customers and contracts manually. Descriptive edits are kept separate from dated accounting changes. Supporting files can be attached to a contract or a specific judgment change. Changes go through the same application commands whether entered in the desktop application, API, Python, or an Excel import.
 
@@ -40,7 +40,7 @@ You can also create customers and contracts manually. Descriptive edits are kept
 
 A `.orr` workspace is a directory containing a normal SQLite database, metadata, and supporting folders. Copy the entire folder while OpenRevRec is closed to move it to another computer. Period close also creates a backup. See [working with workspaces](docs/workspaces.md).
 
-The current engine supports relative SSP allocation; exact-day, monthly, point-in-time, progress, usage, and milestone recognition; constrained variable consideration; explicit adjustments; prospective and cumulative catch-up changes; effective-dated journal account mappings; isolated scenarios; and closed-period checkpoints. Accounting judgments and rationale remain explicit inputs.
+The current engine supports relative SSP and specifically targeted component allocation; exact-day, equal-touched-month, prorated-calendar-month, point-in-time, progress, finite-unit usage, and milestone recognition; later delivery of an exercised material right; source-fact corrections; prospective and cumulative catch-up changes; effective-dated journal accounts with reusable profiles and contract dimensions; isolated scenarios; and closed-period checkpoints. Accounting judgments and rationale remain explicit inputs. The [assumptions tracker](docs/assumptions-progress.md) identifies contract patterns still outside the model.
 
 The [accounting guide](docs/accounting.md) explains calculation conventions and prebuilt review views. The [API guide](docs/api.md) covers commands, reports, previews, Excel interchange, and read-only SQL. The [desktop build guide](docs/desktop.md) covers native macOS and Windows packages.
 
@@ -60,7 +60,7 @@ The GitHub Actions workflow builds Windows NSIS installers and portable executab
 
 ## Current limits
 
-This is a working prototype for one person and one company currency per workspace. It is not a general ledger, billing system, consolidation system, or automatic accounting-policy evaluator. Review the accounting conclusions and resulting journals before using them in a close. The prototype does not include cloud synchronization, AI assistance, production migration guarantees, or signed installers.
+This is a working prototype for one person and one reporting currency per workspace. It is not a general ledger, billing system, consolidation system, or automatic accounting-policy evaluator. A reviewed opening-position workflow supports monthly cutover, but it does not reconstruct pre-cutover events or guarantee that legacy source populations are complete. It does not model metered-rate pricing or every material-right lifecycle, or distinguish an unconditional receivable from its simplified unbilled contract position. Review accounting conclusions and resulting journals before using them in a close. The prototype does not include cloud synchronization, AI assistance, production migration guarantees, or signed installers. See [assumptions progress](docs/assumptions-progress.md) for the remaining boundaries.
 
 Public documentation describes the available software. Product planning and internal design documents are maintained outside this repository.
 
