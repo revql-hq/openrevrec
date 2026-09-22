@@ -1028,7 +1028,7 @@ def test_export_batch_identity_changes_with_journal_not_descriptive_notes(tmp_pa
         book.close()
         return value
     first = batch_id()
-    application.execute("add_note", {"entity_id": "con_1", "body": "Internal discussion"})
+    application.execute("add_note", {"entity_id": "con_1", "body": "Descriptive note"})
     assert batch_id() == first
     application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-01", "amount": "100"}, period="2026-09")
     assert batch_id() != first
