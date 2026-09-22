@@ -97,6 +97,7 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
         row for row in state["change_sets"]
         if row.get("effective_date", "") <= period_end(period)
         and row.get("recorded_at", "")[:10] > period_end(period)
+        and row["command"] not in {"create_customer", "edit_details", "add_note", "edit_note", "attach_evidence", "close_period", "create_scenario", "apply_scenario", "rebase_scenario", "archive_scenario", "restore_scenario"}
     ]
     warning_targets = []
     for warning in report["warnings"]:

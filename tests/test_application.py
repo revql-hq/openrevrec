@@ -109,6 +109,9 @@ def test_close_readiness_flags_entries_recorded_after_period_end(tmp_path):
     cutoff = next(check for check in application.reports("main", "2020-08")["checks"] if check["id"] == "cutoff")
     assert cutoff["status"] == "review"
     assert cutoff["count"] == 1
+    (application.workspace.path / "attachments" / "later.txt").write_text("Later support")
+    application.execute("attach_evidence", {"name": "later.txt", "path": "attachments/later.txt", "entity_id": "con_late"}, period="2020-08")
+    assert next(check for check in application.reports("main", "2020-08")["checks"] if check["id"] == "cutoff")["count"] == 1
 
 
 def test_scenario_rebase_detects_same_entity_conflict(tmp_path):
