@@ -1,0 +1,60 @@
+name: Test and package desktop
+
+on:
+  push:
+    branches: [main, 'work/traceable-close']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            targets: --win nsis portable --x64
+            artifact: windows-x64
+          - os: macos-latest
+            targets: --mac zip
+            artifact: macos
+    runs-on: ${{ matrix.os }}
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: '3.12'
+      - run: uv sync --locked --extra dev
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm run build:backend
+      - run: npm run smoke:backend
+      - run: node scripts/package.mjs ${{ matrix.targets }} --publish never
+      - name: Check installed and portable Windows app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/smoke_windows.ps1
+      - name: Hash macOS app archive
+        if: runner.os == 'macOS'
+        run: shasum -a 256 release/*.zip | tee release/SHA256SUMS-macos.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenRevRec-${{ matrix.artifact }}
+          path: |
+            release/*.exe
+            release/*.zip
+            release/*.blockmap
+            release/SHA256SUMS-*.txt
+          if-no-files-found: error

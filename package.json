@@ -1,0 +1,68 @@
+{
+  "name": "openrevrec",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "description": "A local revenue accounting workbench",
+  "author": "RevQL",
+  "main": "desktop/main.cjs",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "node scripts/dev.mjs browser",
+    "desktop": "node scripts/dev.mjs desktop",
+    "build": "tsc -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
+    "test": "node scripts/python.mjs -m pytest && npm run test:frontend",
+    "test:frontend": "node --experimental-strip-types --test tests/frontend/*.test.mjs",
+    "build:backend": "node scripts/python.mjs scripts/build_backend.py",
+    "smoke:backend": "node scripts/python.mjs scripts/smoke_backend.py",
+    "package": "npm run build && npm run build:backend && node scripts/package.mjs",
+    "package:dir": "npm run build && npm run build:backend && node scripts/package.mjs --dir",
+    "package:windows": "npm run build && npm run build:backend && node scripts/package.mjs --win nsis portable",
+    "package:mac": "npm run build && npm run build:backend && node scripts/package.mjs --mac zip"
+  },
+  "dependencies": {
+    "lucide-react": "^1.47.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^44.4.3",
+    "electron-builder": "^26.15.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  },
+  "build": {
+    "appId": "com.revql.openrevrec",
+    "productName": "OpenRevRec",
+    "asar": true,
+    "electronDownload": { "cache": "build/electron-cache" },
+    "directories": { "output": "release" },
+    "files": ["desktop/**/*", "package.json", "!**/node_modules/**"],
+    "extraResources": [
+      { "from": "dist/openrevrec-server", "to": "backend", "filter": ["**/*"] },
+      { "from": "frontend/dist", "to": "ui", "filter": ["**/*"] },
+      { "from": "assets/icon.png", "to": "app-icon.png" }
+    ],
+    "mac": {
+      "category": "public.app-category.finance",
+      "target": ["zip"],
+      "icon": "assets/icon.png",
+      "identity": null,
+      "extendInfo": { "CFBundleDocumentTypes": [{ "CFBundleTypeName": "OpenRevRec Workspace", "CFBundleTypeExtensions": ["orr"], "CFBundleTypeRole": "Editor", "LSTypeIsPackage": true }] }
+    },
+    "win": { "target": ["nsis", "portable"], "icon": "assets/icon.ico" },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": false,
+      "artifactName": "OpenRevRec-${version}-${arch}-setup.${ext}"
+    },
+    "portable": { "artifactName": "OpenRevRec-${version}-${arch}-portable.${ext}" }
+  }
+}
