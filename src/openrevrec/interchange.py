@@ -18,12 +18,12 @@ from .application import JUDGMENT_COMMANDS
 TEMPLATE_VERSION = "2"
 SHEETS = {
     "Customers": ["id", "name", "email", "reference", "source_system"],
-    "Contracts": ["id", "customer_id", "name", "start_date", "end_date", "rationale", "cutover_date"],
+    "Contracts": ["id", "customer_id", "name", "start_date", "end_date", "rationale", "cutover_date", "term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date"],
     "Consideration": ["contract_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale"],
     "Obligations": ["contract_id", "id", "name", "kind", "ssp", "method", "start_date", "end_date", "total_units", "exercise_start", "exercise_end", "rationale"],
     "Opening Positions": ["source_id", "contract_id", "effective_date", "billed_to_date", "contract_asset", "deferred_revenue", "source_name", "rationale"],
     "Opening Obligations": ["opening_source_id", "obligation_id", "recognized_to_date", "measure"],
-    "Amendments": ["source_id", "contract_id", "effective_date", "treatment", "replace_consideration", "replace_obligations", "rationale"],
+    "Amendments": ["source_id", "contract_id", "effective_date", "treatment", "replace_consideration", "replace_obligations", "rationale", "term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date"],
     "Amendment Consideration": ["amendment_source_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale"],
     "Amendment Obligations": ["amendment_source_id", "id", "name", "kind", "ssp", "method", "start_date", "end_date", "total_units", "exercise_start", "exercise_end", "rationale"],
     "Billing": ["contract_id", "effective_date", "amount", "reference", "applies_to_change_set_id", "applies_to_reference", "rationale", "source_id"],
@@ -75,6 +75,7 @@ def template_bytes():
         ["Dates", "YYYY-MM-DD. Service start and end dates are inclusive."],
         ["Relationships", "Supply IDs for customers, contracts, consideration, and obligations; reference these IDs on related sheets."],
         ["Contract setup", "Contracts, Consideration and Obligations are combined into one create_contract command."],
+        ["Cancellable or evergreen terms", "The contract end is the assessed accounting end, not an unlimited legal end. Enter term_basis as cancellable or evergreen, explain the assessment and reassessment trigger, and optionally enter term_review_date. Revisit the obligation dates through a reviewed amendment when the assessment changes."],
         ["Recognition methods", "exact_days, monthly, prorated_monthly, point_in_time, progress, usage, milestone"],
         ["Opening positions", "For a migrated contract, supply current terms, then one Opening Positions row dated the first day of the cutover month and one Opening Obligations row per obligation. A matching opening row sets the new contract's cutover date automatically. Enter cumulative legacy recognition, billing, net asset/deferred balance, and measures before post-cutover activity. Pre-cutover periods are excluded."],
         ["Progress", "Cumulative percentage 0–100. Usage quantity is incremental; set total_units on its obligation."],
@@ -126,6 +127,25 @@ def export_bytes(state, review=None):
     for row in sheet.iter_rows(min_row=2, min_col=4):
         for cell in row:
             cell.number_format = '#,##0.00;[Red](#,##0.00);–'
+    term_fields = ("term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date")
+    term_rows = []
+    for contract in state["contracts"]:
+        assessment = {field: contract.get(field, "") for field in term_fields}
+        assessment["term_basis"] = assessment["term_basis"] or "fixed"
+        assessed_end = contract["end_date"]
+        term_rows.append([contract["id"], contract["start_date"], assessment["term_basis"], assessed_end, assessment["term_assessment_rationale"], assessment["term_reassessment_trigger"], assessment["term_review_date"], contract.get("change_set_id", "")])
+        for activity in sorted(contract["activities"], key=lambda row: row["effective_date"]):
+            if activity["type"] != "modification":
+                continue
+            if "obligations" in activity:
+                assessed_end = max((item["end_date"] for item in activity["obligations"]), default="")
+            if not any(field in activity for field in term_fields):
+                continue
+            if activity.get("term_basis") == "fixed":
+                assessment = {field: "" for field in term_fields}
+            assessment.update({field: activity[field] for field in term_fields if field in activity})
+            term_rows.append([contract["id"], activity["effective_date"], assessment["term_basis"], assessed_end, assessment["term_assessment_rationale"], assessment["term_reassessment_trigger"], assessment["term_review_date"], activity["id"]])
+    _sheet(book, "Term assessments", ["Contract ID", "Effective date", "Term basis", "Assessed service end", "Assessment rationale", "Reassessment trigger", "Planned review date", "Change set ID"], term_rows)
     openings = [change for change in state["change_sets"] if change["command"] == "record_opening_position"]
     _sheet(book, "Opening positions", ["Contract ID", "Cutover date", "Legacy billed to date", "Legacy contract asset", "Legacy deferred revenue", "Legacy source", "Reconciliation rationale", "Change set ID"],
            [[item["payload"].get(key, "") for key in ("contract_id", "effective_date", "billed_to_date", "contract_asset", "deferred_revenue", "source_name", "rationale")] + [item["id"]] for item in openings])
@@ -326,7 +346,7 @@ def parse_workbook(data):
             if not source_id or source_id in amendment_ids:
                 raise ValueError(f"Amendments row {row}: provide a unique, stable source_id.")
             amendment_ids.add(source_id)
-            payload = {key: amendment[key] for key in ("contract_id", "effective_date", "treatment", "rationale", "source_id") if key in amendment}
+            payload = {key: amendment[key] for key in ("contract_id", "effective_date", "treatment", "rationale", "source_id", "term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date") if key in amendment}
             replaced = False
             for flag, sheet, target in (("replace_consideration", "Amendment Consideration", "consideration"), ("replace_obligations", "Amendment Obligations", "obligations")):
                 value = (amendment.get(flag) or "").casefold()

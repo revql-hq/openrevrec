@@ -95,6 +95,20 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
     control_differences = [field for field, values in control_comparison.items() if _decimal(values["difference"]) != ZERO]
     open_tasks = [note for note in state["notes"] if note.get("kind") == "task" and not note.get("completed")]
     due_tasks = [note for note in open_tasks if (note.get("due_date") and note["due_date"] <= period_end(period)) or (note.get("period") and note["period"] <= period)]
+    due_term_reviews = []
+    for contract in state["contracts"]:
+        if contract["start_date"] > period_end(period):
+            continue
+        assessment = {field: contract.get(field, "") for field in ("term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date")}
+        assessment["term_basis"] = assessment["term_basis"] or "fixed"
+        for activity in sorted(contract["activities"], key=lambda item: (item["effective_date"], item.get("recorded_at", ""))):
+            if activity["effective_date"] > period_end(period) or activity["type"] != "modification":
+                continue
+            if activity.get("term_basis") == "fixed":
+                assessment = {field: "" for field in assessment}
+            assessment.update({field: activity[field] for field in assessment if field in activity})
+        if assessment["term_basis"] != "fixed" and assessment["term_review_date"] and assessment["term_review_date"] <= period_end(period):
+            due_term_reviews.append({"id": contract["id"], "name": contract["name"], "review_date": assessment["term_review_date"], "trigger": assessment["term_reassessment_trigger"]})
     gaps = [row for row in coverage if _decimal(row["unscheduled"]) != ZERO]
     manual_methods = {"progress", "usage"}
     expected_manual_gaps = []
@@ -167,6 +181,9 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
         _check("tasks", "Close tasks due", not due_tasks,
                "No open tasks due by period end." if not due_tasks else f"{len(due_tasks)} task(s) are due by period end.",
                "review", len(due_tasks)),
+        _check("term_reviews", "Contract term assessments due", not due_term_reviews,
+               "No planned term assessments are due." if not due_term_reviews else f"{len(due_term_reviews)} cancellable or evergreen term assessment(s) need review.",
+               "review", len(due_term_reviews)),
         _check("cutoff", "Entries after close cutoff", not late_changes,
                f"No entries affecting this period were recorded after {cutoff_date}." if not late_changes else f"{len(late_changes)} entry or entries affecting this period were recorded after {cutoff_date}.",
                "review", len(late_changes)),
@@ -187,6 +204,7 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
         "external_controls": {"view": "Reports", "tab": "External controls"},
         "warnings": {"view": "Contracts", "id": warning_targets[0]["contract_id"], "tab": "Recognition", "obligation_id": warning_targets[0]["obligation_id"]} if warning_targets and warning_targets[0]["contract_id"] else {"view": "Revenue"},
         "tasks": ({"view": "Contracts", "id": due_tasks[0]["entity_id"], "tab": "Notes"} if due_tasks[0].get("entity_id") in {c["id"] for c in state["contracts"]} else {"view": "Customers", "id": due_tasks[0]["entity_id"]}) if due_tasks and due_tasks[0].get("entity_id") in entity_names else {"view": "Home"},
+        "term_reviews": {"view": "Contracts", "id": due_term_reviews[0]["id"], "tab": "Overview"} if due_term_reviews else {"view": "Contracts"},
         "cutoff": {"view": "Activity", "id": late_changes[0]["id"]} if late_changes else {"view": "Activity"},
         "coverage": {"view": "Contracts", "id": review_gaps[0]["contract_id"], "tab": "Recognition", "obligation_id": review_gaps[0]["obligation_gaps"][0]["obligation_id"] if review_gaps[0]["obligation_gaps"] else None} if review_gaps else {"view": "Revenue"},
         "scenarios": {"view": "Scenarios", "id": active_scenarios[0]["id"]} if active_scenarios else {"view": "Scenarios"},
@@ -203,11 +221,11 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
         "rollforward": rollforward, "billing_vs_revenue": billing_vs_revenue,
         "external_control": control, "external_control_comparison": control_comparison,
         "recognition_coverage": coverage, "scenario_impacts": scenario_impacts or [],
-        "exceptions": {"allocation": allocation_mismatches, "cutover": pending_cutovers, "warnings": warning_targets, "tasks": due_tasks, "cutoff": late_changes,
+        "exceptions": {"allocation": allocation_mismatches, "cutover": pending_cutovers, "warnings": warning_targets, "tasks": due_tasks, "term_reviews": due_term_reviews, "cutoff": late_changes,
                        "coverage": gaps, "scenarios": active_scenarios, "evidence": unsupported_judgments},
         "counts": {
             "contracts": len(report["contracts"]), "open_tasks": len(open_tasks),
-            "due_tasks": len(due_tasks), "coverage_gaps": len(gaps),
+            "due_tasks": len(due_tasks), "due_term_reviews": len(due_term_reviews), "coverage_gaps": len(gaps),
             "active_scenarios": len(active_scenarios), "warnings": len(report["warnings"]),
             "late_changes": len(late_changes),
             "unsupported_judgments": len(unsupported_judgments),

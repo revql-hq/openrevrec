@@ -703,7 +703,12 @@ export function ContractForm(
     [effective, setEffective] = useState(`${props.period}-01`),
     [treatment, setTreatment] = useState(""),
     [loadedEffective, setLoadedEffective] = useState(`${props.period}-01`),
-    [termsDirty, setTermsDirty] = useState(false);
+    [termsDirty, setTermsDirty] = useState(false),
+    [termBasis, setTermBasis] = useState<"fixed" | "cancellable" | "evergreen">(initialTerms?.termAssessment.basis || "fixed"),
+    [termRationale, setTermRationale] = useState(initialTerms?.termAssessment.rationale || ""),
+    [termTrigger, setTermTrigger] = useState(initialTerms?.termAssessment.trigger || ""),
+    [termReviewDate, setTermReviewDate] = useState(initialTerms?.termAssessment.reviewDate || ""),
+    [loadedTermAssessment, setLoadedTermAssessment] = useState(initialTerms?.termAssessment);
   const [components, setComponents] = useState<Component[]>(
     initialTerms?.consideration || [
       { id: uid(), label: "", kind: "fixed", amount: "" },
@@ -723,6 +728,16 @@ export function ContractForm(
     ],
   );
   const unsupportedProspectiveTargeting = Boolean(contract && treatment === "prospective" && components.some((item) => item.allocation_scope === "specific"));
+  const termAssessment = {
+    term_basis: termBasis,
+    term_assessment_rationale: termBasis === "fixed" ? "" : termRationale,
+    term_reassessment_trigger: termBasis === "fixed" ? "" : termTrigger,
+    term_review_date: termBasis === "fixed" ? "" : termReviewDate,
+  };
+  const termAssessmentChanged = !loadedTermAssessment || termAssessment.term_basis !== loadedTermAssessment.basis ||
+    termAssessment.term_assessment_rationale !== loadedTermAssessment.rationale ||
+    termAssessment.term_reassessment_trigger !== loadedTermAssessment.trigger ||
+    termAssessment.term_review_date !== loadedTermAssessment.reviewDate;
   const command = (): Command =>
     contract
       ? {
@@ -734,6 +749,7 @@ export function ContractForm(
             consideration: components,
             obligations,
             rationale,
+            ...(termAssessmentChanged ? termAssessment : {}),
           },
         }
       : {
@@ -747,6 +763,7 @@ export function ContractForm(
             consideration: components,
             obligations,
             rationale,
+            ...termAssessment,
           },
         };
   return (
@@ -776,6 +793,10 @@ export function ContractForm(
               const nextEnd = choice === "annual" ? annualEnd : "";
               setStart(nextStart);
               setEnd(nextEnd);
+              setTermBasis("fixed");
+              setTermRationale("");
+              setTermTrigger("");
+              setTermReviewDate("");
               setComponents([{ id: uid(), label: choice === "annual" ? "Subscription" : "", kind: "fixed", amount: "" }]);
               setObligations([{ id: uid(), name: choice === "annual" ? "Subscription service" : "", kind: "service", ssp: "", method: "exact_days", start_date: nextStart, end_date: nextEnd }]);
             }}><option value="">Choose a starting point</option><option value="blank">Blank contract</option><option value="annual">Annual subscription template</option></select>
@@ -823,7 +844,7 @@ export function ContractForm(
                 }}
               />
             </Field>
-            <Field label="Contract end">
+            <Field label={termBasis === "fixed" ? "Contract end" : "Assessed accounting end"}>
               <input
                 type="date"
                 required
@@ -845,7 +866,7 @@ export function ContractForm(
           <Field label="Existing-contract cutover date (optional)" hint="Use the first day of a later calendar month when migrating accepted legacy balances. Record an opening position on this contract before entering new activity; close is blocked until that position is accepted.">
             <input type="date" value={cutover} min={start || undefined} onChange={(event) => setCutover(event.target.value)} />
           </Field>
-          <p className="fine-print">Service start and end dates are both included in recognition. For an evergreen arrangement, enter the assessed accounting term and document its basis; an unlimited term is not modeled.</p>
+          <p className="fine-print">Service start and end dates are both included in recognition. For cancellable or evergreen contracts, use only the period assessed as enforceable. An unlimited term is not modeled.</p>
         </>
       ) : (
         <>
@@ -872,7 +893,7 @@ export function ContractForm(
               </select>
             </Field>
           </div>
-          {effective !== loadedEffective && <div className="notice"><p>The terms below were loaded for {dateLabel(loadedEffective)}. Choose how to use them at {dateLabel(effective)} before previewing.</p><div className="button-group"><Button type="button" onClick={() => { if (termsDirty && !window.confirm("Replace the term edits in this form with the terms effective on the new date?")) return; const terms = contractTerms(contract, effective); setComponents(terms.consideration); setObligations(terms.obligations); setLoadedEffective(effective); setTermsDirty(false); }}>Load effective terms</Button><Button type="button" onClick={() => setLoadedEffective(effective)}>Keep edited terms</Button></div></div>}
+          {effective !== loadedEffective && <div className="notice"><p>The terms below were loaded for {dateLabel(loadedEffective)}. Choose how to use them at {dateLabel(effective)} before previewing.</p><div className="button-group"><Button type="button" onClick={() => { if (termsDirty && !window.confirm("Replace the term edits in this form with the terms effective on the new date?")) return; const terms = contractTerms(contract, effective); setComponents(terms.consideration); setObligations(terms.obligations); setTermBasis(terms.termAssessment.basis); setTermRationale(terms.termAssessment.rationale); setTermTrigger(terms.termAssessment.trigger); setTermReviewDate(terms.termAssessment.reviewDate); setLoadedTermAssessment(terms.termAssessment); setLoadedEffective(effective); setTermsDirty(false); }}>Load effective terms</Button><Button type="button" onClick={() => setLoadedEffective(effective)}>Keep edited terms</Button></div></div>}
           <p className="notice">
             Changing the effective date keeps your edits until you choose to load that date's terms or keep the edited terms. Enter revised lifetime consideration, including revenue
             already recognized.{" "}
@@ -884,6 +905,18 @@ export function ContractForm(
           {unsupportedProspectiveTargeting && <p className="warning">Prospective changes that retain specifically allocated components require a separate reviewed allocation treatment. This form cannot calculate that combination.</p>}
         </>
       )}
+      <Field label="Term basis" hint="Use the assessed enforceable term for recognition. Reassess it when the stated trigger occurs.">
+        <select value={termBasis} onChange={(event) => { setTermBasis(event.target.value as typeof termBasis); setTermsDirty(true); }}>
+          <option value="fixed">Fixed term</option>
+          <option value="cancellable">Cancellable arrangement</option>
+          <option value="evergreen">Evergreen arrangement</option>
+        </select>
+      </Field>
+      {termBasis !== "fixed" && <>
+        <Field label="Why this term is enforceable"><textarea required rows={2} value={termRationale} onChange={(event) => { setTermRationale(event.target.value); setTermsDirty(true); }} placeholder="Explain the assessed accounting end and the enforceable rights or obligations." /></Field>
+        <Field label="Reassessment trigger"><textarea required rows={2} value={termTrigger} onChange={(event) => { setTermTrigger(event.target.value); setTermsDirty(true); }} placeholder="For example, a cancellation notice or renewal decision." /></Field>
+        <Field label="Planned review date (optional)" hint="An event-based trigger may have no known date. This date is recorded for review; it does not extend the accounting term automatically."><input type="date" min={contract ? effective : start} value={termReviewDate} onChange={(event) => { setTermReviewDate(event.target.value); setTermsDirty(true); }} /></Field>
+      </>}
       <ComponentEditor items={components} obligations={obligations} allowEmpty={Boolean(contract)} onChange={(items) => { setComponents(items); setTermsDirty(true); }} />
       <ObligationEditor
         items={obligations}

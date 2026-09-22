@@ -77,6 +77,26 @@ def _date(value: Any, field: str = "date") -> date:
     return parsed
 
 
+TERM_FIELDS = ("term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date")
+
+
+def _validate_term_assessment(terms: dict, effective_date: date | None) -> None:
+    basis = terms.get("term_basis", "fixed")
+    if not isinstance(basis, str) or basis not in {"fixed", "cancellable", "evergreen"}:
+        raise ValueError("Term basis must be fixed, cancellable, or evergreen")
+    if basis != "fixed":
+        if not isinstance(terms.get("term_assessment_rationale"), str) or not terms["term_assessment_rationale"].strip():
+            raise ValueError("A cancellable or evergreen term needs an assessed-term rationale")
+        if not isinstance(terms.get("term_reassessment_trigger"), str) or not terms["term_reassessment_trigger"].strip():
+            raise ValueError("A cancellable or evergreen term needs a reassessment trigger")
+    elif any(terms.get(field) for field in TERM_FIELDS[1:]):
+        raise ValueError("Fixed terms cannot carry a cancellable or evergreen term assessment")
+    if terms.get("term_review_date"):
+        review_date = _date(terms["term_review_date"], "term_review_date")
+        if effective_date is not None and review_date < effective_date:
+            raise ValueError("Term review date cannot precede the assessment date")
+
+
 def period_end(period: str) -> date:
     try:
         year, month = (int(part) for part in period.split("-"))
@@ -266,12 +286,16 @@ def validate_contract(contract: dict) -> None:
     end = _date(contract.get("end_date"), "contract end_date")
     if end < start:
         raise ValueError("Contract end_date cannot precede start_date")
+    term_assessment = {field: contract[field] for field in TERM_FIELDS if field in contract}
+    _validate_term_assessment(term_assessment, start)
     declared_cutover = _date(contract["cutover_date"], "cutover_date") if contract.get("cutover_date") else None
     if declared_cutover and (declared_cutover.day != 1 or declared_cutover <= start):
         raise ValueError("Contract cutover must be the first day of a month after the contract begins")
     components = deepcopy(contract.get("consideration"))
     obligations = deepcopy(contract.get("obligations"))
     _validate_terms(components, obligations)
+    if term_assessment.get("term_basis") in {"cancellable", "evergreen"} and any(_date(item["end_date"], "obligation end_date") > end for item in obligations):
+        raise ValueError("An obligation cannot extend beyond the initial assessed accounting end")
     activities = contract.get("activities", [])
     if not isinstance(activities, list):
         raise ValueError("activities must be a list")
@@ -354,6 +378,13 @@ def validate_contract(contract: dict) -> None:
                 raise ValueError("Modification treatment must be prospective or catch_up")
             if not str(activity.get("rationale", "")).strip():
                 raise ValueError("A modification requires an accounting rationale")
+            if any(field in activity for field in TERM_FIELDS):
+                prior_review_date = term_assessment.get("term_review_date")
+                if activity.get("term_basis") == "fixed":
+                    term_assessment = {}
+                term_assessment.update({field: activity[field] for field in TERM_FIELDS if field in activity})
+                review_effective = _date(activity["effective_date"]) if term_assessment.get("term_review_date") != prior_review_date else None
+                _validate_term_assessment(term_assessment, review_effective)
             components = deepcopy(activity.get("consideration", components))
             revised_obligations = deepcopy(activity.get("obligations", obligations))
             for identifier in exercised_rights:

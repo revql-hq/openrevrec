@@ -743,7 +743,7 @@ export function ContractView(props: ViewProps) {
     <>
       <Heading
         title={contract.name}
-        subtitle={`${customer?.name || "Customer"} · ${dateLabel(contract.start_date)} – ${dateLabel(contract.end_date)}`}
+        subtitle={`${customer?.name || "Customer"} · ${dateLabel(contract.start_date)} – ${dateLabel(contract.end_date)}${(contract.term_basis || "fixed") === "fixed" ? "" : " · initial assessed term"}`}
       >
         <Button
           onClick={() => dialog({ type: "details", entityId: contract.id })}
@@ -844,13 +844,19 @@ export function ContractView(props: ViewProps) {
                   <dd>{report ? money(report.billed_to_date, currency) : "Outside reported period"}</dd>
                 </div>
                 <div>
-                  <dt>Original legal term</dt>
+                  <dt>{(contract.term_basis || "fixed") === "fixed" ? "Original legal term" : "Initial assessed accounting term"}</dt>
                   <dd>
                     {dateLabel(contract.start_date)} –{" "}
                     {dateLabel(contract.end_date)}
                   </dd>
                 </div>
                 {serviceDates.length > 0 && <div><dt>Current service span</dt><dd>{dateLabel(serviceDates[0])} – {dateLabel(serviceDates[serviceDates.length - 1])}</dd></div>}
+                <div><dt>Term basis</dt><dd>{effectiveTerms.termAssessment.basis === "fixed" ? "Fixed" : effectiveTerms.termAssessment.basis === "cancellable" ? "Cancellable" : "Evergreen"}</dd></div>
+                {effectiveTerms.termAssessment.basis !== "fixed" && <>
+                  <div><dt>Assessment basis</dt><dd>{effectiveTerms.termAssessment.rationale}</dd></div>
+                  <div><dt>Reassess when</dt><dd>{effectiveTerms.termAssessment.trigger}</dd></div>
+                  {effectiveTerms.termAssessment.reviewDate && <div><dt>Planned review</dt><dd>{dateLabel(effectiveTerms.termAssessment.reviewDate)}</dd></div>}
+                </>}
               </dl>
               {contract.rationale && (
                 <p className="rationale">{contract.rationale}</p>

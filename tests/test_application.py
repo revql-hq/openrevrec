@@ -21,6 +21,86 @@ def app(tmp_path):
     return Application.create(tmp_path / "Test company.orr", "Test company")
 
 
+def test_cancellable_term_records_assessment_and_review_trigger_through_amendment_and_export(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    contract = {
+        "id": "con_1", "name": "Cancellable service", "customer_id": "cus_1",
+        "start_date": "2026-01-01", "end_date": "2026-06-30",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "600.00"}],
+        "obligations": [{"id": "service", "name": "Service", "kind": "service", "ssp": "600.00", "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-06-30"}],
+        "term_basis": "cancellable", "term_assessment_rationale": "Six months are enforceable under the notice clause.",
+        "term_reassessment_trigger": "Review on a cancellation or renewal notice.", "term_review_date": "2026-05-01",
+    }
+    with pytest.raises(ValueError, match="assessed-term rationale"):
+        application.execute("create_contract", {**contract, "term_assessment_rationale": ""}, period="2026-01")
+    with pytest.raises(ValueError, match="reassessment trigger"):
+        application.execute("create_contract", {**contract, "term_reassessment_trigger": ""}, period="2026-01")
+    with pytest.raises(ValueError, match="review date"):
+        application.execute("create_contract", {**contract, "term_review_date": "2025-12-31"}, period="2026-01")
+    with pytest.raises(ValueError, match="initial assessed accounting end"):
+        application.execute("create_contract", {**contract, "obligations": [{**contract["obligations"][0], "end_date": "2026-12-31"}]}, period="2026-01")
+    application.execute("create_contract", contract, period="2026-01")
+    january = application.state(period="2026-01")
+    assert january["contracts"][0]["term_basis"] == "cancellable"
+    assert january["report"]["summary"]["revenue"] == "100.00"
+    assert next(check for check in application.reports(period="2026-05")["checks"] if check["id"] == "term_reviews")["status"] == "review"
+    application.execute("modify_contract", {
+        "contract_id": "con_1", "effective_date": "2026-05-01", "treatment": "catch_up", "rationale": "Renewal terms now enforceable",
+        "obligations": [{**contract["obligations"][0], "end_date": "2026-12-31"}],
+        "term_basis": "evergreen", "term_assessment_rationale": "The renewal creates another enforceable six months.",
+        "term_reassessment_trigger": "Review the next notice window.", "term_review_date": "2026-11-01",
+    }, period="2026-05")
+    state = application.state(period="2026-05")
+    assert state["contracts"][0]["activities"][-1]["term_basis"] == "evergreen"
+    assert next(check for check in application.reports(period="2026-05")["checks"] if check["id"] == "term_reviews")["status"] == "pass"
+    assert application.state(period="2026-01")["report"]["summary"]["revenue"] == january["report"]["summary"]["revenue"]
+    assert state["report"]["contracts"][0]["remaining_revenue"] == "350.00"
+    book = load_workbook(io.BytesIO(export_bytes(state)))
+    assert book["Term assessments"]["C2"].value == "cancellable"
+    assert book["Term assessments"]["C3"].value == "evergreen"
+    assert book["Term assessments"]["D3"].value == "2026-12-31"
+    assert book["Term assessments"]["F3"].value == "Review the next notice window."
+    book.close()
+    application.execute("modify_contract", {
+        "contract_id": "con_1", "effective_date": "2026-07-01", "treatment": "catch_up", "rationale": "The renewed service now has a fixed term",
+        "obligations": [{**contract["obligations"][0], "end_date": "2026-12-31"}], "term_basis": "fixed",
+    }, period="2026-07")
+    assert next(check for check in application.reports(period="2026-11")["checks"] if check["id"] == "term_reviews")["status"] == "pass"
+
+
+def test_evergreen_term_assessment_imports_with_structured_columns(tmp_path):
+    application = app(tmp_path)
+    book = load_workbook(io.BytesIO(template_bytes()))
+    def add(sheet_name, values):
+        sheet = book[sheet_name]
+        headers = [cell.value for cell in sheet[1]]
+        sheet.append([values.get(header) for header in headers])
+    add("Customers", {"id": "cus_1", "name": "Customer"})
+    add("Contracts", {
+        "id": "con_1", "customer_id": "cus_1", "name": "Renewing service", "start_date": "2026-01-01", "end_date": "2026-06-30",
+        "term_basis": "evergreen", "term_assessment_rationale": "The first six months are enforceable.",
+        "term_reassessment_trigger": "Review the renewal notice.", "term_review_date": "2026-05-01",
+    })
+    add("Consideration", {"contract_id": "con_1", "id": "price", "kind": "fixed", "amount": "600.00"})
+    add("Obligations", {"contract_id": "con_1", "id": "service", "name": "Service", "kind": "service", "ssp": "600.00", "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-06-30"})
+    add("Amendments", {
+        "source_id": "amend:renewal", "contract_id": "con_1", "effective_date": "2026-04-01", "treatment": "catch_up",
+        "replace_obligations": "yes", "rationale": "Renewal notice changed the assessed term",
+        "term_basis": "cancellable", "term_assessment_rationale": "The notice makes the year enforceable.",
+        "term_reassessment_trigger": "Review the next cancellation window.", "term_review_date": "2026-11-01",
+    })
+    add("Amendment Obligations", {"amendment_source_id": "amend:renewal", "id": "service", "name": "Service", "kind": "service", "ssp": "600.00", "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-12-31"})
+    data = io.BytesIO()
+    book.save(data)
+    book.close()
+    preview = preview_import_bytes(application, data.getvalue(), period="2026-01")
+    assert preview["state"]["contracts"][0]["term_reassessment_trigger"] == "Review the renewal notice."
+    assert preview["state"]["contracts"][0]["activities"][0]["term_basis"] == "cancellable"
+    import_bytes(application, data.getvalue(), period="2026-01", expected_frontier=preview["frontier"], expected_hash=preview["result"]["file_hash"])
+    assert application.state(period="2026-01")["contracts"][0]["term_basis"] == "evergreen"
+
+
 def test_cli_workspace_setup_records_company_currency_and_account_defaults(tmp_path):
     path = tmp_path / "Configured company.orr"
     accounts = '{"revenue":"4100","deferred_revenue":"2310","contract_asset":"1310","billing_clearing":"1110"}'

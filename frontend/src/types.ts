@@ -52,6 +52,10 @@ export type Contract = {
   customer_id: string;
   start_date: string;
   end_date: string;
+  term_basis?: "fixed" | "cancellable" | "evergreen";
+  term_assessment_rationale?: string;
+  term_reassessment_trigger?: string;
+  term_review_date?: string;
   cutover_date?: string;
   consideration: Component[];
   obligations: Obligation[];

@@ -26,6 +26,22 @@ test('effective terms retain partial amendments and reassessments in date order'
   assert.deepEqual(contract, original);
 });
 
+test('term assessment follows dated amendments and clears when the term becomes fixed', () => {
+  const assessed = {
+    ...contract,
+    term_basis: 'cancellable',
+    term_assessment_rationale: 'Six months are enforceable',
+    term_reassessment_trigger: 'Cancellation notice',
+    activities: [
+      { type: 'modification', effective_date: '2026-10-01', term_basis: 'evergreen', term_assessment_rationale: 'Renewal is enforceable', term_reassessment_trigger: 'Next notice window' },
+      { type: 'modification', effective_date: '2026-12-01', term_basis: 'fixed' },
+    ],
+  };
+  assert.equal(contractTerms(assessed, '2026-09-30').termAssessment.basis, 'cancellable');
+  assert.equal(contractTerms(assessed, '2026-11-30').termAssessment.trigger, 'Next notice window');
+  assert.deepEqual(contractTerms(assessed, '2026-12-31').termAssessment, { basis: 'fixed', rationale: '', trigger: '', reviewDate: '' });
+});
+
 test('same-day term changes preserve command order and empty obligation replacements', () => {
   const item = structuredClone(contract);
   item.activities.push({ type: 'modification', effective_date: '2026-11-01', obligations: [] });
