@@ -56,16 +56,18 @@ export function ChangeDetail(props: ViewProps & { changeSetId: string }) {
       <Button onClick={() => props.navigate("Activity")}>All activity</Button>
     </div>
     <Section title="Recorded decision">
-      <dl className="definition-list">
-        <div><dt>Effective</dt><dd>{dateLabel(change.effective_date)}</dd></div>
-        <div><dt>Recorded</dt><dd>{dateLabel(change.recorded_at)}</dd></div>
-        <div><dt>Scenario</dt><dd>{change.scenario_id === "main" ? "Main" : props.state.scenarios.find((s) => s.id === change.scenario_id)?.name || change.scenario_id}</dd></div>
-        <div><dt>Source</dt><dd>{change.source}</dd></div>
-        {Boolean(change.payload?.treatment) && <div><dt>Treatment</dt><dd>{humanize(String(change.payload?.treatment))}</dd></div>}
-        {change.originating_change_set_id && <div><dt>Originating change</dt><dd><button className="text-button" onClick={() => props.navigate("Activity", change.originating_change_set_id)}>{change.originating_change_set_id}</button></dd></div>}
-      </dl>
-      {change.rationale && <p>{change.rationale}</p>}
-      {isContract && <Button onClick={() => props.navigate("Contracts", change.entity_id)}>Open contract</Button>}
+      <div className="change-decision">
+        <dl className="definition-list">
+          <div><dt>Effective</dt><dd>{dateLabel(change.effective_date)}</dd></div>
+          <div><dt>Recorded</dt><dd>{dateLabel(change.recorded_at)}</dd></div>
+          <div><dt>Scenario</dt><dd>{change.scenario_id === "main" ? "Main" : props.state.scenarios.find((s) => s.id === change.scenario_id)?.name || change.scenario_id}</dd></div>
+          <div><dt>Source</dt><dd>{change.source}</dd></div>
+          {Boolean(change.payload?.treatment) && <div><dt>Treatment</dt><dd>{humanize(String(change.payload?.treatment))}</dd></div>}
+          {change.originating_change_set_id && <div><dt>Originating change</dt><dd><button className="text-button" onClick={() => props.navigate("Activity", change.originating_change_set_id)}>{change.originating_change_set_id}</button></dd></div>}
+        </dl>
+        {change.rationale && <p>{change.rationale}</p>}
+        {isContract && <Button onClick={() => props.navigate("Contracts", change.entity_id)}>Open contract</Button>}
+      </div>
     </Section>
     <Section title={`Financial effect · ${detail.period}`} subtitle={detail.comparison.affected_periods.length ? `Affected periods: ${detail.comparison.affected_periods.join(", ")}` : "No revenue schedule change in the selected period."}>
       <div className="table-wrap"><table><thead><tr><th>Measure</th><th>Before</th><th>After</th><th>Change</th></tr></thead><tbody>
