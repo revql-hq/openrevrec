@@ -46,6 +46,7 @@ export function ChangeDetail(props: ViewProps & { changeSetId: string }) {
   const currency = props.state.workspace.currency;
   const measures = ["revenue", "billings", "deferred_revenue", "contract_asset", "remaining_revenue", "transaction_price"];
   const isContract = props.state.contracts.some((item) => item.id === change.entity_id);
+  const policyPeriod = (value?: string) => value === "0001-01" || !value ? "workspace start" : value;
   return <>
     <div className="page-heading">
       <div>
@@ -73,9 +74,9 @@ export function ChangeDetail(props: ViewProps & { changeSetId: string }) {
       <div className="table-wrap"><table><thead><tr><th>Measure</th><th>Before</th><th>After</th><th>Change</th></tr></thead><tbody>
         {measures.map((key) => <tr key={key}><td>{humanize(key)}</td><td className="number">{money(before.summary[key as keyof typeof before.summary], currency)}</td><td className="number">{money(after.summary[key as keyof typeof after.summary], currency)}</td><td className="number">{money(detail.comparison.summary[key], currency)}</td></tr>)}
       </tbody></table></div>
-      {(before.policy_version !== after.policy_version || before.policy_effective_period !== after.policy_effective_period) && <p className="muted">Account policy: version {before.policy_version} effective {before.policy_effective_period} → version {after.policy_version} effective {after.policy_effective_period}</p>}
+      {(before.policy_version !== after.policy_version || before.policy_effective_period !== after.policy_effective_period) && <p className="muted">Account policy: version {before.policy_version} effective {policyPeriod(before.policy_effective_period)} → version {after.policy_version} effective {policyPeriod(after.policy_effective_period)}</p>}
     </Section>
-    <Section title={isContract ? "Contract journal after change" : "Journal after change"} subtitle={`Account policy version ${after.policy_version || 1}, effective ${after.policy_effective_period || "baseline"}.`}>
+    <Section title={isContract ? "Contract journal after change" : "Journal after change"} subtitle={`Account policy version ${after.policy_version || 1}, effective ${policyPeriod(after.policy_effective_period)}.`}>
       <JournalsTable rows={isContract ? after.journals.filter((row) => row.contract_id === change.entity_id) : after.journals} currency={currency} contractName={(id) => props.state.contracts.find((item) => item.id === id)?.name || id} />
     </Section>
     <EvidencePanel props={props} entityId={isContract ? change.entity_id : undefined} targetChangeSetId={change.id} scenarioId={change.scenario_id} linkedEvidence={detail.evidence} onAttached={() => setRevision((value) => value + 1)} />
