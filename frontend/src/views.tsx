@@ -445,11 +445,18 @@ export function HomeView(props: ViewProps) {
           }
         >
           {state.report.warnings.length > 0 && (
-            <div className="warning">
-              {state.report.warnings.map((warning, i) => (
-                <p key={i}>{warning}</p>
-              ))}
-            </div>
+            <button
+              className="attention-action"
+              onClick={() => navigate("Reports")}
+              aria-label={`Review ${state.report.warnings.length} accounting warning${state.report.warnings.length === 1 ? "" : "s"}`}
+            >
+              <span className="attention-count">{state.report.warnings.length}</span>
+              <strong>
+                Accounting warning{state.report.warnings.length === 1 ? "" : "s"}
+              </strong>
+              <span className="attention-verb">Review</span>
+              <ChevronRight size={15} aria-hidden="true" />
+            </button>
           )}
           {state.notes.filter((n) => n.kind === "task" && !n.completed)
             .length ? (
@@ -459,19 +466,14 @@ export function HomeView(props: ViewProps) {
                 (n) => n.kind === "task" && !n.completed,
               )}
             />
-          ) : (
+          ) : !state.report.warnings.length ? (
             <div className="clear-state">
               <CircleCheck size={17} />
               <div>
-                <strong>No open tasks</strong>
-                <p>
-                  {state.report.warnings.length
-                    ? "Review the accounting warnings before closing."
-                    : "Review the period’s activity and journals before closing."}
-                </p>
+                <strong>Nothing needs attention</strong>
               </div>
             </div>
-          )}
+          ) : null}
         </Section>
         <Section
           title="Active scenarios"
