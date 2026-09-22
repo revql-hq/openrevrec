@@ -186,7 +186,9 @@ else {
     mainWindow.setTitle(`${metadata().name} — OpenRevRec`);
     if (process.env.ORR_SMOKE_TEST === '1') {
       async function request(route, options = {}) {
-        const response = await fetch(`${serverOrigin}${route}`, { ...options, headers: { Authorization: `Bearer ${serverToken}`, 'Content-Type': 'application/json' } });
+        const headers = { Authorization: `Bearer ${serverToken}` };
+        if (!(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
+        const response = await fetch(`${serverOrigin}${route}`, { ...options, headers });
         if (!response.ok) throw new Error(`Desktop smoke ${route} failed: ${response.status}`);
         return response;
       }
@@ -196,10 +198,28 @@ else {
         state = await (await request('/api/state?period=2026-09')).json();
         const reports = await (await request('/api/reports?period=2026-09')).json();
         if (!reports.checks.length || !reports.rollforward.length) throw new Error('Desktop smoke reports are empty.');
+        if (!state.report.closed) {
+          const unsupported = reports.exceptions.evidence;
+          if (!unsupported.length) throw new Error('Desktop smoke has no judgment exception to resolve.');
+          for (const judgment of unsupported) {
+            const detail = await (await request(`/api/changes/${judgment.change_set_id}?period=2026-09`)).json();
+            if (detail.change.id !== judgment.change_set_id) throw new Error('Desktop smoke change detail did not match its exception.');
+            const support = new FormData();
+            support.append('file', new Blob([`Reviewed ${judgment.change_set_id}`], { type: 'text/plain' }), 'desktop-smoke-support.txt');
+            support.append('target_change_set_id', judgment.change_set_id);
+            if (judgment.entity_id) support.append('entity_id', judgment.entity_id);
+            support.append('rationale', 'Desktop close support smoke');
+            await request('/api/evidence', { method: 'POST', body: support });
+          }
+          const supported = await (await request('/api/reports?period=2026-09')).json();
+          if (supported.exceptions.evidence.length || supported.checks.find((check) => check.id === 'evidence')?.status !== 'pass') throw new Error('Desktop smoke judgment support did not clear the close exception.');
+          const preview = await (await request('/api/preview', { method: 'POST', body: JSON.stringify({ command: 'close_period', payload: { period: '2026-09', rationale: 'Desktop smoke preview' }, period: '2026-09' }) })).json();
+          if (!preview.state.report.closed) throw new Error('Desktop smoke close preview did not produce a checkpoint.');
+          const close = await (await request('/api/commands', { method: 'POST', body: JSON.stringify({ command: 'close_period', payload: { period: '2026-09', rationale: 'Desktop smoke reviewed support' }, period: '2026-09' }) })).json();
+          if (!close.state.report.closed) throw new Error('Desktop smoke did not close the period.');
+        }
         const workbook = Buffer.from(await (await request('/api/export?period=2026-09')).arrayBuffer());
         if (workbook.toString('utf8', 0, 2) !== 'PK') throw new Error('Desktop smoke Excel export is invalid.');
-        const preview = await (await request('/api/preview', { method: 'POST', body: JSON.stringify({ command: 'close_period', payload: { period: '2026-09', rationale: 'Desktop smoke preview' }, period: '2026-09' }) })).json();
-        if (!preview.state.report.closed) throw new Error('Desktop smoke close preview did not produce a checkpoint.');
         const navigated = await mainWindow.webContents.executeJavaScript(`new Promise((resolve) => {
           const reports = [...document.querySelectorAll('.nav-item')].find((item) => item.textContent.trim() === 'Reports');
           if (!reports) return resolve(false);
@@ -218,6 +238,10 @@ else {
         await request('/api/health');
       }
       if (state.contracts.length !== 5) throw new Error('Desktop smoke demo workspace was not retained.');
+      if (!state.report.closed) {
+        state = await (await request('/api/state?period=2026-09')).json();
+        if (!state.report.closed) throw new Error('Desktop smoke close was not retained.');
+      }
       const smokeResult = { desktop_smoke: 'ok', workspace: metadata(), title: mainWindow.getTitle(), contracts: state.contracts.length, reopened: process.env.ORR_SMOKE_REOPEN === '1' };
       if (process.env.ORR_SMOKE_RESULT) fs.writeFileSync(path.resolve(process.env.ORR_SMOKE_RESULT), JSON.stringify(smokeResult));
       console.log(JSON.stringify(smokeResult));
