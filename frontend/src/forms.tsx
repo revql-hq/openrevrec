@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { changeComponentKind, contractTerms, termReviewStatus } from "./contractTerms";
+import { parseApprovedCombinations } from "./accountRules";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 import { api, post, uid, money, humanize, dateLabel, total, today } from "./api";
 import type { Review } from "./ReportsWorkspace";
@@ -1544,6 +1545,15 @@ export function PolicyForm(props: FormProps) {
     [accounts, setAccounts] = useState(props.state.policy.accounts),
     [overrides, setOverrides] = useState(props.state.policy.account_overrides || { contracts: {}, obligations: {} }),
     [profiles, setProfiles] = useState<Record<string, AccountProfile>>(props.state.policy.account_profiles || {}),
+    [ruleSource, setRuleSource] = useState(props.state.policy.account_dimension_source || ""),
+    [pastedRules, setPastedRules] = useState(""),
+    [pasteError, setPasteError] = useState(""),
+    [ruleRows, setRuleRows] = useState<{ id: string; account: string; dimensions: { id: string; key: string; value: string }[] }[]>(
+      (props.state.policy.account_dimension_rules || []).map((rule) => ({
+        id: uid(), account: rule.account,
+        dimensions: Object.entries(rule.dimensions).map(([key, value]) => ({ id: uid(), key, value })),
+      })),
+    ),
     [assignments, setAssignments] = useState<Record<string, string>>(props.state.policy.profile_assignments || {}),
     [obligationAssignments, setObligationAssignments] = useState<Record<string, Record<string, string>>>(props.state.policy.obligation_profile_assignments || {}),
     [effectivePeriod, setEffectivePeriod] = useState(props.period),
@@ -1590,6 +1600,17 @@ export function PolicyForm(props: FormProps) {
     selectProfile("");
   };
   const validProfile = profileName.trim() && dimensionRows.every((row) => row.key.trim() && row.value.trim()) && new Set(dimensionRows.map((row) => row.key.trim())).size === dimensionRows.length;
+  const replacePastedRules = () => {
+    try {
+      const parsed = parseApprovedCombinations(pastedRules);
+      setRuleRows(parsed.map((rule) => ({ id: uid(), account: rule.account,
+        dimensions: Object.entries(rule.dimensions).map(([key, value]) => ({ id: uid(), key, value })) })));
+      setPasteError("");
+      setPastedRules("");
+    } catch (error) {
+      setPasteError(error instanceof Error ? error.message : "The pasted table could not be read.");
+    }
+  };
   const chooseEffectivePeriod = (month: string) => {
     setEffectivePeriod(month);
     const policy = [...props.state.policy_versions]
@@ -1600,6 +1621,11 @@ export function PolicyForm(props: FormProps) {
       setAccounts(policy.accounts);
       setOverrides(policy.account_overrides || { contracts: {}, obligations: {} });
       setProfiles(policy.account_profiles || {});
+      setRuleSource(policy.account_dimension_source || "");
+      setRuleRows((policy.account_dimension_rules || []).map((rule) => ({
+        id: uid(), account: rule.account,
+        dimensions: Object.entries(rule.dimensions).map(([key, value]) => ({ id: uid(), key, value })),
+      })));
       setAssignments(policy.profile_assignments || {});
       setObligationAssignments(policy.obligation_profile_assignments || {});
       selectProfile("");
@@ -1608,12 +1634,15 @@ export function PolicyForm(props: FormProps) {
   return (
     <CommandDialog
       {...props}
+      wide
       period={effectivePeriod}
       title="Company & accounting policy"
       subtitle="Four required journal roles can route to as many GL codes and dimension combinations as your contracts need."
       command={() => ({
         command: "set_policy",
-        payload: { name, accounts, account_overrides: overrides, account_profiles: profiles, profile_assignments: assignments, obligation_profile_assignments: obligationAssignments, account_transition: transition || undefined, effective_period: effectivePeriod, rationale },
+        payload: { name, accounts, account_overrides: overrides, account_profiles: profiles, profile_assignments: assignments, obligation_profile_assignments: obligationAssignments,
+          account_dimension_rules: ruleRows.map((row) => ({ account: row.account.trim(), dimensions: Object.fromEntries(row.dimensions.map((dimension) => [dimension.key.trim(), dimension.value.trim()])) })),
+          account_dimension_source: ruleSource, account_transition: transition || undefined, effective_period: effectivePeriod, rationale },
       })}
       confirmLabel="Save policy"
       successMessage="Company policy updated."
@@ -1675,6 +1704,23 @@ export function PolicyForm(props: FormProps) {
           <Field label="GL account code"><input value={accountCode} onChange={(e) => setAccountCode(e.target.value)} placeholder="e.g. 4100" /></Field>
         </div>
         <Button type="button" disabled={!contractId || !accountCode.trim() || (scope === "obligation" && !obligationId)} onClick={addMapping}>Add mapping</Button>
+      </Section>
+      <Section title="Approved posting combinations" subtitle="Optional local preflight against a reviewed list of exact GL account and dimension combinations. Only listed accounts are validated; the destination ledger remains authoritative.">
+        <Field label="Chart or account-structure source" hint="Name the approved source and version used to build this list."><input required={ruleRows.length > 0} value={ruleSource} onChange={(event) => setRuleSource(event.target.value)} placeholder="e.g. September account structure export" /></Field>
+        <details><summary>Paste combinations from a spreadsheet</summary><p className="fine-print">Paste tab-separated columns headed Account, then dimension names. Each row is one complete allowed combination; a blank cell means the dimension is absent, not a wildcard. This replaces the list below when you click Apply.</p><Field label="Approved combinations table"><textarea rows={5} value={pastedRules} onChange={(event) => { setPastedRules(event.target.value); setPasteError(""); }} placeholder={"Account\tDepartment\tProject\n4000\tRecurring\tP-17\n2300\tHead office\tP-17"} /></Field>{pasteError && <p className="error">{pasteError}</p>}<Button type="button" disabled={!pastedRules.trim()} onClick={replacePastedRules}>Apply pasted combinations</Button></details>
+        {ruleRows.map((rule, index) => <div className="editor-row" key={rule.id}>
+          <div className="form-grid">
+            <Field label="GL account"><input required value={rule.account} onChange={(event) => setRuleRows(ruleRows.map((item, i) => i === index ? { ...item, account: event.target.value } : item))} placeholder="e.g. 4100" /></Field>
+            <Button type="button" onClick={() => setRuleRows(ruleRows.filter((item) => item.id !== rule.id))}>Remove combination</Button>
+          </div>
+          {rule.dimensions.map((dimension) => <div className="form-grid" key={dimension.id}>
+            <Field label="Dimension name"><input required value={dimension.key} onChange={(event) => setRuleRows(ruleRows.map((item, i) => i === index ? { ...item, dimensions: item.dimensions.map((part) => part.id === dimension.id ? { ...part, key: event.target.value } : part) } : item))} placeholder="Department" /></Field>
+            <Field label="Allowed value"><input required value={dimension.value} onChange={(event) => setRuleRows(ruleRows.map((item, i) => i === index ? { ...item, dimensions: item.dimensions.map((part) => part.id === dimension.id ? { ...part, value: event.target.value } : part) } : item))} placeholder="Recurring" /></Field>
+            <Button type="button" onClick={() => setRuleRows(ruleRows.map((item, i) => i === index ? { ...item, dimensions: item.dimensions.filter((part) => part.id !== dimension.id) } : item))}>Remove dimension</Button>
+          </div>)}
+          <Button type="button" onClick={() => setRuleRows(ruleRows.map((item, i) => i === index ? { ...item, dimensions: [...item.dimensions, { id: uid(), key: "", value: "" }] } : item))}>Add dimension</Button>
+        </div>)}
+        <Button type="button" onClick={() => setRuleRows([...ruleRows, { id: uid(), account: "", dimensions: [] }])}>Add approved combination</Button>
       </Section>
       <Field label="Opening balance treatment" hint="Required when changing a deferred revenue or contract asset account or a profile dimension with an opening balance. Transfer adds balanced opening entries to this month's journal. External means you will post and reconcile the transfer outside OpenRevRec.">
         <select value={transition} onChange={(e) => setTransition(e.target.value)}><option value="">Choose when needed</option><option value="transfer">Transfer opening balances in journal</option><option value="external">External transfer and reconciliation</option></select>

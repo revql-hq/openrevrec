@@ -1729,6 +1729,78 @@ def test_obligation_profiles_route_revenue_dimensions_and_flag_segment_imbalance
     assert application.state(period="2026-01")["report"]["journals"] == journals
 
 
+def test_supplied_account_dimension_combinations_block_invalid_lines_and_expose_gaps(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    application.execute("record_billing", {
+        "contract_id": "con_1", "effective_date": "2026-09-01", "amount": "12000.00",
+    }, period="2026-09")
+    profile = {"recurring": {"name": "Recurring", "accounts": {}, "dimensions": {"Department": "Recurring"}}}
+    application.execute("set_policy", {
+        "effective_period": "2026-09", "account_profiles": profile,
+        "obligation_profile_assignments": {"con_1": {"pob_1": "recurring"}},
+    }, period="2026-09")
+    wrong = [{"account": "4000", "dimensions": {"Department": "Other"}}]
+    with pytest.raises(ValueError, match="Name the reviewed chart"):
+        application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_rules": wrong}, period="2026-09")
+    with pytest.raises(ValueError, match="unique"):
+        application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_rules": wrong + wrong,
+                                           "account_dimension_source": "Approved chart"}, period="2026-09")
+    with pytest.raises(ValueError, match="unique after trimming"):
+        application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_rules": [
+            {"account": "4000", "dimensions": {"Department": "Recurring", " Department ": "Other"}},
+        ], "account_dimension_source": "Approved chart"}, period="2026-09")
+    application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_rules": wrong,
+                                       "account_dimension_source": "Approved chart"}, period="2026-09")
+    state = application.state(period="2026-09")
+    exceptions = state["report"]["account_dimension_exceptions"]
+    assert [(row["account"], row["dimensions"]) for row in exceptions] == [("4000", {"Department": "Recurring"})]
+    assert state["report"]["account_dimension_unvalidated_accounts"] == ["1100", "2300"]
+    book = load_workbook(io.BytesIO(export_bytes(state)), read_only=True)
+    assert list(book["Approved combinations"].values)[1][2:] == ("4000", '{"Department":"Other"}')
+    assert any(row[0] == "Invalid combination" and row[4] == "4000" for row in book["Combination preflight"].values)
+    book.close()
+    check = next(row for row in application.reports(period="2026-09")["checks"] if row["id"] == "account_dimensions")
+    assert check["status"] == "block"
+    assert check["target"] == {"view": "Journal entries"}
+    with pytest.raises(ValueError, match="Resolve close blockers"):
+        application.execute("close_period", {"period": "2026-09"}, period="2026-09")
+    partial = [{"account": "4000", "dimensions": {"Department": "Recurring"}}]
+    application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_rules": partial,
+                                       "account_dimension_source": "Approved chart"}, period="2026-09")
+    assert next(row for row in application.reports(period="2026-09")["checks"] if row["id"] == "account_dimensions")["status"] == "review"
+    complete = partial + [{"account": "1100", "dimensions": {}}, {"account": "2300", "dimensions": {}}]
+    application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_rules": complete,
+                                       "account_dimension_source": "Approved chart"}, period="2026-09")
+    report = application.state(period="2026-09")["report"]
+    assert not report["account_dimension_exceptions"]
+    assert not report["account_dimension_unvalidated_accounts"]
+    assert next(row for row in application.reports(period="2026-09")["checks"] if row["id"] == "account_dimensions")["status"] == "pass"
+    assert application.state(period="2026-10")["policy"]["account_dimension_rules"] == complete
+    application.execute("close_period", {"period": "2026-09", "review_dispositions": accept_review_items(application, "2026-09")}, period="2026-09")
+    with pytest.raises(ValueError, match="reopen"):
+        application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_rules": partial,
+                                           "account_dimension_source": "Approved chart"}, period="2026-09")
+
+
+def test_backdated_approved_combinations_flow_through_later_unrelated_policy(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    application.execute("set_policy", {
+        "effective_period": "2026-11", "accounts": {"billing_clearing": "1110"},
+        "account_dimension_rules": [], "account_dimension_source": "",
+    }, period="2026-11")
+    rules = [{"account": "4000", "dimensions": {}}]
+    application.execute("set_policy", {
+        "effective_period": "2026-10", "account_dimension_rules": rules,
+        "account_dimension_source": "Approved chart v2",
+    }, period="2026-10")
+    november = application.state(period="2026-11")
+    assert november["policy"]["account_dimension_rules"] == rules
+    assert november["policy"]["account_dimension_source"] == "Approved chart v2"
+    assert november["policy"]["accounts"]["billing_clearing"] == "1110"
+
+
 def test_export_batch_identity_changes_with_journal_not_descriptive_notes(tmp_path):
     application = app(tmp_path)
     seed(application)

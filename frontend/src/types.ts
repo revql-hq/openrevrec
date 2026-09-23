@@ -136,6 +136,7 @@ export type AccountProfile = {
   accounts: Record<string, string>;
   dimensions: Record<string, string>;
 };
+export type AccountDimensionRule = { account: string; dimensions: Record<string, string> };
 export type Schedule = {
   period: string;
   contract_id: string;
@@ -166,6 +167,10 @@ export type Report = {
   schedule: Schedule[];
   journals: Journal[];
   segment_imbalances?: { contract_id: string; dimensions: Record<string, string>; net_debit: string }[];
+  account_dimension_exceptions?: { journal_id: string; contract_id: string; account: string; role: string; dimensions: Record<string, string> }[];
+  account_dimension_unvalidated_accounts?: string[];
+  policy_account_dimension_rules?: AccountDimensionRule[];
+  policy_account_dimension_source?: string;
   warnings: string[];
   catch_ups?: CatchUp[];
   renewal_links?: RenewalLinkReport[];
@@ -299,6 +304,8 @@ export type State = {
     profile_assignments?: Record<string, string>;
     obligation_profile_assignments?: Record<string, Record<string, string>>;
     account_transition?: "transfer" | "external";
+    account_dimension_rules?: AccountDimensionRule[];
+    account_dimension_source?: string;
   };
   policy_versions: {
     version: number;
@@ -311,6 +318,8 @@ export type State = {
     account_profiles?: Record<string, AccountProfile>;
     profile_assignments?: Record<string, string>;
     obligation_profile_assignments?: Record<string, Record<string, string>>;
+    account_dimension_rules?: AccountDimensionRule[];
+    account_dimension_source?: string;
     change_set_id?: string;
   }[];
   customers: Customer[];

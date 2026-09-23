@@ -1313,10 +1313,11 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
     previous_assignments = (previous_policy or policy).get("profile_assignments", {})
     if any(not str(accounts[role]).strip() for role in DEFAULT_ACCOUNTS):
         raise ValueError("All four journal account roles require an account code")
-    report: dict[str, Any] = {"period": period, "summary": {}, "contracts": [], "schedule": [], "journals": [], "account_transitions": [], "segment_imbalances": [], "warnings": [], "catch_ups": [], "renewal_links": [],
+    report: dict[str, Any] = {"period": period, "summary": {}, "contracts": [], "schedule": [], "journals": [], "account_transitions": [], "segment_imbalances": [], "account_dimension_exceptions": [], "account_dimension_unvalidated_accounts": [], "warnings": [], "catch_ups": [], "renewal_links": [],
                               "policy_version": policy.get("version", 1), "policy_effective_period": policy.get("effective_period", "0001-01"),
                               "policy_accounts": accounts, "policy_account_overrides": overrides,
-                              "policy_account_profiles": profiles, "policy_profile_assignments": assignments, "policy_obligation_profile_assignments": obligation_assignments}
+                              "policy_account_profiles": profiles, "policy_profile_assignments": assignments, "policy_obligation_profile_assignments": obligation_assignments,
+                              "policy_account_dimension_rules": policy.get("account_dimension_rules", []), "policy_account_dimension_source": policy.get("account_dimension_source", "")}
     identifiers = set()
     with localcontext() as context:
         context.prec = 48
@@ -1344,6 +1345,21 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
             report["account_transitions"].extend(transitions)
             report["warnings"].extend(transition_warnings)
             report["segment_imbalances"].extend(segment_imbalances)
+        allowed_combinations: dict[str, set[tuple[tuple[str, str], ...]]] = defaultdict(set)
+        for rule in policy.get("account_dimension_rules", []):
+            allowed_combinations[rule["account"]].add(tuple(sorted(rule["dimensions"].items())))
+        if allowed_combinations:
+            unvalidated_accounts = set()
+            for journal in report["journals"]:
+                account = journal["account"]
+                if account not in allowed_combinations:
+                    unvalidated_accounts.add(account)
+                elif tuple(sorted(journal.get("dimensions", {}).items())) not in allowed_combinations[account]:
+                    report["account_dimension_exceptions"].append({
+                        "journal_id": journal["id"], "contract_id": journal["contract_id"],
+                        "account": account, "role": journal["role"], "dimensions": journal.get("dimensions", {}).copy(),
+                    })
+            report["account_dimension_unvalidated_accounts"] = sorted(unvalidated_accounts)
         projected = {item["id"]: item for item in report["contracts"]}
         names = {item["id"]: item["name"] for item in state.get("contracts", [])}
         for link in state.get("renewal_links", []):

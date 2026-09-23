@@ -253,8 +253,19 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
                "Every judgment change has a supported review record." if not unsupported_judgments else f"{len(unsupported_judgments)} judgment change(s) lack a supported review record or have an open exception.",
                "review", len(unsupported_judgments)),
     ]
+    if report.get("policy_account_dimension_rules"):
+        invalid = report.get("account_dimension_exceptions", [])
+        uncovered = report.get("account_dimension_unvalidated_accounts", [])
+        checks.insert(1, _check(
+            "account_dimensions", "Approved account and dimension combinations", not invalid and not uncovered,
+            (f"{len(invalid)} journal line(s) use a combination outside the supplied chart."
+             if invalid else f"{len(uncovered)} journal account(s) are absent from the supplied chart."
+             if uncovered else "Every journal line matches a supplied approved combination."),
+            "block" if invalid else "review", len(invalid) if invalid else len(uncovered),
+        ))
     targets = {
         "journal": {"view": "Journal entries"},
+        "account_dimensions": {"view": "Journal entries"},
         "allocation": {"view": "Contracts", "id": allocation_mismatches[0]["id"], "tab": "Allocation"} if allocation_mismatches else {"view": "Contracts"},
         "cutover": {"view": "Contracts", "id": pending_cutovers[0]["id"], "tab": "Overview"} if pending_cutovers else {"view": "Contracts"},
         "external_controls": {"view": "Reports", "tab": "External controls"},
@@ -279,7 +290,7 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
         "external_control": control, "external_control_comparison": control_comparison,
         "population_manifest": population_manifest, "population_comparison": population_comparison,
         "recognition_coverage": coverage, "scenario_impacts": scenario_impacts or [],
-        "exceptions": {"allocation": allocation_mismatches, "cutover": pending_cutovers, "warnings": warning_targets, "tasks": due_tasks, "term_reviews": due_term_reviews, "cutoff": late_changes,
+        "exceptions": {"allocation": allocation_mismatches, "account_dimensions": report.get("account_dimension_exceptions", []), "cutover": pending_cutovers, "warnings": warning_targets, "tasks": due_tasks, "term_reviews": due_term_reviews, "cutoff": late_changes,
                        "coverage": gaps, "scenarios": active_scenarios, "evidence": unsupported_judgments},
         "counts": {
             "contracts": len(report["contracts"]), "open_tasks": len(open_tasks),
