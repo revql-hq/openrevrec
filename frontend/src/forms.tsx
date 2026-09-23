@@ -845,6 +845,11 @@ export function ContractForm(
           <Field label="Starting point" hint="The annual template uses an inclusive 12-month service term. Enter all actual prices and SSPs yourself.">
             <select required value={template} onChange={(event) => {
               const choice = event.target.value;
+              if (choice === template) return;
+              if (termsDirty && !window.confirm("Replace the entered contract dates, consideration, obligations, and term assessment with this starting point?")) {
+                event.target.value = template;
+                return;
+              }
               setTemplate(choice);
               const nextStart = choice === "annual" ? annualStart : "";
               const nextEnd = choice === "annual" ? annualEnd : "";
@@ -856,6 +861,7 @@ export function ContractForm(
               setTermReviewDate("");
               setComponents([{ id: uid(), label: choice === "annual" ? "Subscription" : "", kind: "fixed", amount: "" }]);
               setObligations([{ id: uid(), name: choice === "annual" ? "Subscription service" : "", kind: "service", ssp: "", method: "exact_days", start_date: nextStart, end_date: nextEnd }]);
+              setTermsDirty(false);
             }}><option value="">Choose a starting point</option><option value="blank">Blank contract</option><option value="annual">Annual subscription template</option></select>
           </Field>
           <div className="form-grid">
@@ -909,6 +915,7 @@ export function ContractForm(
                 value={start}
                 onChange={(e) => {
                   setStart(e.target.value);
+                  setTermsDirty(true);
                   setObligations(
                     obligations.map((o) =>
                       o.start_date === start
@@ -927,6 +934,7 @@ export function ContractForm(
                 value={end}
                 onChange={(e) => {
                   setEnd(e.target.value);
+                  setTermsDirty(true);
                   setObligations(
                     obligations.map((o) =>
                       o.end_date === end
