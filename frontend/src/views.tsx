@@ -2085,7 +2085,7 @@ export function SettingsView(props: ViewProps) {
     <>
       <Heading
         title="Settings"
-        subtitle="Workspace identity, policy version, and journal account mapping."
+        subtitle="Four journal roles; profiles and overrides can use additional GL accounts."
       >
         <Button
           primary
@@ -2143,14 +2143,14 @@ export function SettingsView(props: ViewProps) {
       </div>
       <Section
         title="Journal account mapping"
-        subtitle={"Default roles, reusable profiles, and specific overrides effective for " + props.period + ". Earlier periods retain their prior mapping."}
+        subtitle={"The four rows are default journal roles, not an account limit. Contract profiles route balance and billing lines; obligation profiles can route revenue lines separately. Effective for " + props.period + "."}
       >
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>Role</th>
-                <th>Account code</th>
+                <th>Default GL account</th>
               </tr>
             </thead>
             <tbody>

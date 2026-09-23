@@ -1781,7 +1781,7 @@ export function PolicyForm(props: FormProps) {
       wide
       period={effectivePeriod}
       title="Company & accounting policy"
-      subtitle="Four required journal roles can route to as many GL codes and dimension combinations as your contracts need."
+      subtitle="Four required journal roles can route to more GL codes through profiles and overrides. Balance routes stay at contract level; revenue can vary by obligation."
       command={() => ({
         command: "set_policy",
         payload: { name, accounts, account_overrides: overrides, account_profiles: profiles, profile_assignments: assignments, obligation_profile_assignments: obligationAssignments,
