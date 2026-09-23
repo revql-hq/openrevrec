@@ -274,6 +274,22 @@ function SourcePopulation({ review, props }: { review: Review; props: ViewProps 
   </Section>;
 }
 
+function WarningRows({ review, props }: { review: Review; props: ViewProps }) {
+  const messageCounts = new Map<string, number>();
+  review.warnings.forEach((message) => messageCounts.set(message, (messageCounts.get(message) ?? 0) + 1));
+  return <div className="report-list">{review.warnings.map((warning, index) => {
+    const detail = review.exceptions.warnings[index];
+    const target = detail?.message === warning ? detail : null;
+    return <div key={`${index}:${warning}`}>
+      <span className="warning-message">{warning}
+        {(messageCounts.get(warning) ?? 0) > 1 && target?.contract_id && <small>Contract ID: {target.contract_id}</small>}
+      </span>
+      {target?.contract_id && <Button onClick={() => props.navigate("Contracts", target.contract_id || undefined, target.obligation_id ? "Recognition" : "Overview", target.obligation_id || undefined)}>Open contract</Button>}
+      {target?.related_contract_id && <Button onClick={() => props.navigate("Contracts", target.related_contract_id || undefined, "Allocation")}>Open related</Button>}
+    </div>;
+  })}</div>;
+}
+
 function ReportContent({
   review,
   view,
@@ -286,10 +302,7 @@ function ReportContent({
   const currency = props.state.workspace.currency;
   if (view === "Accounting warnings")
     return <Section title="Accounting warnings" subtitle={`${review.warnings.length} warning${review.warnings.length === 1 ? "" : "s"} for ${monthLabel(review.period)}.`} action={<Button onClick={() => props.navigate("Reports", undefined, "Close readiness")}>Review close checks</Button>}>
-      {review.warnings.length > 0 ? <div className="report-list">{review.warnings.map((warning, index) => {
-        const target = review.exceptions.warnings[index];
-        return <div key={`${index}:${warning}`}><span className="warning-message">{warning}</span>{target?.contract_id && <Button onClick={() => props.navigate("Contracts", target.contract_id || undefined, target.obligation_id ? "Recognition" : "Overview", target.obligation_id || undefined)}>Open contract</Button>}{target?.related_contract_id && <Button onClick={() => props.navigate("Contracts", target.related_contract_id || undefined, "Allocation")}>Open related</Button>}</div>;
-      })}</div> : <Empty title="No accounting warnings">This period has no accounting warnings.</Empty>}
+      {review.warnings.length > 0 ? <WarningRows review={review} props={props} /> : <Empty title="No accounting warnings">This period has no accounting warnings.</Empty>}
     </Section>;
   if (view === "Close readiness")
     return (
@@ -363,11 +376,7 @@ function ReportContent({
         </Section>}
         {review.warnings.length > 0 && (
           <Section title="Accounting warnings">
-            <div className="warning">
-              {review.warnings.map((warning, index) => (
-                <p key={index}>{warning}</p>
-              ))}
-            </div>
+            <WarningRows review={review} props={props} />
           </Section>
         )}
       </>

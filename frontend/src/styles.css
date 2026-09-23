@@ -259,6 +259,7 @@ tfoot th, tfoot td { background: #f7f7f4; border-top: 1px solid var(--line); bor
 .report-list > div:last-child { border-bottom: 0; }
 .report-list svg { color: #66766a; }
 .warning-message { flex: 1; min-width: 0; }
+.warning-message small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
 .report-tabs { margin: -7px 0 24px; display: flex; gap: 4px; overflow-x: auto; padding-bottom: 1px; }
 .report-tabs button { min-height: 31px; border: 1px solid transparent; border-radius: 6px; background: transparent; padding: 5px 10px; color: var(--muted); cursor: pointer; white-space: nowrap; }
 .report-tabs button:hover { background: #eeefec; color: var(--ink); }
