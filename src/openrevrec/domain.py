@@ -1223,7 +1223,7 @@ def _linked_balances_offset(first: dict, second: dict) -> bool:
             or decimal(first["deferred_revenue"]) > ZERO and decimal(second["contract_asset"]) > ZERO)
 
 
-def _journals(report: dict, period: str, accounts: dict[str, str], overrides: dict, profiles: dict, assignments: dict, obligation_assignments: dict, schedule: list[dict], previous_accounts: dict, previous_overrides: dict, previous_profiles: dict, previous_assignments: dict, transition: str) -> tuple[list[dict], list[dict], list[str], list[dict]]:
+def _journals(report: dict, period: str, accounts: dict[str, str], overrides: dict, profiles: dict, assignments: dict, obligation_assignments: dict, schedule: list[dict], previous_accounts: dict, previous_overrides: dict, previous_profiles: dict, previous_assignments: dict, transition: str) -> tuple[list[dict], list[dict], list[str], list[dict], list[dict]]:
     movements = {
         "billing_clearing": decimal(report["billings"]),
         "contract_asset": decimal(report["contract_asset"]) - decimal(report["beginning_contract_asset"]),
@@ -1305,7 +1305,15 @@ def _journals(report: dict, period: str, accounts: dict[str, str], overrides: di
                           for dimensions, net in sorted(dimension_nets.items()) if net]
     if segment_imbalances:
         warnings.append(f"{report['name']}: journal balances overall but not by dimension combination; confirm the destination ledger's interunit balancing rules or prepare separate balancing entries before posting.")
-    return result, transitions, warnings, segment_imbalances
+    positions = []
+    for role in ("contract_asset", "deferred_revenue"):
+        closing = decimal(report[role])
+        if closing:
+            positions.append({"contract_id": contract_id, "role": role,
+                              "account": _resolved_account(accounts, overrides, contract_id, role, profiles=profiles, assignments=assignments),
+                              "dimensions": current_dimensions.copy(), "account_profile_id": current_profile_id,
+                              "balance": amount(closing)})
+    return result, transitions, warnings, segment_imbalances, positions
 
 
 def calculate(state: dict, period: str) -> dict:
@@ -1355,7 +1363,7 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
     previous_assignments = (previous_policy or policy).get("profile_assignments", {})
     if any(not str(accounts[role]).strip() for role in DEFAULT_ACCOUNTS):
         raise ValueError("All four journal account roles require an account code")
-    report: dict[str, Any] = {"period": period, "summary": {}, "contracts": [], "schedule": [], "journals": [], "account_transitions": [], "segment_imbalances": [], "account_dimension_exceptions": [], "account_dimension_unvalidated_accounts": [], "warnings": [], "warning_details": [], "catch_ups": [], "renewal_links": [], "modification_links": [],
+    report: dict[str, Any] = {"period": period, "summary": {}, "contracts": [], "schedule": [], "journals": [], "account_transitions": [], "account_positions": [], "segment_imbalances": [], "account_dimension_exceptions": [], "account_dimension_unvalidated_accounts": [], "warnings": [], "warning_details": [], "catch_ups": [], "renewal_links": [], "modification_links": [],
                               "policy_version": policy.get("version", 1), "policy_effective_period": policy.get("effective_period", "0001-01"),
                               "policy_accounts": accounts, "policy_account_overrides": overrides,
                               "policy_account_profiles": profiles, "policy_profile_assignments": assignments, "policy_obligation_profile_assignments": obligation_assignments,
@@ -1386,9 +1394,10 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
             report["catch_ups"].extend(catch_ups)
             for warning in warnings:
                 record_warning(warning["message"], warning.get("contract_id"), warning.get("obligation_id"))
-            journals, transitions, transition_warnings, segment_imbalances = _journals(projection, period, accounts, overrides, profiles, assignments, obligation_assignments, schedule, previous_accounts, previous_overrides, previous_profiles, previous_assignments, policy.get("account_transition", "external"))
+            journals, transitions, transition_warnings, segment_imbalances, positions = _journals(projection, period, accounts, overrides, profiles, assignments, obligation_assignments, schedule, previous_accounts, previous_overrides, previous_profiles, previous_assignments, policy.get("account_transition", "external"))
             report["journals"].extend(journals)
             report["account_transitions"].extend(transitions)
+            report["account_positions"].extend(positions)
             for warning in transition_warnings:
                 record_warning(warning, contract["id"])
             report["segment_imbalances"].extend(segment_imbalances)

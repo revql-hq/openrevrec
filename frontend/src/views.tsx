@@ -1687,6 +1687,15 @@ export function JournalView(props: ViewProps) {
           <td>{item.treatment === "transfer" ? "Journal transfer" : item.treatment === "external" ? "External reconciliation" : humanize(item.treatment)}</td>
         </tr>)}</tbody></table></div>
       </Section>}
+      {Boolean(state.report.account_positions?.length) && <Section title="Projected contract balances by account" subtitle="These balances follow the workspace's account mapping and assume any selected external transfer was completed in the ledger. Reconcile them to the ledger before posting.">
+        <div className="table-wrap"><table><thead><tr><th>Contract</th><th>Role</th><th>Account</th><th>Dimensions</th><th className="number">Closing balance</th></tr></thead><tbody>{state.report.account_positions?.map((item, index) => <tr key={`${item.contract_id}:${item.role}:${item.account}:${index}`}>
+          <td><button className="table-link" onClick={() => props.navigate("Contracts", item.contract_id)}>{state.contracts.find((contract) => contract.id === item.contract_id)?.name || item.contract_id}</button></td>
+          <td>{humanize(item.role)}</td>
+          <td className="mono">{item.account}</td>
+          <td>{Object.entries(item.dimensions).map(([key, value]) => `${key}: ${value}`).join(" · ") || "—"}</td>
+          <td className="number">{money(item.balance, state.workspace.currency)}</td>
+        </tr>)}</tbody></table></div>
+      </Section>}
       <Section title="Posting combination preflight" subtitle={state.report.policy_account_dimension_rules?.length ? `Checked against ${state.report.policy_account_dimension_source}. Only listed accounts are covered; confirm final posting rules in the destination ledger.` : "No approved combination list is configured for this period."} action={<Button type="button" disabled={state.scenario_id !== "main"} onClick={() => props.dialog({ type: "policy" })}>{state.report.policy_account_dimension_rules?.length ? "Edit approved combinations" : "Add approved combinations"}</Button>}>
         {!state.report.policy_account_dimension_rules?.length && <p className="fine-print">Account and dimension combinations need validation in the destination ledger before posting.</p>}
         {Boolean(state.report.account_dimension_exceptions?.length) && <div className="table-wrap"><table><thead><tr><th>Contract</th><th>Journal line</th><th>Account</th><th>Dimensions</th></tr></thead><tbody>{state.report.account_dimension_exceptions?.map((item) => <tr key={item.journal_id}><td><button className="table-link" onClick={() => props.navigate("Contracts", item.contract_id)}>{state.contracts.find((contract) => contract.id === item.contract_id)?.name || item.contract_id}</button></td><td className="mono">{item.journal_id}</td><td className="mono">{item.account}</td><td>{Object.entries(item.dimensions).map(([key, value]) => `${key}: ${value}`).join(" · ") || "No dimensions"}</td></tr>)}</tbody></table></div>}

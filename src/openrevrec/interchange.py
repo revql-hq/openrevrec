@@ -244,6 +244,9 @@ def export_bytes(state, review=None):
            [["Obligation", contract_id, obligation_id, "revenue", account] for contract_id, items in overrides.get("obligations", {}).items() for obligation_id, account in items.items()])
     _sheet(book, "Account transitions", ["Contract ID", "Role", "From account", "To account", "Opening balance", "Treatment", "From dimensions", "To dimensions"],
            [[row[k] for k in ("contract_id", "role", "from_account", "to_account", "opening_balance", "treatment")] + [row.get("from_dimensions", {}), row.get("to_dimensions", {})] for row in report.get("account_transitions", [])])
+    _sheet(book, "Account positions", ["Contract ID", "Role", "Account", "Dimensions", "Profile ID", "Projected closing balance"],
+           [[row["contract_id"], row["role"], row["account"], row.get("dimensions", {}), row.get("account_profile_id") or "", Decimal(row["balance"])]
+            for row in report.get("account_positions", [])])
     _sheet(book, "Allocation support", ["contract_id", "obligation_id", "name", "ssp", "amount"], [[c["id"], a["obligation_id"], a["name"], Decimal(a["ssp"]), Decimal(a["amount"])] for c in report["contracts"] for a in c["allocation"]])
     _sheet(book, "Component allocation", ["Contract ID", "Component ID", "Component", "Kind", "Included amount", "Scope", "Target obligation IDs", "Accounting rationale", "Target service month", "Targeted amount recognized to date", "Unit rate", "Pricing basis", "Rounding period"],
            [[contract["id"], item["component_id"], item["label"], item["kind"], Decimal(item["included_amount"]), item["scope"], ", ".join(item["target_obligation_ids"]), item["rationale"], item.get("target_period", ""), Decimal(item["recognized_to_date"]) if item.get("recognized_to_date") is not None else "", item.get("unit_rate", ""), item.get("pricing_basis", ""), item.get("rounding_period", "")]

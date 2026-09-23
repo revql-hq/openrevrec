@@ -336,6 +336,24 @@ class Application:
                     report.update({k: snapshot[k] for k in ("summary", "contracts", "journals", "warnings")})
                     report["warning_details"] = snapshot.get("warning_details", [])
                     report["account_transitions"] = snapshot.get("account_transitions", [])
+                    if "account_positions" in snapshot:
+                        report["account_positions"] = snapshot["account_positions"]
+                    else:
+                        # Derive the one-route position of older checkpoints
+                        # from their accepted policy, not today's mapping.
+                        closed_accounts = snapshot.get("policy_accounts", DEFAULT_ACCOUNTS)
+                        closed_overrides = snapshot.get("policy_account_overrides", {})
+                        closed_profiles = snapshot.get("policy_account_profiles", {})
+                        closed_assignments = snapshot.get("policy_profile_assignments", {})
+                        report["account_positions"] = [
+                            {"contract_id": contract["id"], "role": role,
+                             "account": _resolved_account(closed_accounts, closed_overrides, contract["id"], role,
+                                                          profiles=closed_profiles, assignments=closed_assignments),
+                             "dimensions": _resolved_dimensions(closed_profiles, closed_assignments, contract["id"]),
+                             "account_profile_id": closed_assignments.get(contract["id"]), "balance": contract[role]}
+                            for contract in snapshot["contracts"] for role in ("contract_asset", "deferred_revenue")
+                            if Decimal(contract[role]) != 0
+                        ]
                     report["segment_imbalances"] = snapshot.get("segment_imbalances", [])
                     report["account_dimension_exceptions"] = snapshot.get("account_dimension_exceptions", [])
                     report["account_dimension_unvalidated_accounts"] = snapshot.get("account_dimension_unvalidated_accounts", [])

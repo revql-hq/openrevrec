@@ -1399,8 +1399,10 @@ def test_close_checkpoint_blocks_change_and_reopen_is_explicit(tmp_path):
     application = app(tmp_path)
     seed(application)
     application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-01", "amount": "12000.00"}, period="2026-09")
+    open_positions = application.state(period="2026-09")["report"]["account_positions"]
     closed = application.execute("close_period", {"period": "2026-09", "rationale": "Reconciled to billing support.", "review_dispositions": accept_review_items(application, "2026-09")}, period="2026-09")
     assert closed["state"]["report"]["closed"] is True
+    assert closed["state"]["report"]["account_positions"] == open_positions
     assert closed["result"]["backup_path"].endswith(".orr")
     with pytest.raises(ValueError, match="affects closed period"):
         application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-30", "amount": "1.00"}, period="2026-09")
@@ -1990,6 +1992,7 @@ def test_deferred_account_change_requires_treatment_and_transfers_opening_balanc
     october = application.state(period="2026-10")["report"]
     assert application.state(period="2026-09")["report"]["journals"] == september["journals"]
     assert october["account_transitions"] == [{"contract_id": "con_1", "role": "deferred_revenue", "from_account": "2300", "to_account": "2310", "opening_balance": september["contracts"][0]["deferred_revenue"], "treatment": "transfer"}]
+    assert october["account_positions"] == [{"contract_id": "con_1", "role": "deferred_revenue", "account": "2310", "dimensions": {}, "account_profile_id": None, "balance": october["contracts"][0]["deferred_revenue"]}]
     posted = {}
     for row in september["journals"] + october["journals"]:
         if row["role"] == "deferred_revenue":
@@ -1997,6 +2000,10 @@ def test_deferred_account_change_requires_treatment_and_transfers_opening_balanc
     assert posted["2300"] == 0
     assert posted["2310"] == int(Decimal(october["contracts"][0]["deferred_revenue"]) * 100)
     assert sum(row["debit_minor"] - row["credit_minor"] for row in october["journals"]) == 0
+    book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-10"))), read_only=True)
+    assert book["Account positions"]["C2"].value == "2310"
+    assert Decimal(str(book["Account positions"]["F2"].value)) == Decimal(october["contracts"][0]["deferred_revenue"])
+    book.close()
 
 
 def test_balance_account_change_with_zero_opening_needs_no_transfer(tmp_path):

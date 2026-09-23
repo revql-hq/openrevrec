@@ -172,6 +172,7 @@ export type Report = {
   schedule: Schedule[];
   journals: Journal[];
   account_transitions?: { contract_id: string; role: string; from_account: string; to_account: string; opening_balance: string; treatment: string; from_dimensions?: Record<string, string>; to_dimensions?: Record<string, string> }[];
+  account_positions?: { contract_id: string; role: string; account: string; dimensions: Record<string, string>; account_profile_id?: string | null; balance: string }[];
   segment_imbalances?: { contract_id: string; dimensions: Record<string, string>; net_debit: string }[];
   account_dimension_exceptions?: { journal_id: string; contract_id: string; account: string; role: string; dimensions: Record<string, string> }[];
   account_dimension_unvalidated_accounts?: string[];
