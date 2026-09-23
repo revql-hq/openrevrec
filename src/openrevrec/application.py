@@ -783,12 +783,39 @@ class Application:
                 raise ValueError("The account-dimension source must accompany its approved combinations.")
             if p.get("account_transition") not in (None, "transfer", "external"):
                 raise ValueError("Choose transfer or external reconciliation for existing balance-sheet positions.")
-            if any((_resolved_account(current_policy["accounts"], current_policy.get("account_overrides", {}), contract_id, role, profiles=previous_profiles, assignments=previous_assignments),
+            effective_year, effective_month = (int(part) for part in p["effective_period"].split("-"))
+            if (effective_year, effective_month) == (1, 1):
+                previous_period = None
+            elif effective_month == 1:
+                previous_period = f"{effective_year - 1:04d}-12"
+            else:
+                previous_period = f"{effective_year:04d}-{effective_month - 1:02d}"
+            previous_policy = policy_for_period(state["policy_versions"], previous_period) if previous_period else current_policy
+            previous_accounts = previous_policy["accounts"]
+            previous_overrides = previous_policy.get("account_overrides", {})
+            previous_period_profiles = previous_policy.get("account_profiles", {})
+            previous_period_assignments = previous_policy.get("profile_assignments", {})
+            changed_balance_routes = [
+                (contract_id, role)
+                for contract_id in known_contracts for role in ("deferred_revenue", "contract_asset")
+                if (_resolved_account(current_policy["accounts"], current_policy.get("account_overrides", {}), contract_id, role,
+                                      profiles=previous_profiles, assignments=previous_assignments),
                     _resolved_dimensions(previous_profiles, previous_assignments, contract_id)) !=
-                   (_resolved_account(candidate_accounts, candidate_overrides, contract_id, role, profiles=normalized_profiles, assignments=requested_assignments),
+                   (_resolved_account(candidate_accounts, candidate_overrides, contract_id, role,
+                                      profiles=normalized_profiles, assignments=requested_assignments),
                     _resolved_dimensions(normalized_profiles, requested_assignments, contract_id))
-                   for contract_id in known_contracts for role in ("deferred_revenue", "contract_asset")):
-                if not p.get("account_transition"):
+                and (_resolved_account(previous_accounts, previous_overrides, contract_id, role,
+                                      profiles=previous_period_profiles, assignments=previous_period_assignments),
+                    _resolved_dimensions(previous_period_profiles, previous_period_assignments, contract_id)) !=
+                   (_resolved_account(candidate_accounts, candidate_overrides, contract_id, role,
+                                      profiles=normalized_profiles, assignments=requested_assignments),
+                    _resolved_dimensions(normalized_profiles, requested_assignments, contract_id))
+            ]
+            if previous_period and changed_balance_routes and not p.get("account_transition"):
+                previous_report = _calculation(state, previous_period)
+                opening_balances = {row["id"]: row for row in previous_report["contracts"]}
+                if any(Decimal(opening_balances.get(contract_id, {}).get(role, "0")) != 0
+                       for contract_id, role in changed_balance_routes):
                     raise ValueError("Choose how existing balance-sheet balances move to the new account: transfer or external reconciliation.")
             if not p.get("account_transition"):
                 p.pop("account_transition", None)

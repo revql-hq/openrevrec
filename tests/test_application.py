@@ -1979,9 +1979,14 @@ def test_deferred_account_change_requires_treatment_and_transfers_opening_balanc
     seed(application)
     application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-01", "amount": "12000"}, period="2026-09")
     september = application.state(period="2026-09")["report"]
+    assert september["contracts"][0]["contract_asset"] == "0.00"
+    application.execute("set_policy", {"effective_period": "2026-10", "accounts": {"contract_asset": "1210"}}, period="2026-10")
     with pytest.raises(ValueError, match="existing balance-sheet balances"):
         application.execute("set_policy", {"effective_period": "2026-10", "accounts": {"deferred_revenue": "2310"}}, period="2026-10")
     application.execute("set_policy", {"effective_period": "2026-10", "accounts": {"deferred_revenue": "2310"}, "account_transition": "transfer"}, period="2026-10")
+    with pytest.raises(ValueError, match="existing balance-sheet balances"):
+        application.execute("set_policy", {"effective_period": "2026-10", "accounts": {"deferred_revenue": "2320"}}, period="2026-10")
+    application.execute("set_policy", {"effective_period": "2026-10", "accounts": {"revenue": "4100"}}, period="2026-10")
     october = application.state(period="2026-10")["report"]
     assert application.state(period="2026-09")["report"]["journals"] == september["journals"]
     assert october["account_transitions"] == [{"contract_id": "con_1", "role": "deferred_revenue", "from_account": "2300", "to_account": "2310", "opening_balance": september["contracts"][0]["deferred_revenue"], "treatment": "transfer"}]
@@ -1991,6 +1996,30 @@ def test_deferred_account_change_requires_treatment_and_transfers_opening_balanc
             posted[row["account"]] = posted.get(row["account"], 0) + row["credit_minor"] - row["debit_minor"]
     assert posted["2300"] == 0
     assert posted["2310"] == int(Decimal(october["contracts"][0]["deferred_revenue"]) * 100)
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in october["journals"]) == 0
+
+
+def test_balance_account_change_with_zero_opening_needs_no_transfer(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "contract", "name": "Quarterly service", "customer_id": "customer",
+        "start_date": "2026-09-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "400.00"}],
+        "obligations": [{"id": "service", "name": "Service", "kind": "service", "ssp": "400.00", "method": "monthly", "start_date": "2026-09-01", "end_date": "2026-12-31"}],
+    }, period="2026-09")
+    application.execute("record_billing", {"contract_id": "contract", "effective_date": "2026-09-01", "amount": "100.00"}, period="2026-09")
+    september = application.state(period="2026-09")["report"]
+    assert september["contracts"][0]["deferred_revenue"] == "0.00"
+    assert september["contracts"][0]["contract_asset"] == "0.00"
+
+    application.execute("set_policy", {"effective_period": "2026-10", "accounts": {"deferred_revenue": "2310"}}, period="2026-10")
+    application.execute("set_policy", {"effective_period": "2026-10", "accounts": {"deferred_revenue": "2320"}}, period="2026-10")
+    application.execute("record_billing", {"contract_id": "contract", "effective_date": "2026-10-01", "amount": "300.00"}, period="2026-10")
+    october = application.state(period="2026-10")["report"]
+    assert october["contracts"][0]["deferred_revenue"] == "200.00"
+    assert october["account_transitions"] == []
+    assert {row["account"] for row in october["journals"] if row["role"] == "deferred_revenue"} == {"2320"}
     assert sum(row["debit_minor"] - row["credit_minor"] for row in october["journals"]) == 0
 
 
