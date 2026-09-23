@@ -764,6 +764,12 @@ def test_source_opening_obligations_catch_offsetting_splits_inside_one_contract(
                {**manifest["opening_obligations"][1], "recognized_to_date": "100.00"}]
     application.execute("record_population_manifest", {**manifest, "opening_obligations": correct}, period="2026-09")
     assert next(check for check in application.reports(period="2026-09")["checks"] if check["id"] == "source_population")["status"] == "pass"
+    mapped = [{**correct[0], "source_obligation_reference": "Legacy support A"},
+              {**correct[1], "source_obligation_reference": "Legacy support B"}]
+    application.execute("record_population_manifest", {**manifest, "opening_obligations": mapped}, period="2026-09")
+    mapped_review = application.reports(period="2026-09")
+    assert next(check for check in mapped_review["checks"] if check["id"] == "source_population")["status"] == "pass"
+    assert [row["source_obligation_reference"] for row in mapped_review["population_comparison"]["opening_obligation_rows"]] == ["Legacy support A", "Legacy support B"]
     application.execute("record_population_manifest", {**manifest, "opening_obligations": [{**correct[0], "measure": "1"}, correct[1]]}, period="2026-09")
     assert application.reports(period="2026-09")["population_comparison"]["mismatched_opening_obligation_measures"][0]["measure_status"] == "Source measure not used by workspace obligation"
 
@@ -801,9 +807,11 @@ def test_source_opening_measure_checks_future_recognition_basis(tmp_path):
             unverified_book["Source opening obligations"]["I2"].value) == (50, "Source measure not supplied")
     unverified_book.close()
     source_row = {"contract_reference": "PROGRESS-1", "cutover_date": "2026-09-01",
-                  "obligation_id": "implementation", "recognized_to_date": "500.00"}
+                  "obligation_id": "implementation", "recognized_to_date": "500.00",
+                  "source_obligation_reference": "Legacy workstream 17"}
     application.execute("record_population_manifest", {**manifest, "opening_obligations": [source_row]}, period="2026-09")
     assert application.reports(period="2026-09")["population_comparison"]["unverified_opening_obligation_measures"] == [("PROGRESS-1", "2026-09-01", "implementation")]
+    assert application.reports(period="2026-09")["population_comparison"]["opening_obligation_rows"][0]["source_obligation_reference"] == "Legacy workstream 17"
     application.execute("record_population_manifest", {**manifest, "opening_obligations": [{**source_row, "measure": "60"}]}, period="2026-09")
     comparison = application.reports(period="2026-09")["population_comparison"]
     assert comparison["mismatched_opening_obligation_measures"][0]["workspace_measure"] == "50"
@@ -811,9 +819,12 @@ def test_source_opening_measure_checks_future_recognition_basis(tmp_path):
     book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-09"), application.reports(period="2026-09"))))
     assert (book["Source opening obligations"]["G2"].value, book["Source opening obligations"]["H2"].value,
             book["Source opening obligations"]["I2"].value) == (60, 50, "Cumulative measures differ")
+    assert book["Source opening obligations"]["M2"].value == "Legacy workstream 17"
     book.close()
     with pytest.raises(ValueError, match="cannot be negative"):
         application.execute("record_population_manifest", {**manifest, "opening_obligations": [{**source_row, "measure": "-1"}]}, period="2026-09")
+    with pytest.raises(ValueError, match="Source obligation reference must be nonempty"):
+        application.execute("record_population_manifest", {**manifest, "opening_obligations": [{**source_row, "source_obligation_reference": " "}]}, period="2026-09")
     application.execute("record_population_manifest", {**manifest, "opening_obligations": [{**source_row, "measure": "50.0"}]}, period="2026-09")
     assert next(check for check in application.reports(period="2026-09")["checks"] if check["id"] == "source_population")["status"] == "pass"
 

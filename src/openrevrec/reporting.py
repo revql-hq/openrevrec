@@ -210,6 +210,7 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
                     "source_amount": "", "workspace_amount": actual_by_id[obligation_id]["recognized_to_date"],
                     "source_measure": "", "workspace_measure": actual_by_id[obligation_id].get("measure", ""),
                     "measure_status": "",
+                    "source_obligation_reference": "",
                     "activity_id": actual[0]["id"], "status": "Obligation not in source",
                 })
         for source_row in source_rows:
@@ -221,6 +222,7 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
                       "source_measure": source_row.get("measure", ""),
                       "workspace_measure": workspace_row.get("measure", "") if workspace_row else "",
                       "measure_status": "",
+                      "source_obligation_reference": source_row.get("source_obligation_reference", ""),
                       "activity_id": actual[0]["id"] if len(actual) == 1 else ""}
             if not actual:
                 result["status"] = "Opening missing in workspace"
