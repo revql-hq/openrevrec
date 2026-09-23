@@ -826,8 +826,8 @@ export function ContractForm(
       title={contract ? `Modify ${contract.name}` : "New contract"}
       subtitle={
         contract
-          ? "Record a dated accounting change to the existing contract."
-          : "Define the contract, transaction price, and performance obligations."
+          ? `Record a dated accounting change. Enter amounts in ${props.state.workspace.currency}; this workspace does not calculate FX.`
+          : `Define the contract, price, and obligations. Enter amounts in ${props.state.workspace.currency}; this workspace does not calculate FX.`
       }
       command={command}
       wide
@@ -1245,7 +1245,7 @@ export function ActivityForm(
         {["billing", "adjustment", "reassessment"].includes(activity) && (
           <Field
             label={
-              activity === "reassessment" ? "Revised included amount" : "Amount"
+              activity === "reassessment" ? `Revised included amount (${props.state.workspace.currency})` : `Amount (${props.state.workspace.currency})`
             }
           >
             <input
@@ -1283,8 +1283,8 @@ export function ActivityForm(
             />
           </Field>
         )}
-        {activity === "usage" && invoiceValueMode && <Field label="Value entitled to invoice for these units" hint="Use the actual amount from the approved pricing source, in cents. Record the invoice separately under Billing when issued."><input type="number" min="0" step="0.01" required value={invoiceValue} onChange={(event) => setInvoiceValue(event.target.value)} /></Field>}
-        {activity === "rate_change" && <Field label="Revised price per unit" hint={`Rate currently effective on this date: ${consideration[0]?.unit_rate || "—"} ${props.state.workspace.currency}/unit.`}><input type="number" min="0" step="any" required value={unitRate} onChange={(event) => setUnitRate(event.target.value)} /></Field>}
+        {activity === "usage" && invoiceValueMode && <Field label={`Value entitled to invoice for these units (${props.state.workspace.currency})`} hint="Use the actual amount from the approved pricing source, in cents. Record the invoice separately under Billing when issued."><input type="number" min="0" step="0.01" required value={invoiceValue} onChange={(event) => setInvoiceValue(event.target.value)} /></Field>}
+        {activity === "rate_change" && <Field label={`Revised price per unit (${props.state.workspace.currency}/unit)`} hint={`Rate currently effective on this date: ${consideration[0]?.unit_rate || "—"} ${props.state.workspace.currency}/unit.`}><input type="number" min="0" step="any" required value={unitRate} onChange={(event) => setUnitRate(event.target.value)} /></Field>}
         {activity !== "reassessment" && activity !== "right_exercise" && activity !== "rate_change" && (
           <Field
             label={
@@ -1401,7 +1401,7 @@ export function OpeningPositionForm(props: FormProps & { contract: Contract; cor
   return <CommandDialog
     {...props}
     title={correctionTarget ? "Correct opening position" : "Record opening position"}
-    subtitle={`${contract.name} · accepted legacy position before ${effective || "cutover"}`}
+    subtitle={`${contract.name} · accepted legacy position before ${effective || "cutover"} · amounts in ${props.state.workspace.currency}`}
     wide
     command={() => correctionTarget ? { command: "correct_opening_position", payload: { target_change_set_id: correctionTarget.id, rationale: correctionReason, replacement: replacement() } } : { command: "record_opening_position", payload: replacement() }}
     confirmLabel={correctionTarget ? "Record correction" : "Record opening position"}
