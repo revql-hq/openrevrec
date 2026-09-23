@@ -1048,7 +1048,7 @@ class Application:
         elif command == "record_population_manifest":
             if scenario_id != "main":
                 raise ValueError("Source population manifests belong to Main, not a scenario.")
-            if set(p) - {"period", "source_name", "rationale", "contract_references", "billing_references"}:
+            if set(p) - {"period", "source_name", "rationale", "contract_references", "billing_references", "usage_references"}:
                 raise ValueError("Source population manifest has unsupported fields.")
             p["period"] = valid_period(p.get("period"))
             if any(close["period"] == p["period"] and close["status"] == "closed" for close in state["closes"]):
@@ -1075,6 +1075,18 @@ class Application:
             keys = [(item["contract_reference"], item["invoice_reference"]) for item in normalized_billings]
             if len(set(keys)) != len(keys):
                 raise ValueError("The source billing list contains duplicate contract and invoice references.")
+            usage = p.get("usage_references", [])
+            if not isinstance(usage, list):
+                raise ValueError("Provide a source-priced usage reference list, even when empty.")
+            normalized_usage = []
+            for item in usage:
+                if not isinstance(item, dict) or set(item) != {"contract_reference", "usage_reference"}:
+                    raise ValueError("Each source usage row needs a contract and usage reference.")
+                normalized_usage.append({key: normalize_reference(item[key], key.replace("_", " ").capitalize()) for key in ("contract_reference", "usage_reference")})
+            p["usage_references"] = normalized_usage
+            usage_keys = [(item["contract_reference"], item["usage_reference"]) for item in normalized_usage]
+            if len(set(usage_keys)) != len(usage_keys):
+                raise ValueError("The source usage list contains duplicate contract and usage references.")
         elif command == "record_export_posting":
             if scenario_id != "main":
                 raise ValueError("External posting records belong to Main.")

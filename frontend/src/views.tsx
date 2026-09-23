@@ -316,6 +316,7 @@ export function HomeView(props: ViewProps) {
   const { state, period, dialog, navigate } = props;
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const [pendingCloseChecks, setPendingCloseChecks] = useState<number | null>(null);
   const [contractFilter, setContractFilter] = useState<"service" | "balance" | "all">("service");
   const periodStart = `${period}-01`;
   const periodEnd = `${period}-31`;
@@ -336,6 +337,22 @@ export function HomeView(props: ViewProps) {
     (c) => c.status !== "reopened" && !c.reopened_at,
   );
   const closed = closes.some((c) => c.period === period);
+  useEffect(() => {
+    if (closed || state.scenario_id !== "main" || !state.contracts.length) {
+      setPendingCloseChecks(0);
+      return;
+    }
+    let canceled = false;
+    setPendingCloseChecks(null);
+    api<{ checks: { id: string; status: "pass" | "review" | "block" }[] }>(
+      `/api/reports?scenario_id=main&period=${period}`,
+    ).then((review) => {
+      if (!canceled) setPendingCloseChecks(review.checks.filter((check) => check.id !== "warnings" && check.status !== "pass").length);
+    }).catch(() => {
+      if (!canceled) setPendingCloseChecks(null);
+    });
+    return () => { canceled = true; };
+  }, [closed, period, state.scenario_id, state.frontier, state.contracts.length]);
   const active = state.scenarios.filter(
     (s) => s.id !== "main" && s.status === "active",
   );
@@ -458,6 +475,15 @@ export function HomeView(props: ViewProps) {
               <ChevronRight size={15} aria-hidden="true" />
             </button>
           )}
+          {!closed && state.scenario_id === "main" && pendingCloseChecks !== 0 && (
+            <button className="attention-action" onClick={() => navigate("Reports", undefined, "Close readiness")}
+              aria-label={pendingCloseChecks === null ? "Review close readiness" : `Review ${pendingCloseChecks} close check${pendingCloseChecks === 1 ? "" : "s"}`}>
+              {pendingCloseChecks !== null && <span className="attention-count">{pendingCloseChecks}</span>}
+              <strong>{pendingCloseChecks === null ? "Review close readiness" : `Close check${pendingCloseChecks === 1 ? "" : "s"}`}</strong>
+              <span className="attention-verb">Review</span>
+              <ChevronRight size={15} aria-hidden="true" />
+            </button>
+          )}
           {state.notes.filter((n) => n.kind === "task" && !n.completed)
             .length ? (
             <NotesList
@@ -466,7 +492,7 @@ export function HomeView(props: ViewProps) {
                 (n) => n.kind === "task" && !n.completed,
               )}
             />
-          ) : !state.report.warnings.length ? (
+          ) : !state.report.warnings.length && (closed || state.scenario_id !== "main" || pendingCloseChecks === 0) ? (
             <div className="clear-state">
               <CircleCheck size={17} />
               <div>

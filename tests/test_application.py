@@ -1882,6 +1882,53 @@ def test_metered_invoice_value_uses_reviewed_source_amount_without_inferred_flat
     book.close()
 
 
+def test_source_population_compares_independent_priced_usage_identities(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "contract", "name": "Metered service", "reference": "CON-1", "customer_id": "customer",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "meter", "kind": "metered", "amount": "0", "metered_value_mode": "invoice_value",
+                           "pricing_basis": "right_to_invoice", "rounding_period": "calendar_month",
+                           "rationale": "Each externally priced usage record tracks delivered value."}],
+        "obligations": [{"id": "units", "name": "Units", "kind": "service", "ssp": "0", "method": "metered",
+                         "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+    }, period="2026-09")
+    first = application.execute("record_usage", {"contract_id": "contract", "obligation_id": "units",
+                                                 "effective_date": "2026-09-10", "quantity": "100", "invoice_value": "10.00",
+                                                 "reference": "USG-1"}, period="2026-09")
+    manifest = {"period": "2026-09", "source_name": "Pricing extract", "rationale": "All September priced usage lines.",
+                "contract_references": ["CON-1"], "billing_references": [],
+                "usage_references": [{"contract_reference": "CON-1", "usage_reference": "USG-1"},
+                                     {"contract_reference": "CON-1", "usage_reference": "USG-2"}]}
+    application.execute("record_population_manifest", manifest, period="2026-09")
+    comparison = application.reports(period="2026-09")["population_comparison"]
+    assert comparison["missing_usage"] == [("CON-1", "USG-2")]
+    assert next(item for item in application.reports(period="2026-09")["checks"] if item["id"] == "source_population")["status"] == "review"
+    with pytest.raises(ValueError, match="duplicate contract and usage"):
+        application.execute("record_population_manifest", {**manifest, "usage_references": [manifest["usage_references"][0]] * 2}, period="2026-09")
+    duplicate = application.execute("record_usage", {"contract_id": "contract", "obligation_id": "units",
+                                                     "effective_date": "2026-09-11", "quantity": "10", "invoice_value": "1.00",
+                                                     "reference": "USG-1"}, period="2026-09")
+    comparison = application.reports(period="2026-09")["population_comparison"]
+    assert comparison["duplicate_usage"] == [("CON-1", "USG-1")]
+    application.execute("correct_activity", {"target_change_set_id": duplicate["result"]["change_set_id"],
+                                            "rationale": "Corrected source record ID.",
+                                            "replacement": {"contract_id": "contract", "obligation_id": "units",
+                                                            "effective_date": "2026-09-11", "quantity": "10", "invoice_value": "1.00",
+                                                            "reference": "USG-2"}}, period="2026-09")
+    review = application.reports(period="2026-09")
+    assert review["population_comparison"]["missing_usage"] == []
+    assert review["population_comparison"]["duplicate_usage"] == []
+    assert next(item for item in review["checks"] if item["id"] == "source_population")["status"] == "pass"
+    book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-09"), review)), read_only=True)
+    assert [row[1:3] for row in list(book["Source priced usage"].values)[1:]] == [("USG-1", "Matched"), ("USG-2", "Matched")]
+    book.close()
+    application.execute("close_period", {"period": "2026-09", "review_dispositions": accept_review_items(application, "2026-09")}, period="2026-09")
+    assert application.reports(period="2026-09")["population_comparison"]["actual_usage_count"] == 2
+    assert first["result"]["change_set_id"]
+
+
 def test_metered_rate_and_units_import_from_structured_workbook(tmp_path):
     application = app(tmp_path)
     book = load_workbook(io.BytesIO(template_bytes()))

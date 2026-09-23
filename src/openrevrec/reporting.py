@@ -57,18 +57,32 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
     unidentified_billings = [{"contract_id": contract["id"], "activity_id": activity["id"]} for (contract, activity), key in zip(actual_billing_rows, actual_billings) if not all(key)]
     actual_billing_set = {key for key in actual_billings if all(key)}
     duplicate_billings = sorted(key for key, count in Counter(actual_billings).items() if all(key) and count > 1)
+    actual_usage_rows = [(contract, activity) for contract in state["contracts"]
+                         if len(contract["consideration"]) == 1 and contract["consideration"][0].get("metered_value_mode") == "invoice_value"
+                         for activity in contract["activities"] if activity["type"] == "usage" and activity["effective_date"][:7] == period]
+    actual_usage = [(str(contract.get("reference") or "").strip(), str(activity.get("reference") or "").strip())
+                    for contract, activity in actual_usage_rows]
+    unidentified_usage = [{"contract_id": contract["id"], "activity_id": activity["id"]}
+                          for (contract, activity), key in zip(actual_usage_rows, actual_usage) if not all(key)]
+    actual_usage_set = {key for key in actual_usage if all(key)}
+    duplicate_usage = sorted(key for key, count in Counter(actual_usage).items() if all(key) and count > 1)
     expected_contracts = set(manifest["contract_references"]) if manifest else set()
     expected_billings = {(item["contract_reference"], item["invoice_reference"]) for item in manifest["billing_references"]} if manifest else set()
+    expected_usage = {(item["contract_reference"], item["usage_reference"]) for item in manifest.get("usage_references", [])} if manifest else set()
     return {
         "source_name": manifest["source_name"] if manifest else "",
         "expected_contract_count": len(expected_contracts), "actual_contract_count": len(contracts),
         "expected_billing_count": len(expected_billings), "actual_billing_count": len(actual_billing_rows),
+        "expected_usage_count": len(expected_usage), "actual_usage_count": len(actual_usage_rows),
         "missing_contracts": sorted(expected_contracts - actual_contract_set),
         "unexpected_contracts": sorted(actual_contract_set - expected_contracts),
         "unidentified_contracts": unidentified_contracts, "duplicate_contracts": duplicate_contracts,
         "missing_billings": sorted(expected_billings - actual_billing_set),
         "unexpected_billings": sorted(actual_billing_set - expected_billings),
         "unidentified_billings": unidentified_billings, "duplicate_billings": duplicate_billings,
+        "missing_usage": sorted(expected_usage - actual_usage_set),
+        "unexpected_usage": sorted(actual_usage_set - expected_usage),
+        "unidentified_usage": unidentified_usage, "duplicate_usage": duplicate_usage,
     }
 
 
@@ -227,8 +241,8 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
         _check("external_controls", "Independent source and GL controls", bool(control) and not control_differences,
                "Entered source billing and GL balances agree to this model; confirm the source basis separately." if control and not control_differences else f"{len(control_differences)} external total(s) differ from the model." if control else "No independent source billing and GL balance totals have been entered for this period.",
                "review", len(control_differences) if control else 1),
-        _check("source_population", "Source contract and invoice population", bool(population_manifest) and not population_exceptions,
-               "Contract and invoice references match the independent source lists." if population_manifest and not population_exceptions else f"{population_exceptions} source identity exception(s) need review." if population_manifest else "No independent contract and invoice reference lists have been entered for this period.",
+        _check("source_population", "Source contract, invoice, and priced-usage population", bool(population_manifest) and not population_exceptions,
+               "Contract, invoice, and priced-usage references match the independent source lists." if population_manifest and not population_exceptions else f"{population_exceptions} source identity exception(s) need review." if population_manifest else "No independent contract, invoice, and priced-usage reference lists have been entered for this period.",
                "review", population_exceptions if population_manifest else 1),
         _check("warnings", "Accounting warnings", not report["warnings"],
                "No calculation warnings." if not report["warnings"] else f"{len(report['warnings'])} warning(s) need review.",
