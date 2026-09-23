@@ -78,7 +78,7 @@ def template_bytes():
         ["Dates", "YYYY-MM-DD. Service start and end dates are inclusive."],
         ["Relationships", "Supply IDs for customers, contracts, consideration, and obligations; reference these IDs on related sheets."],
         ["Contract setup", "Contracts, Consideration and Obligations are combined into one create_contract command."],
-        ["Source population", "Set reference on each contract to its stable register ID. Record independent contract, invoice/credit, and externally priced usage record lists for each close period in Reports > Source population. Each priced usage reference identifies one source record; an imported billing source_id can identify a billing transaction when invoice reference is blank."],
+        ["Source population", "Set reference on each contract to its stable register ID. Record independent contract, invoice/credit, and externally priced usage lists for each close period in Reports > Source population. For priced usage, supply each source record ID, delivered units, and invoice value so both population and amounts can be compared. Older ID-only lists remain review items. An imported billing source_id can identify a billing transaction when invoice reference is blank."],
         ["Cancellable or evergreen terms", "The contract end is the assessed accounting end, not an unlimited legal end. Enter term_basis as cancellable or evergreen, explain the assessment and reassessment trigger, and optionally enter term_review_date. Revisit the obligation dates through a reviewed amendment when the assessment changes."],
         ["Recognition methods", "exact_days, monthly, prorated_monthly, point_in_time, progress, usage, metered, milestone"],
         ["Opening positions", "For a migrated contract, supply current terms, then one Opening Positions row dated the first day of the cutover month and one Opening Obligations row per obligation. A matching opening row sets the new contract's cutover date automatically. Enter cumulative legacy recognition, billing, net asset/deferred balance, and measures before post-cutover activity. Pre-cutover periods are excluded."],
@@ -127,8 +127,6 @@ def export_bytes(state, review=None):
             missing_billings = {tuple(item) for item in comparison["missing_billings"]}
             duplicate_contracts = set(comparison["duplicate_contracts"])
             duplicate_billings = {tuple(item) for item in comparison["duplicate_billings"]}
-            missing_usage = {tuple(item) for item in comparison.get("missing_usage", [])}
-            duplicate_usage = {tuple(item) for item in comparison.get("duplicate_usage", [])}
             _sheet(book, "Source contracts", ["Contract reference", "Comparison", "Source", "Population basis"],
                    [[reference, "Missing in workspace" if reference in missing_contracts else "Duplicate in workspace" if reference in duplicate_contracts else "Matched", population["source_name"], population["rationale"]]
                     for reference in population["contract_references"]] +
@@ -139,11 +137,18 @@ def export_bytes(state, review=None):
                     for item in population["billing_references"]] +
                    [[contract_ref, invoice_ref, "Unexpected in workspace", population["source_name"], population["rationale"]] for contract_ref, invoice_ref in comparison["unexpected_billings"]] +
                    [[item["contract_id"], item["activity_id"], "Workspace billing lacks reference", population["source_name"], population["rationale"]] for item in comparison["unidentified_billings"]])
-            _sheet(book, "Source priced usage", ["Contract reference", "Usage source reference", "Comparison", "Source", "Population basis"],
-                   [[item["contract_reference"], item["usage_reference"], "Missing in workspace" if (item["contract_reference"], item["usage_reference"]) in missing_usage else "Duplicate in workspace" if (item["contract_reference"], item["usage_reference"]) in duplicate_usage else "Matched", population["source_name"], population["rationale"]]
-                    for item in population.get("usage_references", [])] +
-                   [[contract_ref, usage_ref, "Unexpected in workspace", population["source_name"], population["rationale"]] for contract_ref, usage_ref in comparison.get("unexpected_usage", [])] +
-                   [[item["contract_id"], item["activity_id"], "Workspace priced usage lacks reference", population["source_name"], population["rationale"]] for item in comparison.get("unidentified_usage", [])])
+            usage_rows = comparison.get("usage_value_rows")
+            if usage_rows is None:  # Closed checkpoints from before value comparison retain their original identity result.
+                missing_usage = {tuple(item) for item in comparison.get("missing_usage", [])}
+                duplicate_usage = {tuple(item) for item in comparison.get("duplicate_usage", [])}
+                usage_rows = [{"contract_reference": item["contract_reference"], "usage_reference": item["usage_reference"],
+                               "status": "Missing in workspace" if (item["contract_reference"], item["usage_reference"]) in missing_usage else "Duplicate in workspace" if (item["contract_reference"], item["usage_reference"]) in duplicate_usage else "Identity matched; values not checked"}
+                              for item in population.get("usage_references", [])]
+            _sheet(book, "Source priced usage", ["Contract reference", "Usage source reference", "Source units", "Workspace units", "Source invoice value", "Workspace invoice value", "Comparison", "Source", "Population basis"],
+                   [[item["contract_reference"], item["usage_reference"], Decimal(item["source_quantity"]) if item.get("source_quantity") not in (None, "") else "", Decimal(item["workspace_quantity"]) if item.get("workspace_quantity") not in (None, "") else "", Decimal(item["source_invoice_value"]) if item.get("source_invoice_value") not in (None, "") else "", Decimal(item["workspace_invoice_value"]) if item.get("workspace_invoice_value") not in (None, "") else "", item["status"], population["source_name"], population["rationale"]]
+                    for item in usage_rows] +
+                   [[contract_ref, usage_ref, "", "", "", "", "Unexpected in workspace", population["source_name"], population["rationale"]] for contract_ref, usage_ref in comparison.get("unexpected_usage", [])] +
+                   [[item["contract_id"], item["activity_id"], "", "", "", "", "Workspace priced usage lacks reference", population["source_name"], population["rationale"]] for item in comparison.get("unidentified_usage", [])])
         money_keys = {"opening_contract_asset", "opening_deferred_revenue", "revenue", "billings", "closing_contract_asset", "closing_deferred_revenue"}
         rollforward_keys = ["contract_id", "contract_name", "opening_contract_asset", "opening_deferred_revenue", "revenue", "billings", "closing_contract_asset", "closing_deferred_revenue"]
         _sheet(book, "Contract rollforward", rollforward_keys, [[Decimal(row[k]) if k in money_keys else row[k] for k in rollforward_keys] for row in review["rollforward"]])

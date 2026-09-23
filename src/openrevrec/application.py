@@ -1080,9 +1080,18 @@ class Application:
                 raise ValueError("Provide a source-priced usage reference list, even when empty.")
             normalized_usage = []
             for item in usage:
-                if not isinstance(item, dict) or set(item) != {"contract_reference", "usage_reference"}:
-                    raise ValueError("Each source usage row needs a contract and usage reference.")
-                normalized_usage.append({key: normalize_reference(item[key], key.replace("_", " ").capitalize()) for key in ("contract_reference", "usage_reference")})
+                if not isinstance(item, dict) or set(item) not in ({"contract_reference", "usage_reference"}, {"contract_reference", "usage_reference", "quantity", "invoice_value"}):
+                    raise ValueError("Each source usage row needs a contract and usage reference, with both quantity and invoice value when supplied.")
+                normalized = {key: normalize_reference(item[key], key.replace("_", " ").capitalize()) for key in ("contract_reference", "usage_reference")}
+                if "quantity" in item:
+                    normalized["quantity"] = decimal_string(item["quantity"], "Source usage quantity", True)
+                    normalized["invoice_value"] = decimal_string(item["invoice_value"], "Source invoice value", True)
+                    source_value = Decimal(normalized["invoice_value"])
+                    if source_value != source_value.quantize(Decimal("0.01")):
+                        raise ValueError("Source invoice value must be stated in cents.")
+                    if source_value > 0 and Decimal(normalized["quantity"]) <= 0:
+                        raise ValueError("Positive source invoice value requires delivered units.")
+                normalized_usage.append(normalized)
             p["usage_references"] = normalized_usage
             usage_keys = [(item["contract_reference"], item["usage_reference"]) for item in normalized_usage]
             if len(set(usage_keys)) != len(usage_keys):

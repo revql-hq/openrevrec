@@ -1899,8 +1899,8 @@ def test_source_population_compares_independent_priced_usage_identities(tmp_path
                                                  "reference": "USG-1"}, period="2026-09")
     manifest = {"period": "2026-09", "source_name": "Pricing extract", "rationale": "All September priced usage lines.",
                 "contract_references": ["CON-1"], "billing_references": [],
-                "usage_references": [{"contract_reference": "CON-1", "usage_reference": "USG-1"},
-                                     {"contract_reference": "CON-1", "usage_reference": "USG-2"}]}
+                "usage_references": [{"contract_reference": "CON-1", "usage_reference": "USG-1", "quantity": "100", "invoice_value": "10.00"},
+                                     {"contract_reference": "CON-1", "usage_reference": "USG-2", "quantity": "10", "invoice_value": "1.00"}]}
     application.execute("record_population_manifest", manifest, period="2026-09")
     comparison = application.reports(period="2026-09")["population_comparison"]
     assert comparison["missing_usage"] == [("CON-1", "USG-2")]
@@ -1917,12 +1917,27 @@ def test_source_population_compares_independent_priced_usage_identities(tmp_path
                                             "replacement": {"contract_id": "contract", "obligation_id": "units",
                                                             "effective_date": "2026-09-11", "quantity": "10", "invoice_value": "1.00",
                                                             "reference": "USG-2"}}, period="2026-09")
+    id_only = {**manifest, "usage_references": [{"contract_reference": "CON-1", "usage_reference": "USG-1"},
+                                                {"contract_reference": "CON-1", "usage_reference": "USG-2"}]}
+    application.execute("record_population_manifest", id_only, period="2026-09")
+    assert application.reports(period="2026-09")["population_comparison"]["unverified_usage"] == [("CON-1", "USG-1"), ("CON-1", "USG-2")]
+    wrong_amount = {**manifest, "usage_references": [{**manifest["usage_references"][0], "invoice_value": "9.99"}, manifest["usage_references"][1]]}
+    application.execute("record_population_manifest", wrong_amount, period="2026-09")
+    comparison = application.reports(period="2026-09")["population_comparison"]
+    assert [(item["usage_reference"], item["source_invoice_value"], item["workspace_invoice_value"]) for item in comparison["mismatched_usage"]] == [("USG-1", "9.99", "10.00")]
+    wrong_units = {**manifest, "usage_references": [{**manifest["usage_references"][0], "quantity": "99"}, manifest["usage_references"][1]]}
+    application.execute("record_population_manifest", wrong_units, period="2026-09")
+    assert application.reports(period="2026-09")["population_comparison"]["mismatched_usage"][0]["source_quantity"] == "99"
+    with pytest.raises(ValueError, match="stated in cents"):
+        application.execute("record_population_manifest", {**manifest, "usage_references": [{**manifest["usage_references"][0], "invoice_value": "10.001"}]}, period="2026-09")
+    application.execute("record_population_manifest", manifest, period="2026-09")
     review = application.reports(period="2026-09")
     assert review["population_comparison"]["missing_usage"] == []
     assert review["population_comparison"]["duplicate_usage"] == []
     assert next(item for item in review["checks"] if item["id"] == "source_population")["status"] == "pass"
     book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-09"), review)), read_only=True)
-    assert [row[1:3] for row in list(book["Source priced usage"].values)[1:]] == [("USG-1", "Matched"), ("USG-2", "Matched")]
+    assert [(row[1], row[2], row[4], row[6]) for row in list(book["Source priced usage"].values)[1:]] == [
+        ("USG-1", 100, 10, "Matched"), ("USG-2", 10, 1, "Matched")]
     book.close()
     application.execute("close_period", {"period": "2026-09", "review_dispositions": accept_review_items(application, "2026-09")}, period="2026-09")
     assert application.reports(period="2026-09")["population_comparison"]["actual_usage_count"] == 2

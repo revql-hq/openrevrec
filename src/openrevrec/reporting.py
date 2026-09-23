@@ -68,7 +68,37 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
     duplicate_usage = sorted(key for key, count in Counter(actual_usage).items() if all(key) and count > 1)
     expected_contracts = set(manifest["contract_references"]) if manifest else set()
     expected_billings = {(item["contract_reference"], item["invoice_reference"]) for item in manifest["billing_references"]} if manifest else set()
-    expected_usage = {(item["contract_reference"], item["usage_reference"]) for item in manifest.get("usage_references", [])} if manifest else set()
+    expected_usage_rows = manifest.get("usage_references", []) if manifest else []
+    expected_usage = {(item["contract_reference"], item["usage_reference"]) for item in expected_usage_rows}
+    actual_usage_by_key: dict[tuple[str, str], list[dict]] = {}
+    for (_, activity), key in zip(actual_usage_rows, actual_usage):
+        if all(key):
+            actual_usage_by_key.setdefault(key, []).append(activity)
+    usage_value_rows = []
+    mismatched_usage = []
+    unverified_usage = []
+    for item in expected_usage_rows:
+        key = item["contract_reference"], item["usage_reference"]
+        actual = actual_usage_by_key.get(key, [])
+        row = {"contract_reference": key[0], "usage_reference": key[1],
+               "source_quantity": item.get("quantity", ""), "source_invoice_value": item.get("invoice_value", ""),
+               "workspace_quantity": actual[0].get("quantity", "") if len(actual) == 1 else "",
+               "workspace_invoice_value": actual[0].get("invoice_value", "") if len(actual) == 1 else "",
+               "activity_id": actual[0]["id"] if len(actual) == 1 else ""}
+        if not actual:
+            row["status"] = "Missing in workspace"
+        elif len(actual) > 1:
+            row["status"] = "Duplicate in workspace"
+        elif "quantity" not in item:
+            row["status"] = "Source values not supplied"
+            unverified_usage.append(key)
+        elif (_decimal(item["quantity"]) != _decimal(actual[0]["quantity"])
+              or _decimal(item["invoice_value"]) != _decimal(actual[0]["invoice_value"])):
+            row["status"] = "Values differ"
+            mismatched_usage.append(row)
+        else:
+            row["status"] = "Matched"
+        usage_value_rows.append(row)
     return {
         "source_name": manifest["source_name"] if manifest else "",
         "expected_contract_count": len(expected_contracts), "actual_contract_count": len(contracts),
@@ -83,6 +113,8 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
         "missing_usage": sorted(expected_usage - actual_usage_set),
         "unexpected_usage": sorted(actual_usage_set - expected_usage),
         "unidentified_usage": unidentified_usage, "duplicate_usage": duplicate_usage,
+        "unverified_usage": unverified_usage, "mismatched_usage": mismatched_usage,
+        "usage_value_rows": usage_value_rows,
     }
 
 
@@ -166,7 +198,7 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
     closed_population = next((item.get("population_comparison") for item in state["closes"] if item["period"] == period and item["status"] == "closed"), None)
     if closed_population:
         population_comparison = closed_population
-    population_exceptions = sum(len(value) for key, value in population_comparison.items() if key.startswith(("missing_", "unexpected_", "unidentified_", "duplicate_")))
+    population_exceptions = sum(len(value) for key, value in population_comparison.items() if key.startswith(("missing_", "unexpected_", "unidentified_", "duplicate_", "unverified_", "mismatched_")))
     open_tasks = [note for note in state["notes"] if note.get("kind") == "task" and not note.get("completed")]
     due_tasks = [note for note in open_tasks if (note.get("due_date") and note["due_date"] <= period_end(period)) or (note.get("period") and note["period"] <= period)]
     due_term_reviews = []
@@ -242,7 +274,7 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
                "Entered source billing and GL balances agree to this model; confirm the source basis separately." if control and not control_differences else f"{len(control_differences)} external total(s) differ from the model." if control else "No independent source billing and GL balance totals have been entered for this period.",
                "review", len(control_differences) if control else 1),
         _check("source_population", "Source contract, invoice, and priced-usage population", bool(population_manifest) and not population_exceptions,
-               "Contract, invoice, and priced-usage references match the independent source lists." if population_manifest and not population_exceptions else f"{population_exceptions} source identity exception(s) need review." if population_manifest else "No independent contract, invoice, and priced-usage reference lists have been entered for this period.",
+               "Contract, invoice, and priced-usage source records match." if population_manifest and not population_exceptions else f"{population_exceptions} source record exception(s) need review." if population_manifest else "No independent contract, invoice, and priced-usage source lists have been entered for this period.",
                "review", population_exceptions if population_manifest else 1),
         _check("warnings", "Accounting warnings", not report["warnings"],
                "No calculation warnings." if not report["warnings"] else f"{len(report['warnings'])} warning(s) need review.",
