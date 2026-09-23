@@ -19,24 +19,24 @@ TEMPLATE_VERSION = "2"
 SHEETS = {
     "Customers": ["id", "name", "email", "reference", "source_system"],
     "Contracts": ["id", "customer_id", "name", "start_date", "end_date", "rationale", "cutover_date", "term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date", "reference"],
-    "Consideration": ["contract_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale", "target_period", "unit_rate", "pricing_basis", "rounding_period"],
+    "Consideration": ["contract_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale", "target_period", "unit_rate", "pricing_basis", "rounding_period", "metered_value_mode"],
     "Obligations": ["contract_id", "id", "name", "kind", "ssp", "method", "start_date", "end_date", "total_units", "exercise_start", "exercise_end", "rationale"],
     "Opening Positions": ["source_id", "contract_id", "effective_date", "billed_to_date", "contract_asset", "deferred_revenue", "source_name", "rationale"],
     "Opening Obligations": ["opening_source_id", "obligation_id", "recognized_to_date", "measure"],
     "Amendments": ["source_id", "contract_id", "effective_date", "treatment", "replace_consideration", "replace_obligations", "rationale", "term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date"],
-    "Amendment Consideration": ["amendment_source_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale", "target_period", "unit_rate", "pricing_basis", "rounding_period"],
+    "Amendment Consideration": ["amendment_source_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale", "target_period", "unit_rate", "pricing_basis", "rounding_period", "metered_value_mode"],
     "Amendment Obligations": ["amendment_source_id", "id", "name", "kind", "ssp", "method", "start_date", "end_date", "total_units", "exercise_start", "exercise_end", "rationale"],
     "Billing": ["contract_id", "effective_date", "amount", "reference", "applies_to_change_set_id", "applies_to_reference", "rationale", "source_id"],
     "Rate Changes": ["contract_id", "component_id", "effective_date", "unit_rate", "rationale", "source_id"],
     "Progress": ["contract_id", "obligation_id", "effective_date", "percentage", "rationale", "source_id"],
-    "Usage": ["contract_id", "obligation_id", "effective_date", "quantity", "reference", "rationale", "source_id"],
+    "Usage": ["contract_id", "obligation_id", "effective_date", "quantity", "reference", "rationale", "source_id", "invoice_value"],
     "Right Exercises": ["contract_id", "obligation_id", "effective_date", "delivery_method", "delivery_start", "delivery_end", "rationale", "source_id"],
     "Renewal Links": ["contract_id", "obligation_id", "renewal_contract_id", "additional_consideration", "price_basis", "rationale", "source_id"],
     "Modification Links": ["contract_id", "added_contract_id", "effective_date", "additional_consideration", "price_basis", "original_terms_effect", "rationale", "source_id"],
     "Milestones": ["contract_id", "obligation_id", "effective_date", "percentage", "rationale", "source_id"],
     "Adjustments": ["contract_id", "obligation_id", "effective_date", "amount", "rationale", "source_id"],
     "Reassessments": ["contract_id", "component_id", "effective_date", "included_amount", "rationale", "source_id"],
-    "Corrections": ["source_id", "target_change_set_id", "target_source_id", "activity_type", "contract_id", "obligation_id", "effective_date", "amount", "percentage", "quantity", "reference", "rationale", "component_id", "unit_rate"],
+    "Corrections": ["source_id", "target_change_set_id", "target_source_id", "activity_type", "contract_id", "obligation_id", "effective_date", "amount", "percentage", "quantity", "reference", "rationale", "component_id", "unit_rate", "invoice_value"],
     "Notes": ["entity_id", "kind", "body", "due_date", "source_id"],
     "Commands": ["command", "payload_json", "source_id"],
 }
@@ -86,7 +86,7 @@ def template_bytes():
         ["Right exercises", "For a material right exercised before delivery, enter the exercise date, future delivery method and delivery dates on Right Exercises. A point-in-time delivery also needs a 100% Milestones row on its delivery date. Unexercised rights recognize at expiry."],
         ["Renewal links", "After entering both contracts and the right exercise, use Renewal Links to pair them. The renewal contract must cover the same delivery dates and contain only the NEW consideration; enter its initial transaction price in additional_consideration and new_consideration_only in price_basis. The old right allocation remains on the original contract. Review offsetting balances before posting."],
         ["Separate-contract amendments", "After entering the original and added-service contracts, use Modification Links only when the added services are distinct, the amendment's price increase reflects their standalone selling prices, and the original remaining promises and price are unchanged. Enter distinct_at_standalone_price in price_basis, unchanged in original_terms_effect, and the added contract's initial transaction price in additional_consideration. A combined change to the original service needs a separate mixed-treatment analysis; do not force it into this link."],
-        ["Consideration kinds", "fixed, variable, usage, metered, credit. Use included_amount for constrained consideration. Metered requires amount 0, positive unit_rate, pricing_basis right_to_invoice, rounding_period calendar_month, and an accountant rationale; it supports one service obligation, dated rate changes, and no opening position or other amendment."],
+        ["Consideration kinds", "fixed, variable, usage, metered, credit. Use included_amount for constrained consideration. Metered requires amount 0, pricing_basis right_to_invoice, rounding_period calendar_month, and an accountant rationale. Set metered_value_mode to unit_rate with a positive unit_rate, or invoice_value with no unit_rate. Invoice-value mode requires a priced source amount and reference on each usage row; it does not calculate tiers or permit rate changes. One service obligation; no opening position or other amendment."],
         ["Rate changes", "Use Rate Changes for a new positive unit_rate effective before that day's usage. Enter the metered component ID and explain why invoice value at the revised rate still corresponds to delivered value. One rate change per effective date; each calendar month rounds once after valuing its usage at the applicable dates' rates."],
         ["Specific allocation", "For an eligible variable, usage, or credit component, set allocation_scope to specific, list target_obligation_ids separated by commas, and record allocation_rationale. For a variable or usage amount targeting one month of one time-based series obligation, also enter target_period as YYYY-MM and only one obligation ID. Otherwise leave these fields blank for relative SSP allocation."],
         ["Amendments", "Each amendment needs a stable source_id, effective date, treatment, and rationale. Set replace_consideration and/or replace_obligations to yes. Related rows must list the COMPLETE replacement set for that section."],
@@ -260,14 +260,14 @@ def export_bytes(state, review=None):
                             for row in item["positions"]])
     _sheet(book, "Account runoff", ["Status", "Contract ID", "Role", "Period", "Account", "Dimensions", "Closing balance", "Rationale", "Change set ID"], runoff_rows)
     _sheet(book, "Allocation support", ["contract_id", "obligation_id", "name", "ssp", "amount"], [[c["id"], a["obligation_id"], a["name"], Decimal(a["ssp"]), Decimal(a["amount"])] for c in report["contracts"] for a in c["allocation"]])
-    _sheet(book, "Component allocation", ["Contract ID", "Component ID", "Component", "Kind", "Included amount", "Scope", "Target obligation IDs", "Accounting rationale", "Target service month", "Targeted amount recognized to date", "Unit rate", "Pricing basis", "Rounding period"],
-           [[contract["id"], item["component_id"], item["label"], item["kind"], Decimal(item["included_amount"]), item["scope"], ", ".join(item["target_obligation_ids"]), item["rationale"], item.get("target_period", ""), Decimal(item["recognized_to_date"]) if item.get("recognized_to_date") is not None else "", item.get("unit_rate", ""), item.get("pricing_basis", ""), item.get("rounding_period", "")]
+    _sheet(book, "Component allocation", ["Contract ID", "Component ID", "Component", "Kind", "Included amount", "Scope", "Target obligation IDs", "Accounting rationale", "Target service month", "Targeted amount recognized to date", "Unit rate", "Pricing basis", "Rounding period", "Metered value mode"],
+           [[contract["id"], item["component_id"], item["label"], item["kind"], Decimal(item["included_amount"]), item["scope"], ", ".join(item["target_obligation_ids"]), item["rationale"], item.get("target_period", ""), Decimal(item["recognized_to_date"]) if item.get("recognized_to_date") is not None else "", item.get("unit_rate", ""), item.get("pricing_basis", ""), item.get("rounding_period", ""), item.get("metered_value_mode", "")]
             for contract in report["contracts"] for item in contract.get("allocation_components", [])])
     _sheet(book, "Metered rate history", ["Contract ID", "Effective date", "Unit rate", "Accounting conclusion", "Activity ID"],
            [[contract["id"], item["effective_date"], item["unit_rate"], item["rationale"], item["activity_id"]]
             for contract in report["contracts"] for item in contract.get("metered_rate_history", [])])
-    _sheet(book, "Metered usage valuation", ["Contract ID", "Activity ID", "Delivery date", "Calendar month", "Units", "Applied rate", "Unrounded value"],
-           [[contract["id"], item["activity_id"], item["effective_date"], item["period"], item["quantity"], item["unit_rate"], item["unrounded_value"]]
+    _sheet(book, "Metered usage valuation", ["Contract ID", "Activity ID", "Delivery date", "Calendar month", "Units", "Applied rate", "Unrounded value", "Value source", "Source reference"],
+           [[contract["id"], item["activity_id"], item["effective_date"], item["period"], item["quantity"], item.get("unit_rate", ""), item["unrounded_value"], item.get("value_source", "unit_rate"), item.get("reference", "")]
             for contract in report["contracts"] for item in contract.get("metered_usage_valuation", [])])
     _sheet(book, "Metered monthly revenue", ["Contract ID", "Calendar month", "Units", "Unrounded value", "Recognized revenue"],
            [[contract["id"], item["period"], item["quantity"], item["unrounded_value"], Decimal(item["revenue"])]
@@ -462,7 +462,7 @@ def parse_workbook(data):
             activity_type = item.get("activity_type")
             if activity_type not in {"billing", "progress", "usage", "milestone", "rate_change"}:
                 raise ValueError(f"Corrections row {row}: choose billing, progress, usage, milestone, or rate_change activity_type.")
-            replacement = {key: item[key] for key in ("contract_id", "obligation_id", "component_id", "effective_date", "amount", "percentage", "quantity", "unit_rate", "reference") if key in item}
+            replacement = {key: item[key] for key in ("contract_id", "obligation_id", "component_id", "effective_date", "amount", "percentage", "quantity", "unit_rate", "invoice_value", "reference") if key in item}
             payload = {"replacement": replacement, "rationale": item.get("rationale", ""), "source_id": item.get("source_id", "")}
             if item.get("target_change_set_id"):
                 payload["target_change_set_id"] = item["target_change_set_id"]

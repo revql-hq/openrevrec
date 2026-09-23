@@ -16,6 +16,7 @@ export type Component = {
   estimated_amount?: string;
   estimation_method?: string;
   unit_rate?: string;
+  metered_value_mode?: "unit_rate" | "invoice_value";
   pricing_basis?: "right_to_invoice";
   rounding_period?: "calendar_month";
   allocation_scope?: "relative_ssp" | "specific";
@@ -48,6 +49,7 @@ export type Activity = {
   percentage?: string;
   quantity?: string;
   unit_rate?: string;
+  invoice_value?: string;
   component_id?: string;
   reference?: string;
   rationale?: string;
@@ -103,6 +105,7 @@ export type ContractReport = Totals & {
     target_period?: string;
     rationale: string;
     unit_rate?: string;
+    metered_value_mode?: "unit_rate" | "invoice_value";
     pricing_basis?: string;
     rounding_period?: string;
   }[];
@@ -118,7 +121,7 @@ export type ContractReport = Totals & {
     rationale: string;
   }[];
   metered_rate_history?: { effective_date: string; unit_rate: string; rationale: string; activity_id: string }[];
-  metered_usage_valuation?: { activity_id: string; effective_date: string; period: string; quantity: string; unit_rate: string; unrounded_value: string }[];
+  metered_usage_valuation?: { activity_id: string; effective_date: string; period: string; quantity: string; unit_rate: string; unrounded_value: string; value_source?: "unit_rate" | "invoice_value"; reference?: string }[];
   metered_monthly_values?: { period: string; quantity: string; unrounded_value: string; revenue: string }[];
 };
 export type Journal = {

@@ -74,6 +74,7 @@ export function changeComponentKind(item: Component, kind: string): Component {
   const next = { ...item, kind };
   if (kind !== "metered") {
     delete next.unit_rate;
+    delete next.metered_value_mode;
     delete next.pricing_basis;
     delete next.rounding_period;
   }
@@ -95,6 +96,7 @@ export function changeComponentKind(item: Component, kind: string): Component {
   if (kind === "metered") {
     next.amount = "0.00";
     next.unit_rate = "";
+    next.metered_value_mode = "unit_rate";
     next.pricing_basis = "right_to_invoice";
     next.rounding_period = "calendar_month";
     next.rationale = "";

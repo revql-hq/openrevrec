@@ -287,8 +287,14 @@ def _validate_terms(components: Any, obligations: Any, *, allow_empty: bool = Fa
         if kind == "metered":
             if number != ZERO or any(key in component for key in ("included_amount", "estimated_amount", "potential_amount", "target_period", "target_obligation_ids")):
                 raise ValueError("Metered consideration starts at zero and cannot carry an estimate or allocation target")
-            if decimal(component.get("unit_rate"), "unit_rate") <= ZERO:
-                raise ValueError("Metered unit_rate must be positive")
+            value_mode = component.get("metered_value_mode", "unit_rate")
+            if value_mode not in {"unit_rate", "invoice_value"}:
+                raise ValueError("Choose a supported metered value mode")
+            if value_mode == "unit_rate":
+                if decimal(component.get("unit_rate"), "unit_rate") <= ZERO:
+                    raise ValueError("Metered unit_rate must be positive")
+            elif component.get("unit_rate") not in (None, ""):
+                raise ValueError("Externally priced invoice value cannot also use a unit rate")
             if component.get("pricing_basis") != "right_to_invoice" or not str(component.get("rationale", "")).strip():
                 raise ValueError("Metered pricing requires a documented right-to-invoice conclusion")
             if component.get("rounding_period") != "calendar_month":
@@ -441,7 +447,8 @@ def validate_contract(contract: dict) -> None:
     pre_mod_targeted_variable_ids: set[str] = set()
     original_variable_bases: dict[str, tuple[dict, list[dict], bool]] = {}
     reassessed_original_variables: set[str] = set()
-    metered_rate = decimal(components[0]["unit_rate"]) if components[0]["kind"] == "metered" else None
+    metered_rate = (decimal(components[0]["unit_rate"])
+                    if components[0]["kind"] == "metered" and components[0].get("metered_value_mode", "unit_rate") == "unit_rate" else None)
     rate_change_dates: set[str] = set()
     for activity in _ordered_activities(contract):
         kind = activity.get("type")
@@ -651,9 +658,20 @@ def validate_contract(contract: dict) -> None:
         if kind == "usage":
             if obligation["method"] == "metered" and activity["effective_date"] > obligation["end_date"]:
                 raise ValueError("Metered usage must be delivered within the service term")
-            if decimal(activity.get("quantity"), "quantity") < ZERO:
+            quantity = decimal(activity.get("quantity"), "quantity")
+            if quantity < ZERO:
                 raise ValueError("Usage quantity must be nonnegative; use an adjustment for corrections")
-            satisfaction_measures[obligation["id"]] = satisfaction_measures.get(obligation["id"], ZERO) + decimal(activity["quantity"])
+            if obligation["method"] == "metered" and components[0].get("metered_value_mode", "unit_rate") == "invoice_value":
+                invoice_value = decimal(activity.get("invoice_value"), "invoice value")
+                if invoice_value < ZERO or invoice_value != money(invoice_value):
+                    raise ValueError("Metered invoice value must be nonnegative and stated in cents")
+                if invoice_value > ZERO and quantity <= ZERO:
+                    raise ValueError("Positive invoice value requires delivered units")
+                if not str(activity.get("reference", "")).strip():
+                    raise ValueError("Metered invoice value requires a source reference")
+            elif "invoice_value" in activity:
+                raise ValueError("Invoice value belongs only to externally priced metered usage")
+            satisfaction_measures[obligation["id"]] = satisfaction_measures.get(obligation["id"], ZERO) + quantity
         else:
             percentage = decimal(activity.get("percentage", "100" if kind == "milestone" else None), "percentage")
             if not ZERO <= percentage <= 100:
@@ -749,16 +767,17 @@ class _VariableChangeCurve:
 
 
 def _project_metered(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict], list[dict]]:
-    """Recognize an explicitly eligible invoice-value rate from actual usage only."""
+    """Recognize actual usage at its reviewed rate or source-priced invoice value."""
     component, obligation = contract["consideration"][0], contract["obligations"][0]
-    rate = decimal(component["unit_rate"], "unit_rate")
+    value_mode = component.get("metered_value_mode", "unit_rate")
+    rate = decimal(component["unit_rate"], "unit_rate") if value_mode == "unit_rate" else None
     selected_end = period_end(selected)
     previous_end = selected_end.replace(day=1) - timedelta(days=1)
     units_by_month: dict[str, Decimal] = defaultdict(lambda: ZERO)
     value_by_month: dict[str, Decimal] = defaultdict(lambda: ZERO)
     billings: dict[str, Decimal] = defaultdict(lambda: ZERO)
-    rate_history = [{"effective_date": contract["start_date"], "unit_rate": str(rate),
-                     "rationale": component["rationale"], "activity_id": ""}]
+    rate_history = ([{"effective_date": contract["start_date"], "unit_rate": str(rate),
+                     "rationale": component["rationale"], "activity_id": ""}] if rate is not None else [])
     usage_valuation = []
     billed = prior_billed = ZERO
     for activity in _ordered_activities(contract):
@@ -777,15 +796,17 @@ def _project_metered(contract: dict, selected: str) -> tuple[dict, list[dict], l
                 prior_billed += value
         else:
             units = decimal(activity["quantity"], "quantity")
-            value = units * rate
+            value = units * rate if rate is not None else decimal(activity["invoice_value"], "invoice_value")
             units_by_month[month] += units
             value_by_month[month] += value
             usage_valuation.append({"activity_id": activity.get("id", ""), "effective_date": activity["effective_date"],
-                                    "period": month, "quantity": str(units), "unit_rate": str(rate), "unrounded_value": str(value)})
+                                    "period": month, "quantity": str(units), "unit_rate": str(rate) if rate is not None else "",
+                                    "unrounded_value": str(value), "value_source": value_mode,
+                                    "reference": activity.get("reference", "")})
     schedule = {month: money(value) for month, value in value_by_month.items()}
     selected_earned = sum((value for month, value in schedule.items() if month <= selected), ZERO)
     prior_earned = sum((value for month, value in schedule.items() if month < selected), ZERO)
-    selected_rate = next((item["unit_rate"] for item in reversed(rate_history) if item["effective_date"] <= selected_end.isoformat()), component["unit_rate"])
+    selected_rate = next((item["unit_rate"] for item in reversed(rate_history) if item["effective_date"] <= selected_end.isoformat()), component.get("unit_rate", ""))
     ending_deferred, ending_asset = max(ZERO, billed - selected_earned), max(ZERO, selected_earned - billed)
     beginning_deferred, beginning_asset = max(ZERO, prior_billed - prior_earned), max(ZERO, prior_earned - prior_billed)
     report = {
@@ -800,7 +821,7 @@ def _project_metered(contract: dict, selected: str) -> tuple[dict, list[dict], l
                                    "kind": "metered", "included_amount": amount(selected_earned),
                                    "recognized_to_date": amount(selected_earned), "scope": "relative_ssp",
                                    "target_obligation_ids": [], "target_period": "", "rationale": component["rationale"],
-                                   "unit_rate": selected_rate, "pricing_basis": component["pricing_basis"],
+                                   "unit_rate": selected_rate, "metered_value_mode": value_mode, "pricing_basis": component["pricing_basis"],
                                    "rounding_period": component["rounding_period"]}],
         "original_promise_changes": [], "cutover_period": None,
         "metered_rate_history": [item for item in rate_history if item["effective_date"] <= selected_end.isoformat()],

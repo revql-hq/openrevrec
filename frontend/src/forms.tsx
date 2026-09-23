@@ -317,7 +317,7 @@ export const methods: Record<string, string> = {
   point_in_time: "Point in time",
   progress: "Cumulative progress",
   usage: "Finite units / contracted quantity",
-  metered: "Metered units · invoice-value rate",
+  metered: "Metered units · invoice value",
   milestone: "Milestone completion",
 };
 function ComponentEditor({
@@ -466,15 +466,17 @@ function ComponentEditor({
             <p className="fine-print">
               Usage-based pricing is separate from the satisfaction method.
               Reassess consideration explicitly when the included amount
-              changes. Uncapped metered rates, tiers, and overages are not calculated from units in this workflow.
+              changes. Uncapped right-to-invoice service has a separate metered workflow.
             </p>
           )}
           {item.kind === "metered" && <>
-            <p className="fine-print">Use only for one service obligation set to Metered units, with no minimum, tiers, overages, or other consideration. Each delivered unit uses the rate effective on its date; the month's value is rounded once to cents. Future units are not forecast.</p>
+            <p className="fine-print">Use only for one service obligation set to Metered units, with no minimum or other consideration. Document why the amount entitled to invoice corresponds directly to value delivered. Future units are not forecast.</p>
             <div className="form-grid">
-              <Field label="Price per unit"><input type="number" min="0" step="any" required value={item.unit_rate || ""} onChange={(event) => update(i, { unit_rate: event.target.value })} /></Field>
-              <Field label="Invoice-value conclusion" hint="Explain why the amount invoiced per unit corresponds directly to the value of service delivered to the customer."><textarea required rows={3} value={item.rationale || ""} onChange={(event) => update(i, { rationale: event.target.value })} /></Field>
+              <Field label="Value source"><select value={item.metered_value_mode || "unit_rate"} onChange={(event) => update(i, { metered_value_mode: event.target.value as "unit_rate" | "invoice_value", unit_rate: "" })}><option value="unit_rate">Price per unit</option><option value="invoice_value">Externally priced invoice value</option></select></Field>
+              {(item.metered_value_mode || "unit_rate") === "unit_rate" && <Field label="Price per unit"><input type="number" min="0" step="any" required value={item.unit_rate || ""} onChange={(event) => update(i, { unit_rate: event.target.value })} /></Field>}
+              <Field label="Invoice-value conclusion" hint={item.metered_value_mode === "invoice_value" ? "Explain why the externally priced amount entitled to invoice corresponds directly to value delivered." : "Explain why the amount invoiced per unit corresponds directly to the value of service delivered to the customer."}><textarea required rows={3} value={item.rationale || ""} onChange={(event) => update(i, { rationale: event.target.value })} /></Field>
             </div>
+            {item.metered_value_mode === "invoice_value" && <p className="fine-print">Record the actual priced value and a source reference with each usage entry. This mode accepts a reviewed amount from a billing or pricing source; it does not calculate tiers or overages or record an invoice automatically.</p>}
           </>}
           {["variable", "usage", "credit"].includes(item.kind) && <>
             <Field label="Allocation treatment"><select value={item.allocation_scope || "relative_ssp"} onChange={(event) => {
@@ -1026,6 +1028,7 @@ export function ActivityForm(
       correctionTarget?.percentage || (activity === "milestone" ? "100" : ""),
     ),
     [quantity, setQuantity] = useState(correctionTarget?.quantity || ""),
+    [invoiceValue, setInvoiceValue] = useState(correctionTarget?.invoice_value || ""),
     [unitRate, setUnitRate] = useState(String(correctionTarget?.unit_rate || "")),
     [reference, setReference] = useState(correctionTarget?.reference || ""),
     [deliveryMethod, setDeliveryMethod] = useState(""),
@@ -1039,6 +1042,7 @@ export function ActivityForm(
     ? selectedObligation
     : eligibleObligations[0]?.id || "";
   const selectedTerms = eligibleObligations.find((item) => item.id === obligation);
+  const invoiceValueMode = selectedTerms?.method === "metered" && consideration[0]?.metered_value_mode === "invoice_value";
   const selectedRightExercise = contract.activities.find((item) => item.type === "right_exercise" && item.obligation_id === obligation && item.effective_date <= effective);
   const priorActivities = contract.activities.filter((item) => item.obligation_id === obligation && item.effective_date <= effective && item.id !== correctionTarget?.id);
   const opening = contract.activities.find((item) => item.type === "opening_position" && item.effective_date <= effective);
@@ -1087,7 +1091,7 @@ export function ActivityForm(
       "Billing changes the simplified revenue-less-billing contract balance. Revenue follows satisfaction. This entry does not classify unconditional receivables or cash receipts.",
     progress: "Enter cumulative completion, from 0 to 100 percent.",
     usage:
-      selectedTerms?.method === "metered" ? "Record incremental units delivered. The reviewed rate recognizes revenue from actual units; no quantity cap or forecast is assumed." : "Record incremental units delivered against the total contracted units.",
+      selectedTerms?.method === "metered" ? invoiceValueMode ? "Record delivered units and their externally priced invoice value. Cite the pricing source. This recognizes revenue; it does not post a billing entry." : "Record incremental units delivered. The reviewed rate recognizes revenue from actual units; no quantity cap or forecast is assumed." : "Record incremental units delivered against the total contracted units.",
     rate_change: "The revised rate applies to units delivered on or after its effective date. Earlier units retain their original rate; each month rounds once after all usage is valued.",
     milestone:
       "Record cumulative satisfaction. Use 100% for a completed point-in-time obligation.",
@@ -1120,7 +1124,7 @@ export function ActivityForm(
               : {
                   obligation_id: obligation,
                   ...(activity === "usage"
-                    ? { quantity }
+                    ? { quantity, ...(invoiceValueMode ? { invoice_value: invoiceValue } : {}) }
                     : activity === "adjustment"
                       ? { amount }
                       : { percentage }),
@@ -1225,6 +1229,7 @@ export function ActivityForm(
             />
           </Field>
         )}
+        {activity === "usage" && invoiceValueMode && <Field label="Value entitled to invoice for these units" hint="Use the actual amount from the approved pricing source, in cents. Record the invoice separately under Billing when issued."><input type="number" min="0" step="0.01" required value={invoiceValue} onChange={(event) => setInvoiceValue(event.target.value)} /></Field>}
         {activity === "rate_change" && <Field label="Revised price per unit" hint={`Rate currently effective on this date: ${consideration[0]?.unit_rate || "—"} ${props.state.workspace.currency}/unit.`}><input type="number" min="0" step="any" required value={unitRate} onChange={(event) => setUnitRate(event.target.value)} /></Field>}
         {activity !== "reassessment" && activity !== "right_exercise" && activity !== "rate_change" && (
           <Field
@@ -1235,10 +1240,11 @@ export function ActivityForm(
             }
           >
             <input
+              required={activity === "usage" && invoiceValueMode}
               value={reference}
               onChange={(e) => setReference(e.target.value)}
               placeholder={
-                activity === "billing" ? "INV-2026-001" : "Optional reference"
+                activity === "billing" ? "INV-2026-001" : invoiceValueMode ? "Pricing source or meter record ID" : "Optional reference"
               }
             />
           </Field>

@@ -735,7 +735,8 @@ export function ContractView(props: ViewProps) {
   const customer = state.customers.find((c) => c.id === contract.customer_id);
   const effectiveTerms = contractTerms(contract, `${props.period}-31`);
   const isMetered = effectiveTerms.consideration.some((item) => item.kind === "metered");
-  const availableAction = isMetered && !["billing", "usage", "rate_change"].includes(action) ? "billing" : action;
+  const invoiceValueMode = isMetered && effectiveTerms.consideration[0].metered_value_mode === "invoice_value";
+  const availableAction = isMetered && (!["billing", "usage", "rate_change"].includes(action) || (invoiceValueMode && action === "rate_change")) ? "billing" : action;
   const termReview = termReviewStatus(state, contract, `${props.period}-31`);
   const shownTerms = termsView === "effective" ? effectiveTerms : contract;
   const serviceDates = effectiveTerms.obligations.flatMap((obligation) => [obligation.start_date, obligation.end_date]).sort();
@@ -775,7 +776,7 @@ export function ContractView(props: ViewProps) {
             <option value="billing">Billing</option>
             {!isMetered && <option value="progress">Progress</option>}
             <option value="usage">Units delivered</option>
-            {isMetered && <option value="rate_change">Change unit rate</option>}
+            {isMetered && !invoiceValueMode && <option value="rate_change">Change unit rate</option>}
             {!isMetered && <option value="milestone">Satisfaction milestone</option>}
             {effectiveTerms.obligations.some((item) => item.kind === "material_right") && <option value="right_exercise">Exercise material right</option>}
             {!isMetered && <option value="reassessment">Consideration reassessment</option>}
@@ -825,7 +826,7 @@ export function ContractView(props: ViewProps) {
       </div>
       {tab === "Overview" && (
         <>
-          {isMetered && <p className="notice">Rate at period end: {effectiveTerms.consideration[0].unit_rate} {currency}/unit. Usage retains the rate effective on its delivery date; future volume is unknown.</p>}
+          {isMetered && <p className="notice">{invoiceValueMode ? "Usage is valued from each referenced pricing-source amount. Record billing separately when invoiced; future volume is unknown." : `Rate at period end: ${effectiveTerms.consideration[0].unit_rate} ${currency}/unit. Usage retains the rate effective on its delivery date; future volume is unknown.`}</p>}
           <div className="detail-columns">
             <Section title="Contract details">
               <dl className="definition-list">
@@ -924,7 +925,7 @@ export function ContractView(props: ViewProps) {
                 <tr>
                   <th>Component</th>
                   <th>Type</th>
-                  <th className="number">{isMetered ? "Rate" : "Amount"}</th>
+                  <th className="number">{isMetered ? invoiceValueMode ? "Value source" : "Rate" : "Amount"}</th>
                   <th className="number">{isMetered ? "Earned to date" : "Included amount"}</th>
                   <th>Rationale</th>
                 </tr>
@@ -934,7 +935,7 @@ export function ContractView(props: ViewProps) {
                   <tr key={c.id}>
                     <td className="strong">{c.label}</td>
                     <td>{humanize(c.kind)}</td>
-                    <td className="number">{c.kind === "metered" ? `${c.unit_rate} ${currency}/unit` : money(c.amount, currency)}</td>
+                    <td className="number">{c.kind === "metered" ? c.metered_value_mode === "invoice_value" ? "Priced source amount" : `${c.unit_rate} ${currency}/unit` : money(c.amount, currency)}</td>
                     <td className="number">
                       {c.kind === "metered" ? report ? money(report.transaction_price, currency) : "—" : money(c.included_amount || c.amount, currency)}
                     </td>
@@ -944,7 +945,7 @@ export function ContractView(props: ViewProps) {
               </tbody>
             </table>
           </div>
-          {isMetered && <><p className="fine-print">Each usage row uses the rate effective on its delivery date. The month's unrounded values are summed, then rounded once to cents.</p>{report && <><h3>Rate history</h3><div className="table-wrap"><table><thead><tr><th>Effective date</th><th className="number">Rate per unit</th><th>Invoice-value conclusion</th></tr></thead><tbody>{report.metered_rate_history?.map((item, index) => <tr key={`${item.effective_date}:${index}`}><td>{dateLabel(item.effective_date)}</td><td className="number">{item.unit_rate} {currency}</td><td>{item.rationale}</td></tr>)}</tbody></table></div><h3>Monthly usage valuation</h3><div className="table-wrap"><table><thead><tr><th>Month</th><th className="number">Units</th><th className="number">Unrounded value</th><th className="number">Revenue</th></tr></thead><tbody>{report.metered_monthly_values?.map((item) => <tr key={item.period}><td>{monthLabel(item.period)}</td><td className="number">{item.quantity}</td><td className="number">{item.unrounded_value}</td><td className="number">{money(item.revenue, currency)}</td></tr>)}</tbody></table></div></>}</>}
+          {isMetered && <><p className="fine-print">{invoiceValueMode ? "Each usage row records the externally priced amount and its source reference. These amounts are summed by calendar month; billing is recorded separately." : "Each usage row uses the rate effective on its delivery date. The month's unrounded values are summed, then rounded once to cents."}</p>{report && <>{!invoiceValueMode && <><h3>Rate history</h3><div className="table-wrap"><table><thead><tr><th>Effective date</th><th className="number">Rate per unit</th><th>Invoice-value conclusion</th></tr></thead><tbody>{report.metered_rate_history?.map((item, index) => <tr key={`${item.effective_date}:${index}`}><td>{dateLabel(item.effective_date)}</td><td className="number">{item.unit_rate} {currency}</td><td>{item.rationale}</td></tr>)}</tbody></table></div></>}<h3>Monthly usage valuation</h3><div className="table-wrap"><table><thead><tr><th>Month</th><th className="number">Units</th><th className="number">Unrounded value</th><th className="number">Revenue</th></tr></thead><tbody>{report.metered_monthly_values?.map((item) => <tr key={item.period}><td>{monthLabel(item.period)}</td><td className="number">{item.quantity}</td><td className="number">{item.unrounded_value}</td><td className="number">{money(item.revenue, currency)}</td></tr>)}</tbody></table></div></>}</>}
         </Section>
       )}
       {tab === "Obligations" && (
@@ -1183,7 +1184,7 @@ function ActivityTable({
                   : a.percentage !== undefined
                     ? `${a.percentage}%`
                     : a.quantity !== undefined
-                      ? `${a.quantity} units`
+                      ? `${a.quantity} units${a.invoice_value !== undefined ? ` · ${money(a.invoice_value, currency)} value` : ""}`
                       : a.included_amount !== undefined
                         ? money(String(a.included_amount), currency)
                         : "—"}

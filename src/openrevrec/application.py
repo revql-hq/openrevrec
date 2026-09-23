@@ -559,7 +559,8 @@ class Application:
             allowed = {"contract_id", "effective_date", "rationale", "reference"}
             allowed |= ({"amount", "applies_to_change_set_id", "applies_to_reference"} if target_command == "record_billing" else
                         {"component_id", "unit_rate"} if target_command == "record_rate_change" else
-                        {"obligation_id", "quantity" if target_command == "record_usage" else "percentage"})
+                        {"obligation_id", "quantity", "invoice_value"} if target_command == "record_usage" else
+                        {"obligation_id", "percentage"})
             if set(replacement) - allowed:
                 raise ValueError("Replacement contains fields that do not belong to this activity.")
             target_field = "component_id" if target_command == "record_rate_change" else "obligation_id"
@@ -646,9 +647,22 @@ class Application:
                     raise ValueError("Cumulative completion must be between 0 and 100.")
             if command == "record_usage":
                 p["quantity"] = decimal_string(p.get("quantity"), "Quantity", True)
+                if consideration[0]["kind"] == "metered" and consideration[0].get("metered_value_mode", "unit_rate") == "invoice_value":
+                    p["invoice_value"] = decimal_string(p.get("invoice_value"), "Invoice value", True)
+                    if Decimal(p["invoice_value"]) != Decimal(p["invoice_value"]).quantize(Decimal("0.01")):
+                        raise ValueError("Metered invoice value must be stated in cents.")
+                    if Decimal(p["invoice_value"]) > 0 and Decimal(p["quantity"]) <= 0:
+                        raise ValueError("Positive invoice value requires delivered units.")
+                    if not isinstance(p.get("reference"), str) or not p["reference"].strip():
+                        raise ValueError("Metered invoice value requires a source reference.")
+                    p["reference"] = p["reference"].strip()
+                elif "invoice_value" in p:
+                    raise ValueError("Invoice value belongs only to externally priced metered usage.")
             if command == "record_rate_change":
                 if len(consideration) != 1 or consideration[0]["kind"] != "metered" or p.get("component_id") != consideration[0]["id"]:
                     raise ValueError("Choose the metered consideration component for this rate change.")
+                if consideration[0].get("metered_value_mode", "unit_rate") != "unit_rate":
+                    raise ValueError("Externally priced metered contracts do not use unit rates.")
                 if not contract["start_date"] <= p["effective_date"] <= contract["end_date"]:
                     raise ValueError("A metered rate change must fall within the service term.")
                 if scenario_id == "main" and any(close["status"] == "closed" and close["period"] >= p["effective_date"][:7] for close in state["closes"]):
