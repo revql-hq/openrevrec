@@ -511,7 +511,7 @@ export default function App() {
           {dialog.type === "renewal_link" && contract && <RenewalLinkForm {...formProps} contract={contract} />}{" "}
           {dialog.type === "modification_link" && contract && <ModificationLinkForm {...formProps} contract={contract} />}{" "}
           {dialog.type === "opening_position" && contract && (
-            <OpeningPositionForm {...formProps} contract={contract} />
+            <OpeningPositionForm {...formProps} contract={contract} correctionTarget={dialog.action === "correct" ? contract.activities.find((activity) => activity.id === dialog.entityId) : undefined} />
           )}{" "}
           {dialog.type === "term_review" && contract && (
             <TermReviewForm {...formProps} contract={contract} />

@@ -229,12 +229,12 @@ def export_bytes(state, review=None):
     _sheet(book, "Term assessments", ["Contract ID", "Effective date", "Term basis", "Assessed service end", "Assessment rationale", "Reassessment trigger", "Planned review date", "Change set ID"], term_rows)
     _sheet(book, "Term reviews", ["Contract ID", "Review date", "Reviewer", "Unchanged-term conclusion", "Supporting basis", "Next review date", "Change set ID"],
            [[item["contract_id"], item["effective_date"], item["reviewer"], item["conclusion"], item["support_memo"], item["next_review_date"], item["change_set_id"]] for item in state.get("term_reviews", [])])
-    openings = [change for change in state["change_sets"] if change["command"] == "record_opening_position"]
-    _sheet(book, "Opening positions", ["Contract ID", "Cutover date", "Legacy billed to date", "Legacy contract asset", "Legacy deferred revenue", "Legacy source", "Reconciliation rationale", "Change set ID"],
-           [[item["payload"].get(key, "") for key in ("contract_id", "effective_date", "billed_to_date", "contract_asset", "deferred_revenue", "source_name", "rationale")] + [item["id"]] for item in openings])
+    openings = [activity for contract in state["contracts"] for activity in contract["activities"] if activity["type"] == "opening_position"]
+    _sheet(book, "Opening positions", ["Contract ID", "Cutover date", "Legacy billed to date", "Legacy contract asset", "Legacy deferred revenue", "Legacy source", "Reconciliation rationale", "Change set ID", "Corrected from"],
+           [[item.get(key, "") for key in ("contract_id", "effective_date", "billed_to_date", "contract_asset", "deferred_revenue", "source_name", "rationale")] + [item["id"], item.get("corrects", "")] for item in openings])
     _sheet(book, "Opening obligation balances", ["Contract ID", "Obligation ID", "Recognized to date", "Cumulative measure", "Cutover date", "Change set ID"],
-           [[item["payload"]["contract_id"], row["obligation_id"], row["recognized_to_date"], row.get("measure", ""), item["payload"]["effective_date"], item["id"]]
-            for item in openings for row in item["payload"]["opening_obligations"]])
+           [[item["contract_id"], row["obligation_id"], row["recognized_to_date"], row.get("measure", ""), item["effective_date"], item["id"]]
+            for item in openings for row in item["opening_obligations"]])
     _sheet(book, "Right exercises", ["Contract ID", "Obligation ID", "Exercise date", "Delivery method", "Delivery start", "Delivery end", "Rationale", "Change set ID"],
            [[item["payload"].get(key, "") for key in ("contract_id", "obligation_id", "effective_date", "delivery_method", "delivery_start", "delivery_end", "rationale")] + [item["id"]]
             for item in reversed(state["change_sets"]) if item["command"] == "record_right_exercise"])

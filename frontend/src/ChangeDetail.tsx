@@ -25,7 +25,7 @@ type Detail = {
   judgment_reviews: JudgmentReview[];
 };
 
-const JUDGMENT_COMMANDS = new Set(["create_contract", "record_opening_position", "record_right_exercise", "link_renewal_contract", "link_modification_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "set_policy", "reopen_period"]);
+const JUDGMENT_COMMANDS = new Set(["create_contract", "record_opening_position", "correct_opening_position", "record_right_exercise", "link_renewal_contract", "link_modification_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "record_rate_change", "record_account_runoff", "set_policy", "reopen_period"]);
 
 function JudgmentReviewPanel({ props, change, reviews, onRecorded }: { props: ViewProps; change: Detail["change"]; reviews: JudgmentReview[]; onRecorded: () => void }) {
   const [reviewer, setReviewer] = useState("");
@@ -119,6 +119,9 @@ export function ChangeDetail(props: ViewProps & { changeSetId: string }) {
   }
   const correctedActivity = change.command === "correct_activity" ? beforeContract?.activities.find((item) => item.id === change.payload?.target_change_set_id) : undefined;
   const replacement = change.command === "correct_activity" ? change.payload?.replacement as Record<string, unknown> | undefined : undefined;
+  const correctedOpening = change.command === "correct_opening_position" ? beforeContract?.activities.find((item) => item.id === change.payload?.target_change_set_id) : undefined;
+  const replacementOpening = change.command === "correct_opening_position" ? change.payload?.replacement as Record<string, unknown> | undefined : undefined;
+  const openingRows = (value?: Record<string, unknown>) => (value?.opening_obligations as { obligation_id: string; recognized_to_date: string; measure?: string }[] | undefined) || [];
   return <>
     <div className="page-heading">
       <div>
@@ -156,6 +159,17 @@ export function ChangeDetail(props: ViewProps & { changeSetId: string }) {
       <div className="table-wrap"><table><thead><tr><th>Obligation</th><th className="number">Recognized before cutover</th><th className="number">Cumulative measure</th></tr></thead><tbody>{((change.payload?.opening_obligations as { obligation_id: string; recognized_to_date: string; measure?: string }[] | undefined) || []).map((row) => <tr key={row.obligation_id}><td>{afterContract?.obligations.find((item) => item.id === row.obligation_id)?.name || row.obligation_id}</td><td className="number">{money(row.recognized_to_date, currency)}</td><td className="number">{row.measure || "—"}</td></tr>)}</tbody></table></div>
     </Section>}
     {correctedActivity && replacement && <Section title="Source fact corrected"><div className="table-wrap"><table><thead><tr><th>Field</th><th>Original</th><th>Replacement</th></tr></thead><tbody>{["effective_date", "amount", "percentage", "quantity", "reference", "applies_to_change_set_id", "applies_to_reference"].filter((key) => correctedActivity[key] !== undefined || replacement[key] !== undefined).map((key) => <tr key={key}><td>{humanize(key)}</td><td>{String(correctedActivity[key] ?? "—")}</td><td>{String(replacement[key] ?? "—")}</td></tr>)}</tbody></table></div></Section>}
+    {correctedOpening && replacementOpening && <Section title="Opening position corrected" subtitle="Accepted cumulative source facts before cutover; later schedules and journal movements are recalculated.">
+      <div className="table-wrap"><table><thead><tr><th>Field</th><th>Before</th><th>Replacement</th></tr></thead><tbody>
+        {["source_name", "billed_to_date", "contract_asset", "deferred_revenue", "rationale"].map((key) => <tr key={key}><td>{humanize(key)}</td><td>{["billed_to_date", "contract_asset", "deferred_revenue"].includes(key) ? money(String(correctedOpening[key] || 0), currency) : String(correctedOpening[key] || "—")}</td><td>{["billed_to_date", "contract_asset", "deferred_revenue"].includes(key) ? money(String(replacementOpening[key] || 0), currency) : String(replacementOpening[key] || "—")}</td></tr>)}
+      </tbody></table></div>
+      <div className="table-wrap"><table><thead><tr><th>Obligation</th><th className="number">Recognized before</th><th className="number">Recognized replacement</th><th>Measure before</th><th>Measure replacement</th></tr></thead><tbody>
+        {openingRows(replacementOpening).map((row) => {
+          const original = openingRows(correctedOpening).find((item) => item.obligation_id === row.obligation_id);
+          return <tr key={row.obligation_id}><td>{afterContract?.obligations.find((item) => item.id === row.obligation_id)?.name || row.obligation_id}</td><td className="number">{money(original?.recognized_to_date || "0", currency)}</td><td className="number">{money(row.recognized_to_date, currency)}</td><td>{original?.measure || "—"}</td><td>{row.measure || "—"}</td></tr>;
+        })}
+      </tbody></table></div>
+    </Section>}
     <Section title={`Financial effect · ${detail.period}`} subtitle={detail.comparison.affected_periods.length ? `Affected periods: ${detail.comparison.affected_periods.join(", ")}` : "No revenue schedule change in the selected period."}>
       <div className="table-wrap"><table><thead><tr><th>Measure</th><th>Before</th><th>After</th><th>Change</th></tr></thead><tbody>
         {measures.map((key) => <tr key={key}><td>{humanize(key)}</td><td className="number">{money(before.summary[key as keyof typeof before.summary], currency)}</td><td className="number">{money(after.summary[key as keyof typeof after.summary], currency)}</td><td className="number">{money(detail.comparison.summary[key], currency)}</td></tr>)}

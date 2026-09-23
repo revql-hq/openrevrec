@@ -634,6 +634,65 @@ def test_opening_position_starts_from_reconciled_legacy_balances_without_backfil
     assert any(row["role"] == "revenue" and row["account"] == "4100" for row in application.state(period="2026-10")["report"]["journals"])
 
 
+def test_opening_correction_replays_later_activity_and_preserves_history(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "contract", "customer_id": "customer", "name": "Migrated monthly service", "reference": "CON-1",
+        "start_date": "2026-01-01", "end_date": "2026-12-31", "cutover_date": "2026-07-01",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "1200.00"}],
+        "obligations": [{"id": "service", "name": "Service", "kind": "service", "ssp": "1200.00",
+                         "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+    }, period="2026-07")
+    opening = {"contract_id": "contract", "effective_date": "2026-07-01", "source_name": "Legacy schedule v1",
+               "rationale": "June source and GL balances agree", "billed_to_date": "600.00",
+               "contract_asset": "0.00", "deferred_revenue": "0.00",
+               "opening_obligations": [{"obligation_id": "service", "recognized_to_date": "600.00"}]}
+    original_id = application.execute("record_opening_position", opening, period="2026-07")["result"]["change_set_id"]
+    application.execute("record_population_manifest", {"period": "2026-07", "source_name": "Independent legacy close",
+        "rationale": "July cutover source register", "contract_references": ["CON-1"], "billing_references": [],
+        "opening_positions": [{"contract_reference": "CON-1", "cutover_date": "2026-07-01",
+                               "billed_to_date": "600.00", "contract_asset": "0.00",
+                               "deferred_revenue": "0.00", "recognized_to_date": "600.00"}]}, period="2026-07")
+    application.execute("record_billing", {"contract_id": "contract", "effective_date": "2026-08-15", "amount": "100.00", "reference": "INV-AUG"}, period="2026-08")
+    before = application.state(period="2026-08")["report"]["contracts"][0]
+    replacement = {**opening, "source_name": "Legacy schedule v2", "rationale": "Corrected June source tie-out",
+                   "billed_to_date": "500.00", "contract_asset": "40.00",
+                   "opening_obligations": [{"obligation_id": "service", "recognized_to_date": "540.00"}]}
+    command = {"target_change_set_id": original_id, "rationale": "The legacy extract omitted a June adjustment.", "replacement": replacement}
+    with pytest.raises(ValueError, match="retain its contract and cutover date"):
+        application.execute("correct_opening_position", {**command, "replacement": {**replacement, "effective_date": "2026-08-01"}}, period="2026-08")
+    with pytest.raises(ValueError, match="reconcile"):
+        application.execute("correct_opening_position", {**command, "replacement": {**replacement, "contract_asset": "41.00"}}, period="2026-08")
+    preview = application.preview("correct_opening_position", command, period="2026-08")
+    assert preview["state"]["report"]["contracts"][0]["revenue"] != before["revenue"]
+    correction_id = application.execute("correct_opening_position", command, period="2026-08")["result"]["change_set_id"]
+    state = application.state(period="2026-08")
+    accepted = state["contracts"][0]["activities"][0]
+    assert accepted["id"] == correction_id and accepted["corrects"] == original_id
+    assert accepted["source_name"] == "Legacy schedule v2"
+    assert state["report"]["contracts"][0]["revenue"] != before["revenue"]
+    assert state["report"]["contracts"][0]["billed_to_date"] == "600.00"
+    assert any(row["id"] == original_id and row["command"] == "record_opening_position" for row in state["change_sets"])
+    assert any(row["id"] == correction_id and row["command"] == "correct_opening_position" for row in state["change_sets"])
+    assert any(row["change_set_id"] == correction_id for row in application.reports(period="2026-08")["exceptions"]["evidence"])
+    application.execute("record_judgment_review", {"target_change_set_id": correction_id, "reviewer": "Controller",
+        "disposition": "supported", "conclusion": "Use the corrected legacy closing amounts",
+        "support_memo": "Reconciled the revised source schedule to the GL."}, period="2026-08")
+    assert not any(row["change_set_id"] == correction_id for row in application.reports(period="2026-08")["exceptions"]["evidence"])
+    assert application.reports(period="2026-07")["population_comparison"]["mismatched_openings"][0]["contract_reference"] == "CON-1"
+    book = load_workbook(io.BytesIO(export_bytes(state)), read_only=True)
+    assert book["Opening positions"]["C2"].value == "500.00"
+    assert book["Opening positions"]["I2"].value == original_id
+    assert book["Opening obligation balances"]["C2"].value == "540.00"
+    book.close()
+    application.execute("close_period", {"period": "2026-07", "review_dispositions": accept_review_items(application, "2026-07")}, period="2026-07")
+    with pytest.raises(ValueError, match="Reopen closed periods"):
+        application.execute("correct_opening_position", {**command, "target_change_set_id": correction_id}, period="2026-08")
+    application.execute("reopen_period", {"period": "2026-07", "rationale": "Revise accepted cutover"}, period="2026-07")
+    application.execute("correct_opening_position", {**command, "target_change_set_id": correction_id}, period="2026-08")
+
+
 def test_source_openings_catch_offsetting_contract_errors_when_gl_totals_match(tmp_path):
     application = app(tmp_path)
     application.execute("create_customer", {"id": "customer", "name": "Customer"})

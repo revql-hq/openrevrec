@@ -923,7 +923,7 @@ export function ContractView(props: ViewProps) {
             </Section>
           </div>
           <Section title="Recent contract activity">
-            <ActivityTable contract={contract} currency={currency} limit={6} onCorrect={(activity) => dialog({ type: "activity", contractId: contract.id, activity: activity.type, action: "correct", entityId: activity.id })} />
+            <ActivityTable contract={contract} currency={currency} limit={6} onCorrect={(activity) => dialog({ type: activity.type === "opening_position" ? "opening_position" : "activity", contractId: contract.id, activity: activity.type, action: "correct", entityId: activity.id })} />
           </Section>
           <Section
             title="Working context"
@@ -1115,14 +1115,14 @@ export function ContractView(props: ViewProps) {
             contract={contract}
             currency={currency}
             type="billing"
-            onCorrect={(activity) => dialog({ type: "activity", contractId: contract.id, activity: activity.type, action: "correct", entityId: activity.id })}
+            onCorrect={(activity) => dialog({ type: activity.type === "opening_position" ? "opening_position" : "activity", contractId: contract.id, activity: activity.type, action: "correct", entityId: activity.id })}
           />
         </Section>
       )}
       {tab === "Changes" && (
         <>
           <Section title="Accounting activity">
-            <ActivityTable contract={contract} currency={currency} onCorrect={(activity) => dialog({ type: "activity", contractId: contract.id, activity: activity.type, action: "correct", entityId: activity.id })} />
+            <ActivityTable contract={contract} currency={currency} onCorrect={(activity) => dialog({ type: activity.type === "opening_position" ? "opening_position" : "activity", contractId: contract.id, activity: activity.type, action: "correct", entityId: activity.id })} />
           </Section>
           <Section title="Change history">
             <ChangesList props={props} contractId={contract.id} />
@@ -1219,7 +1219,7 @@ function ActivityTable({
                         : "—"}
               </td>
               <td className="muted wrap">{a.rationale || "—"}</td>
-              {onCorrect && <td>{["billing", "progress", "usage", "milestone", "rate_change"].includes(a.type) && <Button type="button" onClick={() => onCorrect(a)}>Correct</Button>}{Boolean(a.corrects) && <small className="cell-subtitle">Corrected from {String(a.corrects)}</small>}</td>}
+              {onCorrect && <td>{["billing", "progress", "usage", "milestone", "rate_change", "opening_position"].includes(a.type) && <Button type="button" onClick={() => onCorrect(a)}>Correct</Button>}{Boolean(a.corrects) && <small className="cell-subtitle">Corrected from {String(a.corrects)}</small>}</td>}
             </tr>
           ))}
         </tbody>

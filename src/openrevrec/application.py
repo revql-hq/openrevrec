@@ -25,8 +25,8 @@ ACTIVITY_TYPES = {
 }
 SCENARIO_COMMANDS = {"create_scenario", "apply_scenario", "rebase_scenario", "archive_scenario", "restore_scenario"}
 CORRECTABLE_COMMANDS = {"record_billing", "record_progress", "record_usage", "record_milestone", "record_rate_change"}
-JUDGMENT_COMMANDS = {"create_contract", "record_opening_position", "record_right_exercise", "link_renewal_contract", "link_modification_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "record_rate_change", "record_account_runoff", "set_policy", "reopen_period"}
-COMMANDS = {"create_customer", "create_contract", "link_renewal_contract", "link_modification_contract", "set_policy", "record_account_runoff", "record_control_totals", "record_population_manifest", "record_export_posting", "record_term_review", "close_period", "reopen_period", "add_note", "edit_note", "edit_details", "attach_evidence", "record_judgment_review", "correct_activity"} | set(ACTIVITY_TYPES) | SCENARIO_COMMANDS
+JUDGMENT_COMMANDS = {"create_contract", "record_opening_position", "correct_opening_position", "record_right_exercise", "link_renewal_contract", "link_modification_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "record_rate_change", "record_account_runoff", "set_policy", "reopen_period"}
+COMMANDS = {"create_customer", "create_contract", "link_renewal_contract", "link_modification_contract", "set_policy", "record_account_runoff", "record_control_totals", "record_population_manifest", "record_export_posting", "record_term_review", "close_period", "reopen_period", "add_note", "edit_note", "edit_details", "attach_evidence", "record_judgment_review", "correct_activity", "correct_opening_position"} | set(ACTIVITY_TYPES) | SCENARIO_COMMANDS
 DEFAULT_ACCOUNTS = {"revenue": "4000", "deferred_revenue": "2300", "contract_asset": "1200", "billing_clearing": "1100"}
 DESCRIPTIVE_COMMANDS = {"edit_details", "add_note", "edit_note", "attach_evidence", "record_judgment_review"}
 
@@ -153,6 +153,33 @@ def required_text(payload, key):
     return value.strip()
 
 
+def normalize_opening_position(payload: dict, contract: dict) -> dict:
+    """Validate source opening facts for both initial entry and correction."""
+    p = payload.copy()
+    p["effective_date"] = valid_date(p.get("effective_date"), "Cutover date")
+    if p["effective_date"][-2:] != "01" or p["effective_date"] <= contract["start_date"]:
+        raise ValueError("Cutover must be the first day of a month after the contract starts.")
+    if contract.get("cutover_date") and p["effective_date"] != contract["cutover_date"]:
+        raise ValueError("Opening position date must match the contract's declared cutover.")
+    p["source_name"] = required_text(p, "source_name")
+    p["rationale"] = required_text(p, "rationale")
+    for field in ("billed_to_date", "contract_asset", "deferred_revenue"):
+        p[field] = decimal_string(p.get(field), field.replace("_", " "), True)
+    rows = p.get("opening_obligations")
+    if not isinstance(rows, list) or len(rows) != len(contract["obligations"]):
+        raise ValueError("Supply one opening row for each current performance obligation.")
+    normalized = []
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("obligation_id"), str):
+            raise ValueError("Each opening row must identify an obligation.")
+        item = {"obligation_id": row["obligation_id"], "recognized_to_date": decimal_string(row.get("recognized_to_date"), "Recognized to date", True)}
+        if row.get("measure") not in (None, ""):
+            item["measure"] = decimal_string(row["measure"], "Cumulative measure", True)
+        normalized.append(item)
+    p["opening_obligations"] = normalized
+    return p
+
+
 def _calculation(state, period):
     from .domain import calculate
     return calculate(state, period)
@@ -263,7 +290,7 @@ class Application:
                 state["renewal_links"].append({**p, "change_set_id": row["id"], "recorded_at": row["recorded_at"], "scenario_id": row["scenario_id"]})
             elif command == "link_modification_contract":
                 state["modification_links"].append({**p, "change_set_id": row["id"], "recorded_at": row["recorded_at"], "scenario_id": row["scenario_id"]})
-            elif command == "correct_activity":
+            elif command in {"correct_activity", "correct_opening_position"}:
                 contract = contracts.get(p["contract_id"])
                 if contract is None:
                     raise ValueError("Correction references a missing contract.")
@@ -613,6 +640,27 @@ class Application:
             if any(item["renewal_contract_id"] == added["id"] for item in state["renewal_links"]):
                 raise ValueError("A renewal contract cannot also be an added-service amendment contract.")
             p["rationale"] = required_text(p, "rationale")
+        elif command == "correct_opening_position":
+            if set(p) - {"target_change_set_id", "rationale", "replacement"}:
+                raise ValueError("Opening correction has unsupported fields.")
+            p["rationale"] = required_text(p, "rationale")
+            target = next((activity for contract in state["contracts"] for activity in contract["activities"]
+                           if activity["id"] == p.get("target_change_set_id") and activity["type"] == "opening_position"), None)
+            if target is None:
+                raise ValueError("Choose the current opening position to correct.")
+            contract = next(item for item in state["contracts"] if item["id"] == target["contract_id"])
+            replacement = p.get("replacement")
+            allowed = {"contract_id", "effective_date", "billed_to_date", "contract_asset", "deferred_revenue", "source_name", "rationale", "opening_obligations"}
+            if not isinstance(replacement, dict) or set(replacement) - allowed:
+                raise ValueError("Provide complete replacement opening facts without unsupported fields.")
+            if replacement.get("contract_id") != contract["id"] or replacement.get("effective_date") != target["effective_date"]:
+                raise ValueError("An opening correction must retain its contract and cutover date.")
+            if scenario_id == "main" and any(close["status"] == "closed" and close["period"] >= target["effective_date"][:7]
+                                             for close in state["closes"]):
+                raise ValueError("Reopen closed periods before correcting a cutover opening position.")
+            p["replacement"] = normalize_opening_position(replacement, contract)
+            p["contract_id"] = contract["id"]
+            p["effective_date"] = target["effective_date"]
         elif command == "correct_activity":
             p["rationale"] = required_text(p, "rationale")
             target = next((activity for contract in state["contracts"] for activity in contract["activities"] if activity["id"] == p.get("target_change_set_id")), None)
@@ -642,27 +690,7 @@ class Application:
                 raise ValueError("Choose an existing contract for the opening position.")
             if contract["activities"]:
                 raise ValueError("Record an opening position before recording this contract's post-cutover activity.")
-            p["effective_date"] = valid_date(p.get("effective_date"), "Cutover date")
-            if p["effective_date"][-2:] != "01" or p["effective_date"] <= contract["start_date"]:
-                raise ValueError("Cutover must be the first day of a month after the contract starts.")
-            if contract.get("cutover_date") and p["effective_date"] != contract["cutover_date"]:
-                raise ValueError("Opening position date must match the contract's declared cutover.")
-            p["source_name"] = required_text(p, "source_name")
-            p["rationale"] = required_text(p, "rationale")
-            for field in ("billed_to_date", "contract_asset", "deferred_revenue"):
-                p[field] = decimal_string(p.get(field), field.replace("_", " "), True)
-            rows = p.get("opening_obligations")
-            if not isinstance(rows, list) or len(rows) != len(contract["obligations"]):
-                raise ValueError("Supply one opening row for each current performance obligation.")
-            normalized = []
-            for row in rows:
-                if not isinstance(row, dict) or not isinstance(row.get("obligation_id"), str):
-                    raise ValueError("Each opening row must identify an obligation.")
-                item = {"obligation_id": row["obligation_id"], "recognized_to_date": decimal_string(row.get("recognized_to_date"), "Recognized to date", True)}
-                if row.get("measure") not in (None, ""):
-                    item["measure"] = decimal_string(row["measure"], "Cumulative measure", True)
-                normalized.append(item)
-            p["opening_obligations"] = normalized
+            p = normalize_opening_position(p, contract)
         elif command in ACTIVITY_TYPES:
             contract = next((c for c in state["contracts"] if c["id"] == p.get("contract_id")), None)
             if contract is None:
@@ -1388,7 +1416,7 @@ class Application:
         p = self._prepare(db, command, payload, scenario_id)
         result = self._append(db, command, p, scenario_id, source, idempotency_key, request_hash, originating_change_set_id)
         after = self._project(db, scenario_id)
-        if command in ACTIVITY_TYPES or command in {"create_contract", "link_renewal_contract", "link_modification_contract", "set_policy", "record_account_runoff", "correct_activity"}:
+        if command in ACTIVITY_TYPES or command in {"create_contract", "link_renewal_contract", "link_modification_contract", "set_policy", "record_account_runoff", "correct_activity", "correct_opening_position"}:
             # Full replay validates progress, allocation, usage and amendments together.
             changed_period = p.get("effective_date", p.get("start_date", p.get("effective_period", p.get("period", date.today().isoformat()))))[:7]
             _calculation(after, changed_period)

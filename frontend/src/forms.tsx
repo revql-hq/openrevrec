@@ -147,7 +147,7 @@ export function CommandDialog({
                   profileName={(id) => preview.state.policy.account_profiles?.[id]?.name || id}
                 />
               </Section>
-              {["create_contract", "record_opening_position", "link_renewal_contract", "link_modification_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "set_policy", "reopen_period"].includes(command().command) && <Section title="Support this judgment" subtitle="Attach the document or analysis used for this accounting conclusion.">
+              {["create_contract", "record_opening_position", "correct_opening_position", "link_renewal_contract", "link_modification_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "record_rate_change", "record_account_runoff", "set_policy", "reopen_period"].includes(command().command) && <Section title="Support this judgment" subtitle="Attach the document or analysis used for this accounting conclusion.">
                 <Field label="Supporting file (optional)"><input type="file" onChange={(event) => setSupportFile(event.target.files?.[0] || null)} /></Field>
                 {supportFile && <Field label="Evidence note"><input value={supportNote} onChange={(event) => setSupportNote(event.target.value)} placeholder="What this file supports" /></Field>}
               </Section>}
@@ -1365,16 +1365,20 @@ export function ModificationLinkForm(props: FormProps & { contract: Contract }) 
   </CommandDialog>;
 }
 
-export function OpeningPositionForm(props: FormProps & { contract: Contract }) {
-  const { contract } = props;
-  const [effective, setEffective] = useState(contract.cutover_date || `${props.period}-01`);
-  const [billed, setBilled] = useState("");
-  const [asset, setAsset] = useState("");
-  const [deferred, setDeferred] = useState("");
-  const [sourceName, setSourceName] = useState("");
-  const [rationale, setRationale] = useState("");
+export function OpeningPositionForm(props: FormProps & { contract: Contract; correctionTarget?: Activity }) {
+  const { contract, correctionTarget } = props;
+  const [effective, setEffective] = useState(correctionTarget?.effective_date || contract.cutover_date || `${props.period}-01`);
+  const [billed, setBilled] = useState(String(correctionTarget?.billed_to_date || ""));
+  const [asset, setAsset] = useState(String(correctionTarget?.contract_asset || ""));
+  const [deferred, setDeferred] = useState(String(correctionTarget?.deferred_revenue || ""));
+  const [sourceName, setSourceName] = useState(String(correctionTarget?.source_name || ""));
+  const [rationale, setRationale] = useState(correctionTarget?.rationale || "");
+  const [correctionReason, setCorrectionReason] = useState("");
   const [rows, setRows] = useState<Record<string, { recognized: string; measure: string }>>(
-    Object.fromEntries(contract.obligations.map((item) => [item.id, { recognized: "", measure: "" }])),
+    Object.fromEntries(contract.obligations.map((item) => {
+      const opening = (correctionTarget?.opening_obligations as { obligation_id: string; recognized_to_date: string; measure?: string }[] | undefined)?.find((row) => row.obligation_id === item.id);
+      return [item.id, { recognized: opening?.recognized_to_date || "", measure: opening?.measure || "" }];
+    })),
   );
   const validCents = (value: string) => /^\d+(?:\.\d{1,2})?$/.test(value);
   const recognizedAmounts = contract.obligations.map((item) => rows[item.id]?.recognized || "");
@@ -1383,25 +1387,27 @@ export function OpeningPositionForm(props: FormProps & { contract: Contract }) {
   const enteredNet = validCents(asset) && validCents(deferred) ? total([asset, `-${deferred}`]) : null;
   const setRow = (id: string, field: "recognized" | "measure", value: string) =>
     setRows((current) => ({ ...current, [id]: { ...current[id], [field]: value } }));
+  const replacement = () => ({
+    contract_id: contract.id, effective_date: effective, billed_to_date: billed,
+    contract_asset: asset, deferred_revenue: deferred, source_name: sourceName, rationale,
+    opening_obligations: contract.obligations.map((item) => ({
+      obligation_id: item.id, recognized_to_date: rows[item.id]?.recognized || "",
+      ...(["progress", "milestone", "point_in_time", "usage"].includes(item.method) ? { measure: rows[item.id]?.measure || "" } : {}),
+    })),
+  });
   return <CommandDialog
     {...props}
-    title="Record opening position"
+    title={correctionTarget ? "Correct opening position" : "Record opening position"}
     subtitle={`${contract.name} · accepted legacy position before ${effective || "cutover"}`}
     wide
-    command={() => ({ command: "record_opening_position", payload: {
-      contract_id: contract.id, effective_date: effective, billed_to_date: billed,
-      contract_asset: asset, deferred_revenue: deferred, source_name: sourceName, rationale,
-      opening_obligations: contract.obligations.map((item) => ({
-        obligation_id: item.id, recognized_to_date: rows[item.id]?.recognized || "",
-        ...(["progress", "milestone", "point_in_time", "usage"].includes(item.method) ? { measure: rows[item.id]?.measure || "" } : {}),
-      })),
-    } })}
-    confirmLabel="Record opening position"
-    successMessage="Opening position recorded and reconciled."
+    command={() => correctionTarget ? { command: "correct_opening_position", payload: { target_change_set_id: correctionTarget.id, rationale: correctionReason, replacement: replacement() } } : { command: "record_opening_position", payload: replacement() }}
+    confirmLabel={correctionTarget ? "Record correction" : "Record opening position"}
+    successMessage={correctionTarget ? "Opening position corrected and recalculated." : "Opening position recorded and reconciled."}
   >
     <p className="notice">Use the current accounting terms for this contract. Enter cumulative amounts accepted at the end of the prior month. OpenRevRec will calculate forward from this cutover; it will not reconstruct or report the earlier months.</p>
+    {correctionTarget && <p className="notice">This replaces the accepted opening facts while preserving the original change in history. Later activity will be recalculated. Reopen closed periods first.</p>}
     <div className="form-grid">
-      <Field label="Cutover month (first day)"><input type="date" required value={effective} onChange={(event) => setEffective(event.target.value)} /></Field>
+      <Field label="Cutover month (first day)"><input type="date" required readOnly={Boolean(correctionTarget)} value={effective} onChange={(event) => setEffective(event.target.value)} /></Field>
       <Field label="Legacy source name"><input required value={sourceName} onChange={(event) => setSourceName(event.target.value)} placeholder="Approved workbook or schedule" /></Field>
     </div>
     <Section title="Recognized revenue by obligation" subtitle="These are cumulative legacy balances through the day before cutover, not new revenue for this month.">
@@ -1417,6 +1423,7 @@ export function OpeningPositionForm(props: FormProps & { contract: Contract }) {
     </div>
     <p className="fine-print">{derivedNet !== null && enteredNet !== null ? <>Recognized less billed: {money(derivedNet, props.state.workspace.currency)}. Entered asset less deferred: {money(enteredNet, props.state.workspace.currency)}. {derivedNet === enteredNet ? "Amounts agree." : "Amounts do not agree."}</> : "Enter cent-precision amounts to preview the reconciliation."} Only one balance side may be positive.</p>
     <Field label="Reconciliation rationale"><textarea rows={3} required value={rationale} onChange={(event) => setRationale(event.target.value)} placeholder="Identify the accepted legacy close and explain the tie-out." /></Field>
+    {correctionTarget && <Field label="Reason for correcting the opening"><textarea rows={2} required value={correctionReason} onChange={(event) => setCorrectionReason(event.target.value)} placeholder="Explain which source facts changed and why." /></Field>}
   </CommandDialog>;
 }
 export function ScenarioForm(props: FormProps) {
