@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { changeComponentKind, contractTerms, termReviewStatus } from '../../frontend/src/contractTerms.ts';
+import { changeComponentKind, changeObligationKind, changeObligationMethod, contractTerms, suggestedModificationDate, termReviewStatus } from '../../frontend/src/contractTerms.ts';
 
 const price = { id: 'price', label: 'Fee', kind: 'variable', amount: '100', included_amount: '25' };
 const contract = {
@@ -72,6 +72,22 @@ test('switching to fixed pricing removes constrained fields without mutating the
   assert.equal(changeComponentKind(monthly, 'credit').target_period, undefined);
   assert.equal(changeComponentKind(monthly, 'usage').target_period, '2026-06');
   assert.equal(changeComponentKind(monthly, 'fixed').target_period, undefined);
+});
+
+test('modification starts no earlier than the contract, and method changes require a fresh SSP', () => {
+  const terms = { start_date: '2026-09-15' };
+  assert.equal(suggestedModificationDate(terms, '2026-09'), '2026-09-15');
+  assert.equal(suggestedModificationDate(terms, '2026-10'), '2026-10-01');
+  const service = { id: 'service', kind: 'service', method: 'usage', ssp: '200', total_units: '100' };
+  const metered = changeObligationMethod(service, 'metered');
+  assert.equal(metered.ssp, '0');
+  assert.equal(metered.total_units, undefined);
+  assert.equal(changeObligationMethod(metered, 'exact_days').ssp, '');
+  const right = changeObligationKind(metered, 'material_right');
+  assert.equal(right.method, 'point_in_time');
+  assert.equal(right.ssp, '');
+  assert.equal(changeObligationKind({ ...right, exercise_start: '2026-09-20', exercise_end: '2026-12-31' }, 'service').exercise_start, undefined);
+  assert.equal(service.total_units, '100');
 });
 
 test('metered rate changes appear only from their delivery-effective date', () => {

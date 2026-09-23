@@ -107,3 +107,23 @@ export function changeComponentKind(item: Component, kind: string): Component {
   }
   return next;
 }
+
+/** Switching out of metered service requires an explicit SSP for allocation. */
+export function changeObligationMethod(item: Obligation, method: string): Obligation {
+  const next = { ...item, method };
+  if (method === "metered") next.ssp = "0";
+  else if (item.method === "metered") next.ssp = "";
+  if (method !== "usage") delete next.total_units;
+  return next;
+}
+
+export function changeObligationKind(item: Obligation, kind: string): Obligation {
+  if (kind === "material_right") return { ...changeObligationMethod(item, "point_in_time"), kind };
+  const { exercise_start: _start, exercise_end: _end, ...rest } = item;
+  return { ...rest, kind };
+}
+
+export function suggestedModificationDate(contract: Contract, period: string): string {
+  const periodStart = `${period}-01`;
+  return contract.start_date > periodStart ? contract.start_date : periodStart;
+}

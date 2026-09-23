@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { changeComponentKind, contractTerms, termReviewStatus } from "./contractTerms";
+import { changeComponentKind, changeObligationKind, changeObligationMethod, contractTerms, suggestedModificationDate, termReviewStatus } from "./contractTerms";
 import { activityEarliestDate, suggestedActivityDate } from "./activityDates";
 import { parseApprovedCombinations } from "./accountRules";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
@@ -594,12 +594,7 @@ function ObligationEditor({
               <select
                 value={item.kind}
                 onChange={(e) =>
-                  update(i, {
-                    kind: e.target.value,
-                    ...(e.target.value === "material_right"
-                      ? { method: "point_in_time" }
-                      : {}),
-                  })
+                  onChange(items.map((candidate, index) => index === i ? changeObligationKind(candidate, e.target.value) : candidate))
                 }
               >
                 {kinds.map((kind) => (
@@ -633,9 +628,9 @@ function ObligationEditor({
             <Field label="Recognition method">
               <select
                 value={item.method}
-                onChange={(e) => update(i, { method: e.target.value, ...(e.target.value === "metered" ? { ssp: "0" } : {}) })}
+                onChange={(e) => onChange(items.map((candidate, index) => index === i ? changeObligationMethod(candidate, e.target.value) : candidate))}
               >
-                {Object.entries(methods).map(([value, label]) => (
+                {Object.entries(methods).filter(([value]) => item.kind !== "material_right" || value === "point_in_time").map(([value, label]) => (
                   <option key={value} value={value}>
                     {label}
                   </option>
@@ -681,6 +676,7 @@ function ObligationEditor({
               <Field label="Exercise window begins">
                 <input
                   type="date"
+                  min={item.start_date}
                   value={item.exercise_start || ""}
                   onChange={(e) =>
                     update(i, { exercise_start: e.target.value })
@@ -690,6 +686,7 @@ function ObligationEditor({
               <Field label="Exercise window ends">
                 <input
                   type="date"
+                  min={item.exercise_start || item.start_date}
                   value={item.exercise_end || item.end_date}
                   onChange={(e) => update(i, { exercise_end: e.target.value })}
                 />
@@ -712,8 +709,9 @@ export function ContractForm(
   props: FormProps & { contract?: Contract; customerId?: string },
 ) {
   const { contract } = props;
+  const initialEffective = contract ? suggestedModificationDate(contract, props.period) : `${props.period}-01`;
   const initialTerms = contract
-    ? { ...contractTerms(contract, `${props.period}-01`), termAssessment: termReviewStatus(props.state, contract, `${props.period}-01`) }
+    ? { ...contractTerms(contract, initialEffective), termAssessment: termReviewStatus(props.state, contract, initialEffective) }
     : undefined;
   const annualStart = `${props.period}-01`;
   const annualEnd = new Date(Date.UTC(Number(props.period.slice(0, 4)) + 1, Number(props.period.slice(5)) - 1, 0)).toISOString().slice(0, 10);
@@ -734,10 +732,10 @@ export function ContractForm(
     [cutover, setCutover] = useState(contract?.cutover_date || ""),
     [template, setTemplate] = useState(contract ? "existing" : ""),
     [rationale, setRationale] = useState(""),
-    [effective, setEffective] = useState(`${props.period}-01`),
+    [effective, setEffective] = useState(initialEffective),
     [treatment, setTreatment] = useState(""),
     [mixedAllocations, setMixedAllocations] = useState<Record<string, { treatment: string; amount: string; revised_progress?: string }>>({}),
-    [loadedEffective, setLoadedEffective] = useState(`${props.period}-01`),
+    [loadedEffective, setLoadedEffective] = useState(initialEffective),
     [termsDirty, setTermsDirty] = useState(false),
     [termBasis, setTermBasis] = useState<"fixed" | "cancellable" | "evergreen">(initialTerms?.termAssessment.basis || "fixed"),
     [termRationale, setTermRationale] = useState(initialTerms?.termAssessment.rationale || ""),
@@ -951,6 +949,7 @@ export function ContractForm(
               <input
                 type="date"
                 required
+                min={contract.start_date}
                 value={effective}
                 onChange={(e) => {
                   setEffective(e.target.value);
