@@ -73,7 +73,7 @@ export type Contract = {
   activities: Activity[];
   rationale?: string;
   reference?: string;
-  source_contracts?: { reference: string; agreement_date: string }[];
+  source_contracts?: { reference: string; agreement_date: string; customer_id?: string; relationship_rationale?: string }[];
   combination_basis?: "package" | "interdependent_price" | "single_obligation";
   combination_rationale?: string;
   description?: string;

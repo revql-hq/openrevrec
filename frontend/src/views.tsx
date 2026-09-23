@@ -869,7 +869,7 @@ export function ContractView(props: ViewProps) {
                     </button>
                   </dd>
                 </div>
-                {contract.source_contracts && <div><dt>Combined source agreements</dt><dd>{contract.source_contracts.map((source) => `${source.reference} (${dateLabel(source.agreement_date)})`).join(" · ")}</dd></div>}
+                {contract.source_contracts && <div><dt>Combined source agreements</dt><dd className="source-agreements">{contract.source_contracts.map((source) => <div key={source.reference}><strong>{source.reference}</strong> · {dateLabel(source.agreement_date)} · {props.state.customers.find((item) => item.id === (source.customer_id || contract.customer_id))?.name || source.customer_id || contract.customer_id}{source.relationship_rationale && <div className="fine-print">Related party: {source.relationship_rationale}</div>}</div>)}</dd></div>}
                 {contract.combination_basis && <div><dt>Combination basis</dt><dd>{contract.combination_basis === "package" ? "Single commercial objective" : contract.combination_basis === "interdependent_price" ? "Interdependent price or performance" : "One performance obligation"}</dd></div>}
                 <div>
                   <dt>{isMetered ? "Earned invoice value to date" : "Transaction price"}</dt>

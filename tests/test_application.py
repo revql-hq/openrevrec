@@ -91,16 +91,55 @@ def test_combined_source_agreements_share_accounting_and_reconcile_independent_r
     assert application.state(scenario, "2026-02")["report"]["summary"]["billings"] == "230.00"
 
 
+def test_combined_related_party_sources_keep_legal_customer_identity(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "parent", "name": "Parent company"})
+    application.execute("create_customer", {"id": "subsidiary", "name": "Subsidiary"})
+    contract = {
+        "id": "group-service", "customer_id": "parent", "name": "Group service", "reference": "P-1",
+        "start_date": "2026-01-01", "end_date": "2026-01-31",
+        "source_contracts": [{"reference": "P-1", "agreement_date": "2026-01-01", "customer_id": "parent"},
+                             {"reference": "S-1", "agreement_date": "2026-01-02", "customer_id": "subsidiary",
+                              "relationship_rationale": "Subsidiary is controlled by the primary customer."}],
+        "combination_basis": "package", "combination_rationale": "Negotiated together for one group service.",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "100.00"}],
+        "obligations": [{"id": "service", "name": "Service", "kind": "service", "ssp": "100.00",
+                         "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-01-31"}],
+    }
+    with pytest.raises(ValueError, match="related to the primary customer"):
+        application.execute("create_contract", {**contract, "source_contracts": [contract["source_contracts"][0],
+                                                                                   {**contract["source_contracts"][1], "relationship_rationale": ""}]}, period="2026-01")
+    with pytest.raises(ValueError, match="existing customer"):
+        application.execute("create_contract", {**contract, "source_contracts": [contract["source_contracts"][0],
+                                                                                   {**contract["source_contracts"][1], "customer_id": "unknown"}]}, period="2026-01")
+    with pytest.raises(ValueError, match="primary source agreement"):
+        application.execute("create_contract", {**contract, "source_contracts": [{**contract["source_contracts"][0], "customer_id": "subsidiary",
+                                                                                  "relationship_rationale": "Incorrect primary"}, contract["source_contracts"][1]]}, period="2026-01")
+    application.execute("create_contract", contract, period="2026-01")
+    application.execute("record_billing", {"contract_id": "group-service", "effective_date": "2026-01-15",
+                                           "amount": "100.00", "reference": "INV-S", "source_contract_reference": "S-1"}, period="2026-01")
+    state = application.state(period="2026-01")
+    assert state["report"]["summary"]["revenue"] == "100.00"
+    assert state["report"]["summary"]["contract_asset"] == "0.00"
+    assert state["contracts"][0]["source_contracts"][1]["customer_id"] == "subsidiary"
+    book = load_workbook(io.BytesIO(export_bytes(state, application.reports(period="2026-01"))), read_only=True)
+    rows = list(book["Contract combinations"].values)
+    assert rows[2][6:] == ("subsidiary", "Subsidiary is controlled by the primary customer.")
+    book.close()
+
+
 def test_combined_contract_import_keeps_invoice_and_priced_usage_source_agreements(tmp_path):
     application = app(tmp_path)
     book = load_workbook(io.BytesIO(template_bytes()))
     rows = {
-        "Customers": [{"id": "customer", "name": "Customer"}],
+        "Customers": [{"id": "customer", "name": "Customer"},
+                      {"id": "related", "name": "Related customer"}],
         "Contracts": [{"id": "combined", "customer_id": "customer", "name": "Combined usage",
                        "start_date": "2026-01-01", "end_date": "2026-12-31", "reference": "AG-A",
                        "combination_basis": "package", "combination_rationale": "Two agreements signed together for one commercial package."}],
-        "Contract Sources": [{"contract_id": "combined", "reference": "AG-A", "agreement_date": "2026-01-01"},
-                             {"contract_id": "combined", "reference": "AG-B", "agreement_date": "2026-01-02"}],
+        "Contract Sources": [{"contract_id": "combined", "reference": "AG-A", "agreement_date": "2026-01-01", "customer_id": "customer"},
+                             {"contract_id": "combined", "reference": "AG-B", "agreement_date": "2026-01-02", "customer_id": "related",
+                              "relationship_rationale": "Related entity under common control."}],
         "Consideration": [{"contract_id": "combined", "id": "meter", "kind": "metered", "amount": "0",
                            "metered_value_mode": "invoice_value", "pricing_basis": "right_to_invoice",
                            "rounding_period": "calendar_month", "rationale": "Source-priced delivery reflects customer value."}],
@@ -132,6 +171,7 @@ def test_combined_contract_import_keeps_invoice_and_priced_usage_source_agreemen
     assert preview["state"]["report"]["summary"]["revenue"] == "15.17"
     imported = import_bytes(application, data.getvalue(), period="2026-01")
     assert imported["state"]["report"]["summary"]["contract_asset"] == "0.17"
+    assert imported["state"]["contracts"][0]["source_contracts"][1]["customer_id"] == "related"
     application.execute("record_population_manifest", {"period": "2026-01", "source_name": "Independent registers",
                          "rationale": "All January agreements, invoices, and priced usage.",
                          "contract_references": ["AG-A", "AG-B"],

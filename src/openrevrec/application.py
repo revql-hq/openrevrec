@@ -584,12 +584,24 @@ class Application:
                     raise ValueError("A combined accounting contract needs at least two source agreements.")
                 normalized_sources = []
                 for source in sources:
-                    if not isinstance(source, dict) or set(source) != {"reference", "agreement_date"}:
-                        raise ValueError("Each source agreement needs a reference and agreement date.")
+                    if not isinstance(source, dict) or not {"reference", "agreement_date"} <= set(source) or set(source) - {"reference", "agreement_date", "customer_id", "relationship_rationale"}:
+                        raise ValueError("Each source agreement needs a reference and agreement date, with an optional customer and relationship rationale.")
+                    source_customer = source.get("customer_id") or p["customer_id"]
+                    if not isinstance(source_customer, str) or not any(c["id"] == source_customer for c in state["customers"]):
+                        raise ValueError("Choose an existing customer for each source agreement.")
+                    if source.get("relationship_rationale") is not None and not isinstance(source["relationship_rationale"], str):
+                        raise ValueError("Source customer relationship rationale must be text.")
+                    relationship = (source.get("relationship_rationale") or "").strip()
+                    if source_customer != p["customer_id"] and not relationship:
+                        raise ValueError("Explain how each different source customer is related to the primary customer.")
                     normalized_sources.append({"reference": required_text(source, "reference"),
-                                               "agreement_date": valid_date(source.get("agreement_date"), "Agreement date")})
+                                               "agreement_date": valid_date(source.get("agreement_date"), "Agreement date"),
+                                               "customer_id": source_customer,
+                                               **({"relationship_rationale": relationship} if relationship else {})})
                 p["source_contracts"] = normalized_sources
                 p["combination_rationale"] = required_text(p, "combination_rationale")
+                if normalized_sources[0]["customer_id"] != p["customer_id"]:
+                    raise ValueError("The primary source agreement must belong to the accounting contract's customer.")
             new_references = _contract_source_references(p)
             if len(new_references) != len(set(new_references)) or any(reference in _contract_source_references(c)
                                                                      for c in state["contracts"] for reference in new_references):

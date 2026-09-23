@@ -199,6 +199,7 @@ tfoot th, tfoot td { background: #f7f7f4; border-top: 1px solid var(--line); bor
 .definition-list > div:last-child { border-bottom: 0; }
 .definition-list dt { color: var(--muted); }
 .definition-list dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.definition-list dd.source-agreements { display: grid; gap: 8px; text-align: left; }
 .change-decision { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
 .change-decision .definition-list { width: 100%; }
 .workspace-actions { margin-top: var(--form-section-gap); }

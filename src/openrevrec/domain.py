@@ -437,12 +437,23 @@ def validate_contract(contract: dict) -> None:
             raise ValueError("A combined accounting contract needs a paragraph 17 basis and rationale")
         references = []
         for source in source_contracts:
-            if not isinstance(source, dict) or set(source) != {"reference", "agreement_date"} or not isinstance(source["reference"], str) or not source["reference"].strip() or source["reference"] != source["reference"].strip():
+            if (not isinstance(source, dict) or not {"reference", "agreement_date"} <= set(source)
+                    or set(source) - {"reference", "agreement_date", "customer_id", "relationship_rationale"}
+                    or not isinstance(source["reference"], str) or not source["reference"].strip()
+                    or source["reference"] != source["reference"].strip()):
                 raise ValueError("Each combined source agreement needs a reference and agreement date")
             _date(source["agreement_date"], "source agreement date")
+            source_customer = source.get("customer_id", contract["customer_id"])
+            if not isinstance(source_customer, str) or not source_customer.strip():
+                raise ValueError("Each source agreement customer must be identified")
+            relationship = source.get("relationship_rationale", "")
+            if not isinstance(relationship, str) or (source_customer != contract["customer_id"] and not relationship.strip()):
+                raise ValueError("A different source customer needs a related-party relationship rationale")
             references.append(source["reference"])
         if len(set(references)) != len(references) or contract.get("reference") != references[0]:
             raise ValueError("Combined source agreements must be unique and start with the contract's primary reference")
+        if source_contracts[0].get("customer_id", contract["customer_id"]) != contract["customer_id"]:
+            raise ValueError("The primary source agreement must belong to the accounting contract's customer")
     elif contract.get("combination_basis") or contract.get("combination_rationale"):
         raise ValueError("A combination conclusion needs at least two source agreements")
     term_assessment = {field: contract[field] for field in TERM_FIELDS if field in contract}
