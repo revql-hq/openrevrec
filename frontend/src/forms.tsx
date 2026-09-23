@@ -325,11 +325,13 @@ function ComponentEditor({
   obligations,
   onChange,
   allowEmpty = false,
+  reviewedMixed = false,
 }: {
   items: Component[];
   obligations: Obligation[];
   onChange: (items: Component[]) => void;
   allowEmpty?: boolean;
+  reviewedMixed?: boolean;
 }) {
   const update = (i: number, patch: Partial<Component>) =>
     onChange(
@@ -355,7 +357,7 @@ function ComponentEditor({
         </Button>
       }
     >
-      <p className="fine-print">Relative SSP across all obligations is the default. An eligible variable or usage amount may target one service month within one time-based obligation when the accountant documents the allocation conclusion. Credits may target obligations, but not a service month.</p>
+      <p className="fine-print">{reviewedMixed ? "Enter the revised fixed lifetime price here, then allocate it by obligation below." : "Relative SSP across all obligations is the default. An eligible variable or usage amount may target one service month within one time-based obligation when the accountant documents the allocation conclusion. Credits may target obligations, but not a service month."}</p>
       {items.map((item, i) => (
         <div className="editor-row" key={item.id}>
           <div className="form-grid component-grid">
@@ -534,12 +536,14 @@ function ObligationEditor({
   start,
   end,
   allowEmpty = false,
+  reviewedMixed = false,
 }: {
   items: Obligation[];
   onChange: (items: Obligation[]) => void;
   start: string;
   end: string;
   allowEmpty?: boolean;
+  reviewedMixed?: boolean;
 }) {
   const update = (i: number, patch: Partial<Obligation>) =>
     onChange(
@@ -548,7 +552,7 @@ function ObligationEditor({
   return (
     <Section
       title="Performance obligations"
-      subtitle="Allocate consideration by relative standalone selling price."
+      subtitle={reviewedMixed ? "Define the promises for the reviewed allocation below." : "Allocate consideration by relative standalone selling price."}
       action={
         <Button
           type="button"
@@ -724,6 +728,7 @@ export function ContractForm(
     [rationale, setRationale] = useState(""),
     [effective, setEffective] = useState(`${props.period}-01`),
     [treatment, setTreatment] = useState(""),
+    [mixedAllocations, setMixedAllocations] = useState<Record<string, { treatment: string; amount: string }>>({}),
     [loadedEffective, setLoadedEffective] = useState(`${props.period}-01`),
     [termsDirty, setTermsDirty] = useState(false),
     [termBasis, setTermBasis] = useState<"fixed" | "cancellable" | "evergreen">(initialTerms?.termAssessment.basis || "fixed"),
@@ -770,6 +775,11 @@ export function ContractForm(
             consideration: components,
             obligations,
             rationale,
+            ...(treatment === "mixed" ? { mixed_allocation: obligations.map((item) => ({
+              obligation_id: item.id,
+              treatment: mixedAllocations[item.id]?.treatment || "",
+              amount: mixedAllocations[item.id]?.amount || "",
+            })) } : {}),
             ...(termAssessmentChanged ? termAssessment : {}),
           },
         }
@@ -906,7 +916,7 @@ export function ContractForm(
                 }}
               />
             </Field>
-            <Field label="Accounting treatment" hint="Use prospective treatment when the remaining goods or services are distinct from those already transferred. Otherwise assess a cumulative catch-up or mixed treatment outside this form.">
+            <Field label="Accounting treatment" hint="Use prospective for distinct remaining service, catch-up for one continuing non-distinct service, or mixed when both effects are present.">
               <select
                 required
                 value={treatment}
@@ -915,17 +925,19 @@ export function ContractForm(
                 <option value="">Choose treatment</option>
                 <option value="prospective">Prospective</option>
                 <option value="catch_up">Cumulative catch-up</option>
+                <option value="mixed">Mixed: catch-up and prospective</option>
               </select>
             </Field>
           </div>
           {effective !== loadedEffective && <div className="notice"><p>The terms below were loaded for {dateLabel(loadedEffective)}. Choose how to use them at {dateLabel(effective)} before previewing.</p><div className="button-group"><Button type="button" onClick={() => { if (termsDirty && !window.confirm("Replace the term edits in this form with the terms effective on the new date?")) return; const terms = contractTerms(contract, effective); const assessment = termReviewStatus(props.state, contract, effective); setComponents(terms.consideration); setObligations(terms.obligations); setTermBasis(assessment.basis); setTermRationale(assessment.rationale); setTermTrigger(assessment.trigger); setTermReviewDate(assessment.reviewDate); setLoadedTermAssessment(assessment); setLoadedEffective(effective); setTermsDirty(false); }}>Load effective terms</Button><Button type="button" onClick={() => setLoadedEffective(effective)}>Keep edited terms</Button></div></div>}
           <p className="notice">
-            Changing the effective date keeps your edits until you choose to load that date's terms or keep the edited terms. Enter revised lifetime consideration, including revenue
-            already recognized.{" "}
+            Enter revised lifetime consideration, including revenue already recognized.{" "}
             {treatment === "prospective"
               ? "Remaining consideration is recognized prospectively from the effective date."
-              : "Revenue is recalculated under the revised terms and the difference is recognized on the effective date."}{" "}
-            If the amendment's net price increase reflects the standalone price of a distinct added service and leaves the original terms unchanged, create the added-service contract and use Link added service. If it does not qualify as a separate contract but all remaining services are distinct, keep the original and added services in this one prospective modification. A combination of distinct and non-distinct remaining services needs separate review.
+              : treatment === "mixed"
+                ? "Allocate it to each obligation; partially satisfied service catches up and distinct remaining service stays prospective."
+                : "Revenue is recalculated under the revised terms and the difference is recognized on the effective date."}{" "}
+            Use Link added service only for a qualifying separate-contract amendment with unchanged original terms.
           </p>
           {treatment === "prospective" && components.some((item) => item.allocation_scope === "specific") && <p className="fine-print">Targeted consideration stays with its named obligation or service month. A price change attributable to already satisfied service needs a catch-up treatment; preview checks that boundary.</p>}
         </>
@@ -942,10 +954,11 @@ export function ContractForm(
         <Field label="Reassessment trigger"><textarea required rows={2} value={termTrigger} onChange={(event) => { setTermTrigger(event.target.value); setTermsDirty(true); }} placeholder="For example, a cancellation notice or renewal decision." /></Field>
         <Field label="Planned review date (optional)" hint="An event-based trigger may have no known date. This date is recorded for review; it does not extend the accounting term automatically."><input type="date" min={contract ? effective : start} value={termReviewDate} onChange={(event) => { setTermReviewDate(event.target.value); setTermsDirty(true); }} /></Field>
       </>}
-      <ComponentEditor items={components} obligations={obligations} allowEmpty={Boolean(contract)} onChange={(items) => { setComponents(items); setTermsDirty(true); }} />
+      <ComponentEditor items={components} obligations={obligations} allowEmpty={Boolean(contract)} reviewedMixed={treatment === "mixed"} onChange={(items) => { setComponents(items); setTermsDirty(true); }} />
       <ObligationEditor
         items={obligations}
         allowEmpty={Boolean(contract)}
+        reviewedMixed={treatment === "mixed"}
         onChange={(items) => {
           setObligations(items);
           const currentIds = new Set(items.map((item) => item.id));
@@ -957,13 +970,20 @@ export function ContractForm(
         start={contract ? effective : start}
         end={end}
       />
+      {contract && treatment === "mixed" && <Section title="Mixed-treatment allocation" subtitle="Record the reviewed lifetime price for every obligation; these amounts must add to revised lifetime consideration.">
+        <p className="fine-print">Use catch-up for an existing partially satisfied, non-distinct service; prospective for distinct remaining service; retained for an already satisfied original promise. This path requires fixed consideration and no earlier opening position or accounting change.</p>
+        {obligations.map((item) => <div className="form-grid" key={item.id}>
+          <Field label={`${item.name || "Obligation"} treatment`}><select required value={mixedAllocations[item.id]?.treatment || ""} onChange={(event) => setMixedAllocations((current) => ({ ...current, [item.id]: { treatment: event.target.value, amount: current[item.id]?.amount || "" } }))}><option value="">Choose effect</option><option value="catch_up">Cumulative catch-up</option><option value="prospective">Prospective</option><option value="retained">Already satisfied; retain earned revenue</option></select></Field>
+          <Field label="Revised lifetime allocation"><input required type="number" min="0" step="0.01" value={mixedAllocations[item.id]?.amount || ""} onChange={(event) => setMixedAllocations((current) => ({ ...current, [item.id]: { treatment: current[item.id]?.treatment || "", amount: event.target.value } }))} /></Field>
+        </div>)}
+      </Section>}
       <Field
         label={
           contract
             ? "Reason for modification"
             : "Contract accounting conclusion"
         }
-        hint={contract && treatment === "prospective" ? "Explain why the remaining promises are distinct and how the revised consideration relates to them." : undefined}
+        hint={contract && treatment === "prospective" ? "Explain why the remaining promises are distinct and how the revised consideration relates to them." : treatment === "mixed" ? "Explain each obligation's treatment and how the revised price was allocated." : undefined}
       >
         <textarea
           rows={3}

@@ -26,6 +26,7 @@ SHEETS = {
     "Amendments": ["source_id", "contract_id", "effective_date", "treatment", "replace_consideration", "replace_obligations", "rationale", "term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date"],
     "Amendment Consideration": ["amendment_source_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale", "target_period", "unit_rate", "pricing_basis", "rounding_period", "metered_value_mode"],
     "Amendment Obligations": ["amendment_source_id", "id", "name", "kind", "ssp", "method", "start_date", "end_date", "total_units", "exercise_start", "exercise_end", "rationale"],
+    "Mixed Allocations": ["amendment_source_id", "obligation_id", "treatment", "amount"],
     "Billing": ["contract_id", "effective_date", "amount", "reference", "applies_to_change_set_id", "applies_to_reference", "rationale", "source_id"],
     "Rate Changes": ["contract_id", "component_id", "effective_date", "unit_rate", "rationale", "source_id"],
     "Progress": ["contract_id", "obligation_id", "effective_date", "percentage", "rationale", "source_id"],
@@ -89,7 +90,7 @@ def template_bytes():
         ["Consideration kinds", "fixed, variable, usage, metered, credit. Use included_amount for constrained consideration. Metered requires amount 0, pricing_basis right_to_invoice, rounding_period calendar_month, and an accountant rationale. Set metered_value_mode to unit_rate with a positive unit_rate, or invoice_value with no unit_rate. Invoice-value mode requires a priced source amount and reference on each usage row; it does not calculate tiers or permit rate changes. One service obligation; no opening position or other amendment."],
         ["Rate changes", "Use Rate Changes for a new positive unit_rate effective before that day's usage. Enter the metered component ID and explain why invoice value at the revised rate still corresponds to delivered value. One rate change per effective date; each calendar month rounds once after valuing its usage at the applicable dates' rates."],
         ["Specific allocation", "For an eligible variable, usage, or credit component, set allocation_scope to specific, list target_obligation_ids separated by commas, and record allocation_rationale. For a variable or usage amount targeting one month of one time-based series obligation, also enter target_period as YYYY-MM and only one obligation ID. Otherwise leave these fields blank for relative SSP allocation."],
-        ["Amendments", "Each amendment needs a stable source_id, effective date, treatment, and rationale. Set replace_consideration and/or replace_obligations to yes. Related rows must list the COMPLETE replacement set for that section."],
+        ["Amendments", "Each amendment needs a stable source_id, effective date, treatment, and rationale. Set replace_consideration and/or replace_obligations to yes. Related rows must list the COMPLETE replacement set for that section. For mixed treatment, add one reviewed lifetime amount for every revised obligation in Mixed Allocations; the amounts must sum to revised consideration."],
         ["Corrections", "Supply the original change set ID or its prior source_id, the activity type, replacement facts, and a new source_id. The original remains in history."],
         ["Other commands", "Use Commands with command, payload_json, and source_id for policies or advanced actions. Close/reopen and scenario lifecycle require separate review."],
         ["Import behavior", "Preview first. All rows then commit together; a failed import commits no accounting changes."],
@@ -199,6 +200,10 @@ def export_bytes(state, review=None):
     modification_keys = ("contract_id", "contract_name", "added_contract_id", "effective_date", "added_contract_name", "price_basis", "original_terms_effect", "initial_additional_consideration", "current_added_price", "original_revenue", "added_revenue", "combined_revenue", "original_contract_asset", "original_deferred_revenue", "added_contract_asset", "added_deferred_revenue", "rationale", "recorded_at", "change_set_id")
     modification_money = {"initial_additional_consideration", "current_added_price", "original_revenue", "added_revenue", "combined_revenue", "original_contract_asset", "original_deferred_revenue", "added_contract_asset", "added_deferred_revenue"}
     _sheet(book, "Modification links", list(modification_keys), [[Decimal(item[key]) if key in modification_money else item.get(key, "") for key in modification_keys] for item in report.get("modification_links", [])])
+    _sheet(book, "Mixed modifications", ["Contract ID", "Effective date", "Obligation ID", "Treatment", "Revised lifetime allocation", "Rationale", "Change set ID"],
+           [[change["payload"]["contract_id"], change["payload"]["effective_date"], row["obligation_id"], row["treatment"], Decimal(row["amount"]), change["payload"]["rationale"], change["id"]]
+            for change in reversed(state["change_sets"]) if change["command"] == "modify_contract" and change["payload"].get("treatment") == "mixed"
+            for row in change["payload"]["mixed_allocation"]])
     _sheet(book, "Recognition schedule", ["period", "contract_id", "obligation_id", "revenue"], [[r["period"], r["contract_id"], r["obligation_id"], Decimal(r["revenue"])] for r in report["schedule"]])
     dimension_keys = sorted({key for row in report["journals"] for key in row.get("dimensions", {})})
     journal_keys = ["period", "contract_id", "account", "account_name", "role", "debit", "credit", "description", "policy_version", "policy_effective_period", "obligation_ids", "batch_id", "account_profile_id"] + [f"dimension:{key}" for key in dimension_keys]
@@ -448,10 +453,15 @@ def parse_workbook(data):
                 if value == "yes":
                     payload[target] = [_component_row({key: item for key, item in values.items() if key != "amendment_source_id"}) if target == "consideration" else {key: item for key, item in values.items() if key != "amendment_source_id"} for _, values in rows]
                     replaced = True
+            mixed_rows = [(number, item) for number, item in parsed["Mixed Allocations"] if item.get("amendment_source_id") == source_id]
+            if mixed_rows and payload.get("treatment") != "mixed":
+                raise ValueError(f"Amendments row {row}: Mixed Allocations require mixed treatment.")
+            if payload.get("treatment") == "mixed":
+                payload["mixed_allocation"] = [{key: value for key, value in item.items() if key != "amendment_source_id"} for _, item in mixed_rows]
             if not replaced:
                 raise ValueError(f"Amendments row {row}: choose at least one section to replace.")
             commands.append(("Amendments", row, "modify_contract", payload))
-        for sheet in ("Amendment Consideration", "Amendment Obligations"):
+        for sheet in ("Amendment Consideration", "Amendment Obligations", "Mixed Allocations"):
             for row, item in parsed[sheet]:
                 if item.get("amendment_source_id") not in amendment_ids:
                     raise ValueError(f"{sheet} row {row}: amendment_source_id must reference an Amendments row.")

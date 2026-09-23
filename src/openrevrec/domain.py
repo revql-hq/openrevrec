@@ -212,6 +212,33 @@ def _specific_specs(components: list[dict], obligations: list[dict]) -> dict[tup
     return specs
 
 
+def _mixed_allocations(activity: dict, components: list[dict], obligations: list[dict]) -> dict[str, tuple[str, Decimal]]:
+    """Require an explicit reviewed lifetime allocation for every mixed-treatment promise."""
+    rows = activity.get("mixed_allocation")
+    if not isinstance(rows, list) or len(rows) != len(obligations):
+        raise ValueError("Mixed treatment needs one reviewed allocation for every revised obligation")
+    expected = {item["id"] for item in obligations}
+    result: dict[str, tuple[str, Decimal]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"obligation_id", "treatment", "amount"}:
+            raise ValueError("Each mixed allocation needs an obligation, treatment, and revised lifetime amount")
+        identifier = row["obligation_id"]
+        treatment = row["treatment"]
+        if not isinstance(identifier, str) or identifier not in expected or identifier in result:
+            raise ValueError("Mixed allocations must identify each revised obligation exactly once")
+        if treatment not in {"catch_up", "prospective", "retained"}:
+            raise ValueError("Mixed allocation treatment must be catch_up, prospective, or retained")
+        value = decimal(row["amount"], "mixed allocation amount")
+        if value < ZERO or value != money(value):
+            raise ValueError("Mixed allocation amounts must be nonnegative and stated in cents")
+        result[identifier] = (treatment, value)
+    if set(result) != expected or not {"catch_up", "prospective"} <= {item[0] for item in result.values()}:
+        raise ValueError("Mixed treatment needs both catch-up and prospective obligations, with every obligation allocated")
+    if sum((item[1] for item in result.values()), ZERO) != _price(components):
+        raise ValueError("Mixed allocations must reconcile to revised lifetime consideration")
+    return result
+
+
 def _original_variable_change(component: dict, obligations: list[dict], change: Decimal) -> dict[str, tuple[dict, Decimal]]:
     """Allocate a later estimate change using the promise before its first prospective amendment."""
     by_id = {item["id"]: item for item in obligations}
@@ -450,10 +477,14 @@ def validate_contract(contract: dict) -> None:
     metered_rate = (decimal(components[0]["unit_rate"])
                     if components[0]["kind"] == "metered" and components[0].get("metered_value_mode", "unit_rate") == "unit_rate" else None)
     rate_change_dates: set[str] = set()
+    prior_accounting_change = False
+    mixed_recorded = False
     for activity in _ordered_activities(contract):
         kind = activity.get("type")
         if kind not in ACTIVITY_TYPES:
             raise ValueError(f"Unsupported activity type: {kind}")
+        if mixed_recorded and kind in {"opening_position", "modification", "reassessment", "adjustment"}:
+            raise ValueError("A later accounting change to a mixed modification needs a reviewed follow-on treatment")
         if kind == "opening_position":
             if not str(activity.get("source_name", "")).strip() or not str(activity.get("rationale", "")).strip():
                 raise ValueError("Opening position requires a legacy source and reconciliation rationale")
@@ -498,10 +529,13 @@ def validate_contract(contract: dict) -> None:
                 raise ValueError("Opening billing and balances must be nonnegative, with only one net balance side")
             if recognized_total - billed != asset - deferred:
                 raise ValueError("Opening recognized less billed must reconcile to the legacy contract asset or deferred revenue")
+            prior_accounting_change = True
             continue
         if kind == "modification":
-            if activity.get("treatment") not in {"prospective", "catch_up"}:
-                raise ValueError("Modification treatment must be prospective or catch_up")
+            if activity.get("treatment") not in {"prospective", "catch_up", "mixed"}:
+                raise ValueError("Modification treatment must be prospective, catch_up, or mixed")
+            if activity["treatment"] != "mixed" and "mixed_allocation" in activity:
+                raise ValueError("Reviewed mixed allocations require mixed treatment")
             if not str(activity.get("rationale", "")).strip():
                 raise ValueError("A modification requires an accounting rationale")
             if any(field in activity for field in TERM_FIELDS):
@@ -532,6 +566,25 @@ def validate_contract(contract: dict) -> None:
             obligations = revised_obligations
             _validate_terms(components, obligations, allow_empty=True)
             amendment_day = _date(activity["effective_date"])
+            if activity["treatment"] == "mixed":
+                if prior_accounting_change or any(item["kind"] != "fixed" for item in previous_components + components):
+                    raise ValueError("Mixed treatment currently requires fixed consideration without an earlier accounting change or opening position")
+                if any(item["kind"] == "material_right" for item in prior_obligations + obligations):
+                    raise ValueError("A mixed modification with a material right needs separate review")
+                if not {item["id"] for item in prior_obligations} <= {item["id"] for item in obligations}:
+                    raise ValueError("Mixed treatment must retain every original obligation, including satisfied promises")
+                allocations = _mixed_allocations(activity, components, obligations)
+                original_ids = {item["id"] for item in prior_obligations}
+                for item in obligations:
+                    treatment = allocations[item["id"]][0]
+                    fraction = _fraction(item, amendment_day - timedelta(days=1), satisfaction_measures)
+                    if treatment == "catch_up" and (item["id"] not in original_ids or not ZERO < fraction < ONE):
+                        raise ValueError("Catch-up in a mixed modification needs an existing partially satisfied obligation")
+                    if treatment == "prospective" and fraction >= ONE:
+                        raise ValueError("A fully satisfied obligation cannot receive prospective mixed allocation")
+                    if treatment == "retained" and (item["id"] not in original_ids or fraction < ONE):
+                        raise ValueError("Retained mixed allocation needs an already satisfied original obligation")
+                mixed_recorded = True
             for identifier, (original, original_obligations, eligible) in list(original_variable_bases.items()):
                 prior = next((item for item in previous_components if item["id"] == identifier), None)
                 revised = revised_components_by_id.get(identifier)
@@ -581,6 +634,7 @@ def validate_contract(contract: dict) -> None:
                                 and _original_promise_survives(old, prior_obligations, obligations, amendment_day, satisfaction_measures)
                                 and not any(item["type"] == "opening_position" for item in contract.get("activities", [])))
                     original_variable_bases[old["id"]] = (deepcopy(old), deepcopy(prior_obligations), eligible)
+            prior_accounting_change = True
             continue
         if kind == "reassessment":
             original_basis = original_variable_bases.get(activity.get("component_id"))
@@ -600,6 +654,7 @@ def validate_contract(contract: dict) -> None:
                 raise ValueError("Total transaction price cannot be negative")
             if original_basis:
                 reassessed_original_variables.add(component["id"])
+            prior_accounting_change = True
             continue
         if kind == "rate_change":
             if metered_rate is None or activity.get("component_id") != components[0]["id"]:
@@ -649,6 +704,7 @@ def validate_contract(contract: dict) -> None:
         if kind == "adjustment":
             decimal(activity.get("amount"), "adjustment amount")
             adjusted_obligations.add(obligation["id"])
+            prior_accounting_change = True
             continue
         if activity["effective_date"] < obligation["start_date"]:
             raise ValueError("Satisfaction activity cannot precede the obligation start_date")
@@ -1067,6 +1123,36 @@ def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict
                             curves[identifier] = _Curve(old.obligation, prior[identifier], recognized=prior[identifier], frozen=True)
                     if remaining < ZERO:
                         warnings.append({"message": f"{contract['name']}: prospective remaining consideration is negative; future revenue includes reversals.", "contract_id": contract["id"]})
+                elif treatment == "mixed":
+                    allocations = _mixed_allocations(activity, accounting_components, obligations)
+                    curves = {}
+                    for item in obligations:
+                        identifier = item["id"]
+                        mode, target = allocations[identifier]
+                        previous = prior.get(identifier, ZERO)
+                        fraction = _fraction(item, day - timedelta(days=1), measures)
+                        if mode == "prospective":
+                            if target < previous:
+                                raise ValueError("Prospective mixed allocation cannot reverse previously recognized revenue")
+                            curves[identifier] = _Curve(item, target, fraction, previous)
+                        elif mode == "retained":
+                            if target != previous:
+                                raise ValueError("Retained mixed allocation must equal revenue already recognized")
+                            curves[identifier] = _Curve(item, target, ONE, previous)
+                        else:
+                            curves[identifier] = _Curve(item, target)
+                            required = curves[identifier].value(day - timedelta(days=1), measures)
+                            if required != previous:
+                                catch_ups.append({
+                                    "activity_id": activity.get("id"), "contract_id": contract["id"],
+                                    "obligation_id": identifier, "effective_date": day.isoformat(),
+                                    "period": day.strftime("%Y-%m"), "previous_recognized": amount(previous),
+                                    "required_cumulative": amount(required), "catch_up": amount(required - previous),
+                                    "rationale": activity.get("rationale", ""),
+                                })
+                    specific_curves = {}
+                    period_curves = {}
+                    period_parents = {}
                 else:
                     allocated, revised_period_specs = _split_period_allocations(accounting_components, obligations)
                     curves = {item["id"]: _Curve(item, allocated[item["id"]]) for item in obligations}

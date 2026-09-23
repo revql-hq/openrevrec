@@ -677,8 +677,8 @@ class Application:
                 p["rationale"] = required_text(p, "rationale")
                 if any(link["contract_id"] == p["contract_id"] and link["effective_date"] == p["effective_date"] for link in state["modification_links"]):
                     raise ValueError("This date has a linked separate-contract amendment. Review the whole amendment; if all remaining services are distinct, enter one prospective modification instead of this link.")
-                if p.get("treatment") not in {"prospective", "catch_up"}:
-                    raise ValueError("Choose prospective or catch_up treatment. Separate contracts use create_contract.")
+                if p.get("treatment") not in {"prospective", "catch_up", "mixed"}:
+                    raise ValueError("Choose prospective, catch_up, or mixed treatment. Separate contracts use create_contract.")
                 if "consideration" not in p and "obligations" not in p:
                     raise ValueError("A modification must revise consideration or obligations.")
                 self._normalize_terms(p, contract)

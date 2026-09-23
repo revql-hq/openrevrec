@@ -257,6 +257,125 @@ def test_repriced_original_and_added_distinct_service_use_one_prospective_modifi
     assert july["modification_links"] == []
 
 
+def test_mixed_modification_catches_up_partial_service_and_preserves_distinct_future_service(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    obligations = [
+        {"id": "integrated", "name": "Integrated implementation", "kind": "implementation", "ssp": "800",
+         "method": "progress", "start_date": "2026-01-01", "end_date": "2026-12-31"},
+        {"id": "support", "name": "Distinct support", "kind": "support", "ssp": "200",
+         "method": "monthly", "start_date": "2026-09-01", "end_date": "2026-12-31"},
+    ]
+    application.execute("create_contract", {
+        "id": "mixed", "customer_id": "cus_1", "name": "Implementation and support",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "1000"}],
+        "obligations": obligations,
+    }, period="2026-01")
+    application.execute("record_progress", {"contract_id": "mixed", "obligation_id": "integrated",
+                                            "effective_date": "2026-06-30", "percentage": "50"}, period="2026-06")
+    amendment = {
+        "contract_id": "mixed", "effective_date": "2026-07-01", "treatment": "mixed",
+        "rationale": "Implementation remains integrated with work already delivered; future support is distinct. Reviewed price allocation: 900 implementation, 300 support.",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "1200"}],
+        "obligations": obligations,
+        "mixed_allocation": [
+            {"obligation_id": "integrated", "treatment": "catch_up", "amount": "900.00"},
+            {"obligation_id": "support", "treatment": "prospective", "amount": "300.00"},
+        ],
+    }
+    with pytest.raises(ValueError, match="reconcile"):
+        application.execute("modify_contract", {**amendment, "mixed_allocation": [
+            {"obligation_id": "integrated", "treatment": "catch_up", "amount": "900.00"},
+            {"obligation_id": "support", "treatment": "prospective", "amount": "299.99"},
+        ]}, period="2026-07")
+    with pytest.raises(ValueError, match="partially satisfied"):
+        application.execute("modify_contract", {**amendment, "mixed_allocation": [
+            {"obligation_id": "integrated", "treatment": "prospective", "amount": "900.00"},
+            {"obligation_id": "support", "treatment": "catch_up", "amount": "300.00"},
+        ]}, period="2026-07")
+    with pytest.raises(ValueError, match="fixed consideration"):
+        application.execute("modify_contract", {**amendment, "consideration": [
+            {"id": "price", "kind": "variable", "amount": "1200", "included_amount": "1200", "rationale": "Constrained estimate"},
+        ]}, period="2026-07")
+    template = load_workbook(io.BytesIO(template_bytes()))
+    import_rows = {
+        "Amendments": {"source_id": "amend:mixed", "contract_id": "mixed", "effective_date": "2026-07-01",
+                       "treatment": "mixed", "replace_consideration": "yes", "replace_obligations": "no", "rationale": amendment["rationale"]},
+        "Amendment Consideration": {"amendment_source_id": "amend:mixed", "id": "price", "kind": "fixed", "amount": "1200"},
+    }
+    for name, values in import_rows.items():
+        template[name].append([values.get(cell.value) for cell in template[name][1]])
+    for row in amendment["mixed_allocation"]:
+        values = {"amendment_source_id": "amend:mixed", **row}
+        template["Mixed Allocations"].append([values.get(cell.value) for cell in template["Mixed Allocations"][1]])
+    data = io.BytesIO()
+    template.save(data)
+    template.close()
+    imported_preview = preview_import_bytes(application, data.getvalue(), period="2026-07")
+    assert imported_preview["state"]["report"]["summary"]["revenue"] == "50.00"
+    application.execute("modify_contract", amendment, period="2026-07")
+    application.execute("record_progress", {"contract_id": "mixed", "obligation_id": "integrated",
+                                            "effective_date": "2026-07-31", "percentage": "60"}, period="2026-07")
+    june = application.state(period="2026-06")["report"]
+    july = application.state(period="2026-07")["report"]
+    assert june["summary"]["recognized_to_date"] == "400.00"
+    assert july["summary"]["transaction_price"] == "1200.00"
+    assert july["summary"]["revenue"] == "140.00"
+    assert july["summary"]["recognized_to_date"] == "540.00"
+    assert july["contracts"][0]["catch_ups"][0]["catch_up"] == "50.00"
+    assert {(row["obligation_id"], row["amount"]) for row in july["contracts"][0]["allocation"]} == {
+        ("integrated", "900.00"), ("support", "300.00")}
+    support = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-07"))), read_only=True)
+    assert [(row[2], row[3], row[4]) for row in list(support["Mixed modifications"].values)[1:]] == [
+        ("integrated", "catch_up", 900), ("support", "prospective", 300)]
+    support.close()
+    assert application.state(period="2026-09")["report"]["summary"]["revenue"] == "75.00"
+    with pytest.raises(ValueError, match="reviewed follow-on treatment"):
+        application.execute("record_adjustment", {"contract_id": "mixed", "obligation_id": "integrated",
+                                                  "effective_date": "2026-10-01", "amount": "10.00", "rationale": "Later adjustment"}, period="2026-10")
+    application.execute("record_progress", {"contract_id": "mixed", "obligation_id": "integrated",
+                                            "effective_date": "2026-12-31", "percentage": "100"}, period="2026-12")
+    assert application.state(period="2026-12")["report"]["summary"]["recognized_to_date"] == "1200.00"
+
+
+def test_mixed_modification_retains_completed_original_obligation(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    obligations = [
+        {"id": "setup", "name": "Completed setup", "kind": "implementation", "ssp": "100",
+         "method": "point_in_time", "start_date": "2026-01-31", "end_date": "2026-01-31"},
+        {"id": "integrated", "name": "Integrated work", "kind": "implementation", "ssp": "800",
+         "method": "progress", "start_date": "2026-01-01", "end_date": "2026-12-31"},
+        {"id": "support", "name": "Future support", "kind": "support", "ssp": "200",
+         "method": "monthly", "start_date": "2026-09-01", "end_date": "2026-12-31"},
+    ]
+    application.execute("create_contract", {"id": "mixed", "customer_id": "cus_1", "name": "Work and support",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "1100"}], "obligations": obligations}, period="2026-01")
+    application.execute("record_milestone", {"contract_id": "mixed", "obligation_id": "setup",
+                                             "effective_date": "2026-01-31", "percentage": "100"}, period="2026-01")
+    application.execute("record_progress", {"contract_id": "mixed", "obligation_id": "integrated",
+                                            "effective_date": "2026-06-30", "percentage": "50"}, period="2026-06")
+    amendment = {"contract_id": "mixed", "effective_date": "2026-07-01", "treatment": "mixed",
+        "rationale": "Completed setup retains its price; integrated work catches up; future support is distinct.",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "1300"}], "obligations": obligations,
+        "mixed_allocation": [
+            {"obligation_id": "setup", "treatment": "retained", "amount": "100.00"},
+            {"obligation_id": "integrated", "treatment": "catch_up", "amount": "900.00"},
+            {"obligation_id": "support", "treatment": "prospective", "amount": "300.00"},
+        ]}
+    with pytest.raises(ValueError, match="Retained mixed allocation must equal"):
+        application.execute("modify_contract", {**amendment, "consideration": [{"id": "price", "kind": "fixed", "amount": "1310"}],
+            "mixed_allocation": [{**row, "amount": "110.00"} if row["obligation_id"] == "setup" else row for row in amendment["mixed_allocation"]]}, period="2026-07")
+    application.execute("modify_contract", amendment, period="2026-07")
+    july = application.state(period="2026-07")["report"]
+    assert july["summary"]["revenue"] == "50.00"
+    assert july["summary"]["recognized_to_date"] == "550.00"
+    assert {row["obligation_id"]: row["amount"] for row in july["contracts"][0]["allocation"]} == {
+        "setup": "100.00", "integrated": "900.00", "support": "300.00"}
+
+
 def test_warning_target_keeps_source_ids_when_contracts_have_the_same_name(tmp_path):
     application = app(tmp_path)
     seed(application)
