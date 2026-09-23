@@ -93,8 +93,8 @@ def test_combined_source_agreements_share_accounting_and_reconcile_independent_r
 
 def test_combined_related_party_sources_keep_legal_customer_identity(tmp_path):
     application = app(tmp_path)
-    application.execute("create_customer", {"id": "parent", "name": "Parent company"})
-    application.execute("create_customer", {"id": "subsidiary", "name": "Subsidiary"})
+    application.execute("create_customer", {"id": "parent", "name": "Parent company", "source_system": "CRM", "reference": "PARENT"})
+    application.execute("create_customer", {"id": "subsidiary", "name": "Subsidiary", "source_system": "CRM", "reference": "SUB"})
     contract = {
         "id": "group-service", "customer_id": "parent", "name": "Group service", "reference": "P-1",
         "start_date": "2026-01-01", "end_date": "2026-01-31",
@@ -122,9 +122,34 @@ def test_combined_related_party_sources_keep_legal_customer_identity(tmp_path):
     assert state["report"]["summary"]["revenue"] == "100.00"
     assert state["report"]["summary"]["contract_asset"] == "0.00"
     assert state["contracts"][0]["source_contracts"][1]["customer_id"] == "subsidiary"
+    manifest = {"period": "2026-01", "source_name": "Independent agreement and invoice register",
+                "rationale": "All January group agreements and invoices.", "contract_references": ["P-1", "S-1"],
+                "billing_references": [{"contract_reference": "S-1", "invoice_reference": "INV-S", "amount": "100.00"}]}
+    application.execute("record_population_manifest", manifest, period="2026-01")
+    review = application.reports(period="2026-01")
+    assert {row["contract_reference"] for row in review["population_comparison"]["unverified_contract_customers"]} == {"P-1", "S-1"}
+    assert next(check for check in review["checks"] if check["id"] == "source_population")["status"] == "review"
+    source_customers = [{"contract_reference": "P-1", "source_system": "CRM", "customer_reference": "PARENT"},
+                        {"contract_reference": "S-1", "source_system": "CRM", "customer_reference": "WRONG"}]
+    with pytest.raises(ValueError, match="agreement in the source contract list"):
+        application.execute("record_population_manifest", {**manifest, "contract_customers": [{"contract_reference": "UNKNOWN", "customer_reference": "PARENT"}]}, period="2026-01")
+    with pytest.raises(ValueError, match="duplicate agreement references"):
+        application.execute("record_population_manifest", {**manifest, "contract_customers": [source_customers[0], source_customers[0]]}, period="2026-01")
+    application.execute("record_population_manifest", {**manifest, "contract_customers": source_customers}, period="2026-01")
+    review = application.reports(period="2026-01")
+    assert [(row["contract_reference"], row["source_customer_reference"], row["workspace_customer_reference"])
+            for row in review["population_comparison"]["mismatched_contract_customers"]] == [("S-1", "WRONG", "SUB")]
+    source_customers[1]["customer_reference"] = "SUB"
+    application.execute("record_population_manifest", {**manifest, "contract_customers": source_customers}, period="2026-01")
+    review = application.reports(period="2026-01")
+    assert review["population_comparison"]["unverified_contract_customers"] == []
+    assert review["population_comparison"]["mismatched_contract_customers"] == []
+    assert next(check for check in review["checks"] if check["id"] == "source_population")["status"] == "pass"
     book = load_workbook(io.BytesIO(export_bytes(state, application.reports(period="2026-01"))), read_only=True)
     rows = list(book["Contract combinations"].values)
     assert rows[2][6:] == ("subsidiary", "Subsidiary is controlled by the primary customer.")
+    source_rows = list(book["Source contracts"].values)
+    assert source_rows[2][4:] == ("CRM / SUB", "CRM / SUB", "Matched")
     book.close()
 
 

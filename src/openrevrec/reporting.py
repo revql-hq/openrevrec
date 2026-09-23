@@ -45,6 +45,46 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
                               if not item.get("source_contracts") and not str(item.get("reference") or "").strip()]
     actual_contract_set = {item for item in actual_contracts if item}
     duplicate_contracts = sorted(item for item, count in Counter(actual_contracts).items() if item and count > 1)
+    customers_by_id = {item["id"]: item for item in state["customers"]}
+    actual_customer_by_reference = {}
+    required_customer_references = set()
+    for contract in contracts:
+        sources = contract.get("source_contracts") or [{"reference": contract.get("reference", ""), "customer_id": contract["customer_id"]}]
+        related = any(source.get("customer_id", contract["customer_id"]) != contract["customer_id"] for source in sources)
+        for source in sources:
+            reference = source.get("reference", "")
+            if reference:
+                actual_customer_by_reference[reference] = (contract["id"], source.get("customer_id", contract["customer_id"]))
+                if related:
+                    required_customer_references.add(reference)
+    source_customer_by_reference = {item["contract_reference"]: item for item in manifest.get("contract_customers", [])} if manifest else {}
+    contract_customer_rows = []
+    unverified_contract_customers = []
+    mismatched_contract_customers = []
+    for reference in sorted(required_customer_references | source_customer_by_reference.keys()):
+        source = source_customer_by_reference.get(reference)
+        actual = actual_customer_by_reference.get(reference)
+        if not actual or reference in duplicate_contracts:
+            continue  # The missing or duplicate contract check already covers this identity.
+        contract_id, customer_id = actual
+        customer = customers_by_id.get(customer_id, {})
+        workspace_system, workspace_reference = customer.get("source_system", ""), customer.get("reference", "")
+        row = {"contract_reference": reference, "contract_id": contract_id, "customer_id": customer_id,
+               "source_system": source.get("source_system", "") if source else "",
+               "source_customer_reference": source.get("customer_reference", "") if source else "",
+               "workspace_source_system": workspace_system, "workspace_customer_reference": workspace_reference}
+        if not source:
+            row["status"] = "Source customer not supplied"
+            unverified_contract_customers.append(row)
+        elif not workspace_reference:
+            row["status"] = "Workspace customer lacks external reference"
+            unverified_contract_customers.append(row)
+        elif (source["source_system"], source["customer_reference"]) != (workspace_system, workspace_reference):
+            row["status"] = "Customer identities differ"
+            mismatched_contract_customers.append(row)
+        else:
+            row["status"] = "Matched"
+        contract_customer_rows.append(row)
     actual_billing_rows = [(contract, activity) for contract in state["contracts"] for activity in contract["activities"]
                            if activity["type"] == "billing" and activity["effective_date"][:7] == period]
     def billing_reference(activity):
@@ -262,6 +302,9 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
         "missing_contracts": sorted(expected_contracts - actual_contract_set),
         "unexpected_contracts": sorted(actual_contract_set - expected_contracts),
         "unidentified_contracts": unidentified_contracts, "duplicate_contracts": duplicate_contracts,
+        "unverified_contract_customers": unverified_contract_customers,
+        "mismatched_contract_customers": mismatched_contract_customers,
+        "contract_customer_rows": contract_customer_rows,
         "missing_billings": sorted(expected_billings - actual_billing_set),
         "unexpected_billings": sorted(actual_billing_set - expected_billings),
         "unidentified_billings": unidentified_billings, "duplicate_billings": duplicate_billings,

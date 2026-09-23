@@ -81,7 +81,7 @@ def template_bytes():
         ["Relationships", "Supply IDs for customers, contracts, consideration, and obligations; reference these IDs on related sheets."],
         ["Contract setup", "Contracts, Consideration and Obligations are combined into one create_contract command."],
         ["Combined contracts", "When two or more source agreements meet a reviewed AASB 15 paragraph 17 criterion, represent them as one accounting contract. Enter the primary agreement reference in Contracts.reference, choose combination_basis (package, interdependent_price, or single_obligation), and explain the conclusion. Put every source agreement, including the primary, on Contract Sources with its agreement date and legal customer ID. If a source customer differs from the primary customer, identify that existing customer and explain the related-party relationship on its source row. Billing and Usage rows for that accounting contract must identify the source_contract_reference. The software does not infer the combination conclusion, related-party status, or apply a fixed near-time threshold."],
-        ["Source population", "Set reference on each contract to its stable register ID. Record independent contract, invoice/credit, and externally priced usage lists for each close period in Reports > Source population. For priced usage, supply each source record ID, delivered units, and invoice value so both population and amounts can be compared. Older ID-only lists remain review items. An imported billing source_id can identify a billing transaction when invoice reference is blank."],
+        ["Source population", "Set reference on each contract to its stable register ID. Record independent contract, invoice/credit, and externally priced usage lists for each close period in Reports > Source population. For priced usage, supply each source record ID, delivered units, and invoice value so both population and amounts can be compared. Older ID-only lists remain review items. For related-party combined agreements, supply each source agreement customer external reference and source system in Reports > Source population; missing or mismatched customer identities remain under review. An imported billing source_id can identify a billing transaction when invoice reference is blank."],
         ["Cancellable or evergreen terms", "The contract end is the assessed accounting end, not an unlimited legal end. Enter term_basis as cancellable or evergreen, explain the assessment and reassessment trigger, and optionally enter term_review_date. Revisit the obligation dates through a reviewed amendment when the assessment changes."],
         ["Recognition methods", "exact_days, monthly, prorated_monthly, point_in_time, progress, usage, metered, milestone"],
         ["Opening positions", "For a migrated contract, supply current terms, then one Opening Positions row dated the first day of the cutover month and one Opening Obligations row per obligation. A matching opening row sets the new contract's cutover date automatically. Enter cumulative legacy recognition, billing, net asset/deferred balance, and measures before post-cutover activity. Pre-cutover periods are excluded."],
@@ -129,11 +129,19 @@ def export_bytes(state, review=None):
             missing_contracts = set(comparison["missing_contracts"])
             missing_billings = {tuple(item) for item in comparison["missing_billings"]}
             duplicate_contracts = set(comparison["duplicate_contracts"])
-            _sheet(book, "Source contracts", ["Contract reference", "Comparison", "Source", "Population basis"],
-                   [[reference, "Missing in workspace" if reference in missing_contracts else "Duplicate in workspace" if reference in duplicate_contracts else "Matched", population["source_name"], population["rationale"]]
+            customer_rows = {item["contract_reference"]: item for item in comparison.get("contract_customer_rows", [])}
+            def customer_identity(item, prefix):
+                reference = item.get(f"{prefix}customer_reference", "")
+                system = item.get("source_system" if prefix == "source_" else "workspace_source_system", "")
+                return f"{system} / {reference}" if system and reference else reference
+            _sheet(book, "Source contracts", ["Contract reference", "Comparison", "Source", "Population basis", "Source customer", "Workspace customer", "Customer comparison"],
+                   [[reference, "Missing in workspace" if reference in missing_contracts else "Duplicate in workspace" if reference in duplicate_contracts else "Matched", population["source_name"], population["rationale"],
+                     customer_identity(customer_rows[reference], "source_") if reference in customer_rows else "",
+                     customer_identity(customer_rows[reference], "workspace_") if reference in customer_rows else "",
+                     customer_rows[reference]["status"] if reference in customer_rows else ""]
                     for reference in population["contract_references"]] +
-                   [[reference, "Unexpected in workspace", population["source_name"], population["rationale"]] for reference in comparison["unexpected_contracts"]] +
-                   [[item["id"], "Workspace contract lacks reference", population["source_name"], population["rationale"]] for item in comparison["unidentified_contracts"]])
+                   [[reference, "Unexpected in workspace", population["source_name"], population["rationale"], "", "", ""] for reference in comparison["unexpected_contracts"]] +
+                   [[item["id"], "Workspace contract lacks reference", population["source_name"], population["rationale"], "", "", ""] for item in comparison["unidentified_contracts"]])
             billing_rows = comparison.get("billing_value_rows")
             if billing_rows is None:  # Older closed checkpoints compared invoice identities only.
                 duplicate_billings = {tuple(item) for item in comparison["duplicate_billings"]}

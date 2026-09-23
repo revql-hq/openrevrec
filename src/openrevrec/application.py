@@ -1213,7 +1213,7 @@ class Application:
         elif command == "record_population_manifest":
             if scenario_id != "main":
                 raise ValueError("Source population manifests belong to Main, not a scenario.")
-            if set(p) - {"period", "source_name", "rationale", "contract_references", "billing_references", "usage_references", "opening_positions", "opening_obligations"}:
+            if set(p) - {"period", "source_name", "rationale", "contract_references", "contract_customers", "billing_references", "usage_references", "opening_positions", "opening_obligations"}:
                 raise ValueError("Source population manifest has unsupported fields.")
             p["period"] = valid_period(p.get("period"))
             if any(close["period"] == p["period"] and close["status"] == "closed" for close in state["closes"]):
@@ -1231,6 +1231,25 @@ class Application:
             p["contract_references"] = [normalize_reference(value, "Contract reference") for value in references]
             if len(set(p["contract_references"])) != len(p["contract_references"]):
                 raise ValueError("The source contract list contains duplicate references.")
+            contract_customers = p.get("contract_customers", [])
+            if not isinstance(contract_customers, list):
+                raise ValueError("Source agreement customers must be a list.")
+            normalized_customers = []
+            for item in contract_customers:
+                if not isinstance(item, dict) or set(item) not in ({"contract_reference", "customer_reference"}, {"contract_reference", "customer_reference", "source_system"}):
+                    raise ValueError("Each source agreement customer needs an agreement reference and external customer reference, with an optional source system.")
+                contract_reference = normalize_reference(item["contract_reference"], "Agreement reference")
+                if contract_reference not in p["contract_references"]:
+                    raise ValueError("A source agreement customer must refer to an agreement in the source contract list.")
+                source_system = item.get("source_system", "")
+                if not isinstance(source_system, str):
+                    raise ValueError("Customer source system must be text.")
+                normalized_customers.append({"contract_reference": contract_reference,
+                                             "source_system": source_system.strip(),
+                                             "customer_reference": normalize_reference(item["customer_reference"], "Customer reference")})
+            if len({item["contract_reference"] for item in normalized_customers}) != len(normalized_customers):
+                raise ValueError("The source agreement customer list contains duplicate agreement references.")
+            p["contract_customers"] = normalized_customers
             normalized_billings = []
             for item in billings:
                 if not isinstance(item, dict) or set(item) not in ({"contract_reference", "invoice_reference"}, {"contract_reference", "invoice_reference", "amount"}):
