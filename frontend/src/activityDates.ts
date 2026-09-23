@@ -10,6 +10,23 @@ function supportsActivity(contract: Contract, obligation: Obligation, activity: 
   return activity === "adjustment";
 }
 
+/** Mirror the date and method constraints that determine whether an entry can target an obligation. */
+export function supportsActivityOnDate(contract: Contract, obligation: Obligation, activity: string, day: string) {
+  if (!supportsActivity(contract, obligation, activity) || day < activityEarliestDate(contract, activity, obligation)) return false;
+  if (activity === "usage" && obligation.method === "metered") return day <= obligation.end_date;
+  if (activity === "right_exercise") {
+    return day <= (obligation.exercise_end || obligation.end_date) &&
+      !contract.activities.some((row) => row.type === "milestone" && row.obligation_id === obligation.id && Number(row.percentage || 100) === 100 && row.effective_date <= day);
+  }
+  if (activity === "milestone" && obligation.kind === "material_right") {
+    const exercise = contract.activities.find((row) => row.type === "right_exercise" && row.obligation_id === obligation.id && row.effective_date <= day);
+    return exercise
+      ? exercise.delivery_method === "point_in_time" && day === exercise.delivery_start
+      : day <= (obligation.exercise_end || obligation.end_date);
+  }
+  return true;
+}
+
 export function activityEarliestDate(contract: Contract, activity: string, obligation?: Obligation) {
   if (!["progress", "usage", "milestone", "right_exercise"].includes(activity)) return contract.start_date;
   const start = obligation?.start_date || contract.start_date;
@@ -44,9 +61,7 @@ export function suggestedActivityDate(contract: Contract, period: string, activi
   }
   for (const day of [...candidates].sort()) {
     const active = contractTerms(contract, day).obligations;
-    if (active.some((obligation) => supportsActivity(contract, obligation, activity) &&
-      activityEarliestDate(contract, activity, obligation) <= day &&
-      (activity !== "right_exercise" || !obligation.exercise_end || day <= obligation.exercise_end))) return day;
+    if (active.some((obligation) => supportsActivityOnDate(contract, obligation, activity, day))) return day;
   }
   return earliest;
 }

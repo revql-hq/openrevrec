@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { changeComponentKind, changeObligationKind, changeObligationMethod, contractTerms, suggestedModificationDate, termReviewStatus } from "./contractTerms";
-import { activityEarliestDate, suggestedActivityDate } from "./activityDates";
+import { activityEarliestDate, suggestedActivityDate, supportsActivityOnDate } from "./activityDates";
 import { parseApprovedCombinations } from "./accountRules";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 import { api, post, uid, money, humanize, dateLabel, total, today } from "./api";
@@ -1067,16 +1067,7 @@ export function ActivityForm(
   const { contract, activity, correctionTarget } = props;
   const [effective, setEffective] = useState(() => suggestedActivityDate(contract, props.period, activity, correctionTarget?.effective_date));
   const { obligations, consideration } = contractTerms(contract, effective);
-  const eligibleObligations = obligations.filter((item) => {
-    if (activity === "usage") return ["usage", "metered"].includes(item.method);
-    if (activity === "progress") return item.method === "progress";
-    if (activity === "right_exercise") return item.kind === "material_right" && !contract.activities.some((event) => event.type === "right_exercise" && event.obligation_id === item.id);
-    if (activity === "milestone") {
-      const exercise = contract.activities.find((event) => event.type === "right_exercise" && event.obligation_id === item.id);
-      return ["milestone", "point_in_time"].includes(item.method) && (!exercise || exercise.delivery_method === "point_in_time");
-    }
-    return true;
-  });
+  const eligibleObligations = obligations.filter((item) => supportsActivityOnDate(contract, item, activity, effective));
   const [selectedObligation, setObligation] = useState(
       correctionTarget?.obligation_id || eligibleObligations[0]?.id || "",
     ),
@@ -1220,7 +1211,7 @@ export function ActivityForm(
           />
         </Field>
         {activity !== "billing" && activity !== "reassessment" && activity !== "rate_change" && (
-          <Field label="Performance obligation" hint={!eligibleObligations.length ? "No obligation uses a compatible satisfaction method at this date." : undefined}>
+          <Field label="Performance obligation" hint={!eligibleObligations.length ? "No obligation is eligible for this activity on the selected date. Check its service or exercise dates." : undefined}>
             <select
               required
               value={obligation}

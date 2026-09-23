@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { activityEarliestDate, suggestedActivityDate } from '../../frontend/src/activityDates.ts';
+import { activityEarliestDate, suggestedActivityDate, supportsActivityOnDate } from '../../frontend/src/activityDates.ts';
 
 const contract = {
   id: 'contract', start_date: '2026-09-15', end_date: '2027-08-31', consideration: [],
@@ -29,6 +29,15 @@ test('material-right dates respect the exercise window and delivery', () => {
     start_date: '2026-09-01', end_date: '2026-12-31', exercise_start: '2026-09-10', exercise_end: '2026-12-31' }] };
   assert.equal(suggestedActivityDate(right, '2026-09', 'right_exercise'), '2026-09-10');
   assert.equal(suggestedActivityDate(right, '2026-09', 'milestone'), '2026-09-10');
-  const exercised = { ...right, activities: [{ type: 'right_exercise', obligation_id: 'option', effective_date: '2026-09-20', delivery_start: '2026-10-01' }] };
+  assert.equal(supportsActivityOnDate(right, right.obligations[0], 'right_exercise', '2027-01-01'), false);
+  assert.equal(supportsActivityOnDate(right, right.obligations[0], 'milestone', '2027-01-01'), false);
+  const exercised = { ...right, activities: [{ type: 'right_exercise', obligation_id: 'option', effective_date: '2026-09-20', delivery_method: 'point_in_time', delivery_start: '2026-10-01' }] };
   assert.equal(suggestedActivityDate(exercised, '2026-09', 'milestone'), '2026-10-01');
+  assert.equal(supportsActivityOnDate(exercised, right.obligations[0], 'milestone', '2026-10-02'), false);
+});
+
+test('metered usage is unavailable after the service term', () => {
+  const meter = { ...contract, obligations: [{ ...contract.obligations[0], method: 'metered', end_date: '2026-09-30' }] };
+  assert.equal(supportsActivityOnDate(meter, meter.obligations[0], 'usage', '2026-09-30'), true);
+  assert.equal(supportsActivityOnDate(meter, meter.obligations[0], 'usage', '2026-10-01'), false);
 });
