@@ -18,7 +18,7 @@ from .application import JUDGMENT_COMMANDS
 TEMPLATE_VERSION = "2"
 SHEETS = {
     "Customers": ["id", "name", "email", "reference", "source_system"],
-    "Contracts": ["id", "customer_id", "name", "start_date", "end_date", "rationale", "cutover_date", "term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date"],
+    "Contracts": ["id", "customer_id", "name", "start_date", "end_date", "rationale", "cutover_date", "term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date", "reference"],
     "Consideration": ["contract_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale"],
     "Obligations": ["contract_id", "id", "name", "kind", "ssp", "method", "start_date", "end_date", "total_units", "exercise_start", "exercise_end", "rationale"],
     "Opening Positions": ["source_id", "contract_id", "effective_date", "billed_to_date", "contract_asset", "deferred_revenue", "source_name", "rationale"],
@@ -75,6 +75,7 @@ def template_bytes():
         ["Dates", "YYYY-MM-DD. Service start and end dates are inclusive."],
         ["Relationships", "Supply IDs for customers, contracts, consideration, and obligations; reference these IDs on related sheets."],
         ["Contract setup", "Contracts, Consideration and Obligations are combined into one create_contract command."],
+        ["Source population", "Set reference on each contract to its stable register ID. Record independent contract and invoice/credit lists for each close period in Reports > Source population; an imported billing source_id can identify a transaction when invoice reference is blank."],
         ["Cancellable or evergreen terms", "The contract end is the assessed accounting end, not an unlimited legal end. Enter term_basis as cancellable or evergreen, explain the assessment and reassessment trigger, and optionally enter term_review_date. Revisit the obligation dates through a reviewed amendment when the assessment changes."],
         ["Recognition methods", "exact_days, monthly, prorated_monthly, point_in_time, progress, usage, milestone"],
         ["Opening positions", "For a migrated contract, supply current terms, then one Opening Positions row dated the first day of the cutover month and one Opening Obligations row per obligation. A matching opening row sets the new contract's cutover date automatically. Enter cumulative legacy recognition, billing, net asset/deferred balance, and measures before post-cutover activity. Pre-cutover periods are excluded."],
@@ -113,6 +114,23 @@ def export_bytes(state, review=None):
         _sheet(book, "External controls", ["Measure", "Model", "External", "Difference", "Source", "Review explanation", "Close cutoff date"],
                [[field, Decimal(values["derived"]), Decimal(values["external"]), Decimal(values["difference"]), review["external_control"]["source_name"], review["external_control"]["rationale"], review["external_control"].get("close_cutoff_date", "")]
                 for field, values in review.get("external_control_comparison", {}).items()])
+        population = review.get("population_manifest")
+        comparison = review.get("population_comparison", {})
+        if population:
+            missing_contracts = set(comparison["missing_contracts"])
+            missing_billings = {tuple(item) for item in comparison["missing_billings"]}
+            duplicate_contracts = set(comparison["duplicate_contracts"])
+            duplicate_billings = {tuple(item) for item in comparison["duplicate_billings"]}
+            _sheet(book, "Source contracts", ["Contract reference", "Comparison", "Source", "Population basis"],
+                   [[reference, "Missing in workspace" if reference in missing_contracts else "Duplicate in workspace" if reference in duplicate_contracts else "Matched", population["source_name"], population["rationale"]]
+                    for reference in population["contract_references"]] +
+                   [[reference, "Unexpected in workspace", population["source_name"], population["rationale"]] for reference in comparison["unexpected_contracts"]] +
+                   [[item["id"], "Workspace contract lacks reference", population["source_name"], population["rationale"]] for item in comparison["unidentified_contracts"]])
+            _sheet(book, "Source invoices", ["Contract reference", "Invoice reference", "Comparison", "Source", "Population basis"],
+                   [[item["contract_reference"], item["invoice_reference"], "Missing in workspace" if (item["contract_reference"], item["invoice_reference"]) in missing_billings else "Duplicate in workspace" if (item["contract_reference"], item["invoice_reference"]) in duplicate_billings else "Matched", population["source_name"], population["rationale"]]
+                    for item in population["billing_references"]] +
+                   [[contract_ref, invoice_ref, "Unexpected in workspace", population["source_name"], population["rationale"]] for contract_ref, invoice_ref in comparison["unexpected_billings"]] +
+                   [[item["contract_id"], item["activity_id"], "Workspace billing lacks reference", population["source_name"], population["rationale"]] for item in comparison["unidentified_billings"]])
         money_keys = {"opening_contract_asset", "opening_deferred_revenue", "revenue", "billings", "closing_contract_asset", "closing_deferred_revenue"}
         rollforward_keys = ["contract_id", "contract_name", "opening_contract_asset", "opening_deferred_revenue", "revenue", "billings", "closing_contract_asset", "closing_deferred_revenue"]
         _sheet(book, "Contract rollforward", rollforward_keys, [[Decimal(row[k]) if k in money_keys else row[k] for k in rollforward_keys] for row in review["rollforward"]])

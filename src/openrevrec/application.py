@@ -25,7 +25,7 @@ ACTIVITY_TYPES = {
 SCENARIO_COMMANDS = {"create_scenario", "apply_scenario", "rebase_scenario", "archive_scenario", "restore_scenario"}
 CORRECTABLE_COMMANDS = {"record_billing", "record_progress", "record_usage", "record_milestone"}
 JUDGMENT_COMMANDS = {"create_contract", "record_opening_position", "record_right_exercise", "modify_contract", "reassess_variable_consideration", "record_adjustment", "set_policy", "reopen_period"}
-COMMANDS = {"create_customer", "create_contract", "set_policy", "record_control_totals", "record_export_posting", "close_period", "reopen_period", "add_note", "edit_note", "edit_details", "attach_evidence", "record_judgment_review", "correct_activity"} | set(ACTIVITY_TYPES) | SCENARIO_COMMANDS
+COMMANDS = {"create_customer", "create_contract", "set_policy", "record_control_totals", "record_population_manifest", "record_export_posting", "close_period", "reopen_period", "add_note", "edit_note", "edit_details", "attach_evidence", "record_judgment_review", "correct_activity"} | set(ACTIVITY_TYPES) | SCENARIO_COMMANDS
 DEFAULT_ACCOUNTS = {"revenue": "4000", "deferred_revenue": "2300", "contract_asset": "1200", "billing_clearing": "1100"}
 
 
@@ -129,7 +129,7 @@ class Application:
         baseline_policy = {"version": 1, "effective_period": "0001-01", "currency": meta["currency"], "rounding": "ROUND_HALF_UP", "ruleset_version": "orr-0.1", "accounts": DEFAULT_ACCOUNTS.copy(), "account_changes": DEFAULT_ACCOUNTS.copy(), "account_overrides": {"contracts": {}, "obligations": {}}, "override_changes": {}, "account_profiles": {}, "profile_changes": {}, "profile_assignments": {}, "profile_assignment_changes": {}}
         state = {"workspace": meta, "scenario_id": scenario_id,
                  "policy": baseline_policy, "policy_versions": [baseline_policy],
-                 "customers": [], "contracts": [], "notes": [], "evidence": [], "judgment_reviews": [], "closes": [], "controls": [], "postings": []}
+                 "customers": [], "contracts": [], "notes": [], "evidence": [], "judgment_reviews": [], "closes": [], "controls": [], "population_manifests": [], "postings": []}
         rows = self._rows(db, scenario_id, frontier)
         customers, contracts, notes, closes = {}, {}, {}, {}
         for row in rows:
@@ -183,10 +183,13 @@ class Application:
             elif command == "record_control_totals":
                 state["controls"] = [item for item in state["controls"] if item["period"] != p["period"]]
                 state["controls"].append({**p, "recorded_at": row["recorded_at"], "change_set_id": row["id"]})
+            elif command == "record_population_manifest":
+                state["population_manifests"] = [item for item in state["population_manifests"] if item["period"] != p["period"]]
+                state["population_manifests"].append({**p, "recorded_at": row["recorded_at"], "change_set_id": row["id"]})
             elif command == "record_export_posting":
                 state["postings"].append({**p, "recorded_at": row["recorded_at"], "change_set_id": row["id"]})
             elif command == "close_period":
-                closes[p["period"]] = {"id": p["id"], "period": p["period"], "status": "closed", "recorded_at": row["recorded_at"], "frontier": row["version"], "rationale": p.get("rationale", "")}
+                closes[p["period"]] = {"id": p["id"], "period": p["period"], "status": "closed", "recorded_at": row["recorded_at"], "frontier": row["version"], "rationale": p.get("rationale", ""), "population_comparison": p.get("population_comparison")}
             elif command == "reopen_period":
                 if p["period"] in closes:
                     closes[p["period"]]["status"] = "reopened"
@@ -337,6 +340,9 @@ class Application:
                 raise ValueError("Contract ID already exists.")
             if not any(c["id"] == p.get("customer_id") for c in state["customers"]):
                 raise ValueError("Choose an existing customer.")
+            p["reference"] = str(p.get("reference") or "").strip()
+            if p["reference"] and any(c.get("reference") == p["reference"] for c in state["contracts"]):
+                raise ValueError("A contract already uses this source reference.")
             valid_date(p.get("start_date"), "Start date")
             valid_date(p.get("end_date"), "End date")
             if p["start_date"] > p["end_date"]:
@@ -606,6 +612,11 @@ class Application:
                     if reference and any(c["id"] != target["id"] and c.get("reference") == reference and (c.get("source_system") or "") == source_system for c in state["customers"]):
                         raise ValueError("A customer already uses this source system and external reference.")
                     p["reference"], p["source_system"] = reference, source_system
+                elif "reference" in p:
+                    reference = str(p["reference"] or "").strip()
+                    if reference and any(c["id"] != p["entity_id"] and c.get("reference") == reference for c in state["contracts"]):
+                        raise ValueError("A contract already uses this source reference.")
+                    p["reference"] = reference
         elif command == "attach_evidence":
             p["id"] = p.get("id") or identifier("doc")
             if any(e["id"] == p["id"] for e in state["evidence"]):
@@ -657,6 +668,36 @@ class Application:
                     raise ValueError("Close cutoff date cannot precede period end.")
             else:
                 p.pop("close_cutoff_date", None)
+        elif command == "record_population_manifest":
+            if scenario_id != "main":
+                raise ValueError("Source population manifests belong to Main, not a scenario.")
+            if set(p) - {"period", "source_name", "rationale", "contract_references", "billing_references"}:
+                raise ValueError("Source population manifest has unsupported fields.")
+            p["period"] = valid_period(p.get("period"))
+            if any(close["period"] == p["period"] and close["status"] == "closed" for close in state["closes"]):
+                raise ValueError("Reopen the period before revising its source population.")
+            p["source_name"] = required_text(p, "source_name")
+            p["rationale"] = required_text(p, "rationale")
+            references = p.get("contract_references")
+            billings = p.get("billing_references")
+            if not isinstance(references, list) or not isinstance(billings, list):
+                raise ValueError("Provide contract and billing reference lists, even when empty.")
+            def normalize_reference(value, label):
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"{label} must be nonempty text.")
+                return value.strip()
+            p["contract_references"] = [normalize_reference(value, "Contract reference") for value in references]
+            if len(set(p["contract_references"])) != len(p["contract_references"]):
+                raise ValueError("The source contract list contains duplicate references.")
+            normalized_billings = []
+            for item in billings:
+                if not isinstance(item, dict) or set(item) != {"contract_reference", "invoice_reference"}:
+                    raise ValueError("Each source billing row needs a contract and invoice reference.")
+                normalized_billings.append({key: normalize_reference(item[key], key.replace("_", " ").capitalize()) for key in ("contract_reference", "invoice_reference")})
+            p["billing_references"] = normalized_billings
+            keys = [(item["contract_reference"], item["invoice_reference"]) for item in normalized_billings]
+            if len(set(keys)) != len(keys):
+                raise ValueError("The source billing list contains duplicate contract and invoice references.")
         elif command == "record_export_posting":
             if scenario_id != "main":
                 raise ValueError("External posting records belong to Main.")
@@ -708,6 +749,7 @@ class Application:
                         raise ValueError(f"Close review check {check_id} needs an explicit acceptance reason.")
                 p["review_dispositions"] = {check_id: {"disposition": "accepted", "reason": value["reason"].strip()} for check_id, value in dispositions.items()}
                 p["review_checks"] = [{"id": check["id"], "status": check["status"], "count": check["count"]} for check in review["checks"]]
+                p["population_comparison"] = review["population_comparison"]
                 p["id"] = identifier("close")
             else:
                 p["rationale"] = required_text(p, "rationale")

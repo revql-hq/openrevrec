@@ -558,6 +558,79 @@ def test_external_controls_compare_to_independent_totals_and_freeze_at_close(tmp
         application.execute("record_control_totals", payload, period="2026-09")
 
 
+def test_source_population_catches_missing_records_even_when_money_totals_match(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    application.execute("edit_details", {"entity_id": "con_1", "reference": "CON-1"}, period="2026-09")
+    billing = application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-01", "amount": "12000.00", "reference": "INV-1"}, period="2026-09")
+    summary = application.state(period="2026-09")["report"]["summary"]
+    application.execute("record_control_totals", {"period": "2026-09", "source_name": "Trial balance", "rationale": "Independent GL and billing totals", **{key: summary[key] for key in ("billings", "contract_asset", "deferred_revenue")}}, period="2026-09")
+    manifest = {"period": "2026-09", "source_name": "Contract register and invoice ledger", "rationale": "Active agreements and September invoices, including credits.",
+                "contract_references": ["CON-1", "CON-2"], "billing_references": [{"contract_reference": "CON-1", "invoice_reference": "INV-1"}, {"contract_reference": "CON-2", "invoice_reference": "INV-2"}]}
+    application.execute("record_population_manifest", manifest, period="2026-09")
+    review = application.reports(period="2026-09")
+    assert next(check for check in review["checks"] if check["id"] == "external_controls")["status"] == "pass"
+    assert next(check for check in review["checks"] if check["id"] == "source_population")["status"] == "review"
+    assert review["population_comparison"]["missing_contracts"] == ["CON-2"]
+    assert review["population_comparison"]["missing_billings"] == [("CON-2", "INV-2")]
+    with pytest.raises(ValueError, match="duplicate references"):
+        application.execute("record_population_manifest", {**manifest, "contract_references": ["CON-1", "CON-1"]}, period="2026-09")
+    with pytest.raises(ValueError, match="duplicate contract and invoice"):
+        application.execute("record_population_manifest", {**manifest, "billing_references": [manifest["billing_references"][0]] * 2}, period="2026-09")
+    scenario = application.execute("create_scenario", {"name": "Alternative population"})["result"]["id"]
+    with pytest.raises(ValueError, match="belong to Main"):
+        application.execute("record_population_manifest", manifest, scenario_id=scenario, period="2026-09")
+    application.execute("record_population_manifest", {**manifest, "contract_references": ["CON-1"], "billing_references": [manifest["billing_references"][0]]}, period="2026-09")
+    review = application.reports(period="2026-09")
+    assert next(check for check in review["checks"] if check["id"] == "source_population")["status"] == "pass"
+    book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-09"), review)))
+    assert book["Source contracts"]["A2"].value == "CON-1"
+    assert book["Source invoices"]["B2"].value == "INV-1"
+    book.close()
+    application.execute("close_period", {"period": "2026-09", "review_dispositions": accept_review_items(application, "2026-09")}, period="2026-09")
+    with pytest.raises(ValueError, match="Reopen the period"):
+        application.execute("record_population_manifest", manifest, period="2026-09")
+    application.execute("edit_details", {"entity_id": "con_1", "reference": "CON-REVISED"}, period="2026-10")
+    closed = application.reports(period="2026-09")
+    assert next(check for check in closed["checks"] if check["id"] == "source_population")["status"] == "pass"
+    assert closed["population_comparison"]["missing_contracts"] == []
+    assert billing["result"]["change_set_id"]
+
+
+def test_source_population_uses_imported_billing_source_id_when_invoice_reference_is_absent(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    application.execute("edit_details", {"entity_id": "con_1", "reference": "CON-1"}, period="2026-09")
+    book = load_workbook(io.BytesIO(template_bytes()))
+    sheet = book["Billing"]
+    headers = [cell.value for cell in sheet[1]]
+    values = {"contract_id": "con_1", "effective_date": "2026-09-02", "amount": "125.00", "source_id": "billing:125"}
+    sheet.append([values.get(header) for header in headers])
+    data = io.BytesIO()
+    book.save(data)
+    book.close()
+    preview = preview_import_bytes(application, data.getvalue(), period="2026-09")
+    import_bytes(application, data.getvalue(), period="2026-09", expected_frontier=preview["frontier"], expected_hash=preview["result"]["file_hash"])
+    application.execute("record_population_manifest", {"period": "2026-09", "source_name": "ERP register", "rationale": "All active contracts and September billing transactions.",
+                "contract_references": ["CON-1"], "billing_references": [{"contract_reference": "CON-1", "invoice_reference": "billing:125"}]}, period="2026-09")
+    comparison = application.reports(period="2026-09")["population_comparison"]
+    assert comparison["missing_billings"] == []
+    assert comparison["unidentified_billings"] == []
+
+
+def test_source_population_flags_duplicate_workspace_invoice_identities(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    application.execute("edit_details", {"entity_id": "con_1", "reference": "CON-1"}, period="2026-09")
+    for day in ("01", "02"):
+        application.execute("record_billing", {"contract_id": "con_1", "effective_date": f"2026-09-{day}", "amount": "50.00", "reference": "INV-1"}, period="2026-09")
+    application.execute("record_population_manifest", {"period": "2026-09", "source_name": "Invoice ledger", "rationale": "All September transactions.",
+                "contract_references": ["CON-1"], "billing_references": [{"contract_reference": "CON-1", "invoice_reference": "INV-1"}]}, period="2026-09")
+    review = application.reports(period="2026-09")
+    assert review["population_comparison"]["duplicate_billings"] == [("CON-1", "INV-1")]
+    assert next(check for check in review["checks"] if check["id"] == "source_population")["status"] == "review"
+
+
 def test_period_associated_task_is_a_close_item_without_due_date(tmp_path):
     application = app(tmp_path)
     seed(application)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from datetime import date, timedelta
 from decimal import Decimal
 
 from .application import JUDGMENT_COMMANDS, period_end
@@ -16,6 +18,58 @@ def _amount(value: Decimal) -> str:
 
 def _decimal(value) -> Decimal:
     return Decimal(str(value or "0"))
+
+
+def _population_comparison(state: dict, period: str, manifest: dict | None) -> dict:
+    """Compare independent source identities with current Main source facts."""
+    period_start, period_last = f"{period}-01", period_end(period)
+    reported = {item["id"]: item for item in state["report"]["contracts"]}
+    contracts = []
+    for contract in state["contracts"]:
+        row = reported.get(contract["id"])
+        if not row or contract["start_date"] > period_last:
+            continue
+        effective_end = contract["end_date"]
+        for activity in sorted(contract["activities"], key=lambda item: item["effective_date"]):
+            if activity["type"] == "modification" and activity["effective_date"] <= period_last and "obligations" in activity:
+                effective_end = (max(item["end_date"] for item in activity["obligations"])
+                                 if activity["obligations"] else (date.fromisoformat(activity["effective_date"]) - timedelta(days=1)).isoformat())
+        outstanding = any(_decimal(row[field]) != ZERO for field in ("contract_asset", "deferred_revenue", "remaining_revenue"))
+        has_period_billing = any(item["type"] == "billing" and item["effective_date"][:7] == period for item in contract["activities"])
+        if effective_end >= period_start or outstanding or has_period_billing:
+            contracts.append(contract)
+    actual_contracts = [str(item.get("reference") or "").strip() for item in contracts]
+    unidentified_contracts = [{"id": item["id"], "name": item["name"]} for item, reference in zip(contracts, actual_contracts) if not reference]
+    actual_contract_set = {item for item in actual_contracts if item}
+    duplicate_contracts = sorted(item for item, count in Counter(actual_contracts).items() if item and count > 1)
+    actual_billing_rows = [(contract, activity) for contract in state["contracts"] for activity in contract["activities"]
+                           if activity["type"] == "billing" and activity["effective_date"][:7] == period]
+    def billing_reference(activity):
+        reference = str(activity.get("reference") or "").strip()
+        identity = activity.get("import_source_identity")
+        if reference:
+            return reference
+        if isinstance(identity, list) and len(identity) == 2 and identity[0] == "source_id":
+            return str(identity[1]).strip()
+        return ""
+    actual_billings = [(str(contract.get("reference") or "").strip(), billing_reference(activity))
+                       for contract, activity in actual_billing_rows]
+    unidentified_billings = [{"contract_id": contract["id"], "activity_id": activity["id"]} for (contract, activity), key in zip(actual_billing_rows, actual_billings) if not all(key)]
+    actual_billing_set = {key for key in actual_billings if all(key)}
+    duplicate_billings = sorted(key for key, count in Counter(actual_billings).items() if all(key) and count > 1)
+    expected_contracts = set(manifest["contract_references"]) if manifest else set()
+    expected_billings = {(item["contract_reference"], item["invoice_reference"]) for item in manifest["billing_references"]} if manifest else set()
+    return {
+        "source_name": manifest["source_name"] if manifest else "",
+        "expected_contract_count": len(expected_contracts), "actual_contract_count": len(contracts),
+        "expected_billing_count": len(expected_billings), "actual_billing_count": len(actual_billing_rows),
+        "missing_contracts": sorted(expected_contracts - actual_contract_set),
+        "unexpected_contracts": sorted(actual_contract_set - expected_contracts),
+        "unidentified_contracts": unidentified_contracts, "duplicate_contracts": duplicate_contracts,
+        "missing_billings": sorted(expected_billings - actual_billing_set),
+        "unexpected_billings": sorted(actual_billing_set - expected_billings),
+        "unidentified_billings": unidentified_billings, "duplicate_billings": duplicate_billings,
+    }
 
 
 def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dict:
@@ -93,6 +147,12 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
         for field in control_fields
     } if control else {}
     control_differences = [field for field, values in control_comparison.items() if _decimal(values["difference"]) != ZERO]
+    population_manifest = next((item for item in state.get("population_manifests", []) if item["period"] == period), None)
+    population_comparison = _population_comparison(state, period, population_manifest)
+    closed_population = next((item.get("population_comparison") for item in state["closes"] if item["period"] == period and item["status"] == "closed"), None)
+    if closed_population:
+        population_comparison = closed_population
+    population_exceptions = sum(len(value) for key, value in population_comparison.items() if key.startswith(("missing_", "unexpected_", "unidentified_", "duplicate_")))
     open_tasks = [note for note in state["notes"] if note.get("kind") == "task" and not note.get("completed")]
     due_tasks = [note for note in open_tasks if (note.get("due_date") and note["due_date"] <= period_end(period)) or (note.get("period") and note["period"] <= period)]
     due_term_reviews = []
@@ -175,6 +235,9 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
         _check("external_controls", "Independent source and GL controls", bool(control) and not control_differences,
                "Entered source billing and GL balances agree to this model; confirm the source basis separately." if control and not control_differences else f"{len(control_differences)} external total(s) differ from the model." if control else "No independent source billing and GL balance totals have been entered for this period.",
                "review", len(control_differences) if control else 1),
+        _check("source_population", "Source contract and invoice population", bool(population_manifest) and not population_exceptions,
+               "Contract and invoice references match the independent source lists." if population_manifest and not population_exceptions else f"{population_exceptions} source identity exception(s) need review." if population_manifest else "No independent contract and invoice reference lists have been entered for this period.",
+               "review", population_exceptions if population_manifest else 1),
         _check("warnings", "Accounting warnings", not report["warnings"],
                "No calculation warnings." if not report["warnings"] else f"{len(report['warnings'])} warning(s) need review.",
                "review", len(report["warnings"])),
@@ -202,6 +265,7 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
         "allocation": {"view": "Contracts", "id": allocation_mismatches[0]["id"], "tab": "Allocation"} if allocation_mismatches else {"view": "Contracts"},
         "cutover": {"view": "Contracts", "id": pending_cutovers[0]["id"], "tab": "Overview"} if pending_cutovers else {"view": "Contracts"},
         "external_controls": {"view": "Reports", "tab": "External controls"},
+        "source_population": {"view": "Reports", "tab": "Source population"},
         "warnings": {"view": "Contracts", "id": warning_targets[0]["contract_id"], "tab": "Recognition", "obligation_id": warning_targets[0]["obligation_id"]} if warning_targets and warning_targets[0]["contract_id"] else {"view": "Revenue"},
         "tasks": ({"view": "Contracts", "id": due_tasks[0]["entity_id"], "tab": "Notes"} if due_tasks[0].get("entity_id") in {c["id"] for c in state["contracts"]} else {"view": "Customers", "id": due_tasks[0]["entity_id"]}) if due_tasks and due_tasks[0].get("entity_id") in entity_names else {"view": "Home"},
         "term_reviews": {"view": "Contracts", "id": due_term_reviews[0]["id"], "tab": "Overview"} if due_term_reviews else {"view": "Contracts"},
@@ -220,6 +284,7 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
         "checks": checks, "warnings": list(report["warnings"]),
         "rollforward": rollforward, "billing_vs_revenue": billing_vs_revenue,
         "external_control": control, "external_control_comparison": control_comparison,
+        "population_manifest": population_manifest, "population_comparison": population_comparison,
         "recognition_coverage": coverage, "scenario_impacts": scenario_impacts or [],
         "exceptions": {"allocation": allocation_mismatches, "cutover": pending_cutovers, "warnings": warning_targets, "tasks": due_tasks, "term_reviews": due_term_reviews, "cutoff": late_changes,
                        "coverage": gaps, "scenarios": active_scenarios, "evidence": unsupported_judgments},

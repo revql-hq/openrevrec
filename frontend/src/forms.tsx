@@ -690,6 +690,7 @@ export function ContractForm(
   const annualStart = `${props.period}-01`;
   const annualEnd = new Date(Date.UTC(Number(props.period.slice(0, 4)) + 1, Number(props.period.slice(5)) - 1, 0)).toISOString().slice(0, 10);
   const [name, setName] = useState(contract?.name || ""),
+    [sourceReference, setSourceReference] = useState(contract?.reference || ""),
     [customer, setCustomer] = useState(
       contract?.customer_id ||
         props.customerId ||
@@ -756,6 +757,7 @@ export function ContractForm(
           command: "create_contract",
           payload: {
             name,
+            reference: sourceReference,
             customer_id: customer,
             start_date: start,
             end_date: end,
@@ -810,6 +812,9 @@ export function ContractForm(
                 onChange={(e) => setName(e.target.value)}
                 placeholder="2026 subscription agreement"
               />
+            </Field>
+            <Field label="Source contract reference" hint="Use the stable ID from the contract register so close can compare its full population.">
+              <input value={sourceReference} onChange={(event) => setSourceReference(event.target.value)} placeholder="Agreement ID" />
             </Field>
             <Field label="Customer">
               <select
