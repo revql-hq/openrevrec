@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { changeComponentKind, contractTerms, termReviewStatus } from "./contractTerms";
+import { activityEarliestDate, suggestedActivityDate } from "./activityDates";
 import { parseApprovedCombinations } from "./accountRules";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 import { api, post, uid, money, humanize, dateLabel, total, today } from "./api";
@@ -1065,7 +1066,7 @@ export function ActivityForm(
   props: FormProps & { contract: Contract; activity: string; correctionTarget?: Activity },
 ) {
   const { contract, activity, correctionTarget } = props;
-  const [effective, setEffective] = useState(correctionTarget?.effective_date || `${props.period}-01`);
+  const [effective, setEffective] = useState(() => suggestedActivityDate(contract, props.period, activity, correctionTarget?.effective_date));
   const { obligations, consideration } = contractTerms(contract, effective);
   const eligibleObligations = obligations.filter((item) => {
     if (activity === "usage") return ["usage", "metered"].includes(item.method);
@@ -1104,6 +1105,7 @@ export function ActivityForm(
     ? selectedObligation
     : eligibleObligations[0]?.id || "";
   const selectedTerms = eligibleObligations.find((item) => item.id === obligation);
+  const minimumEffectiveDate = activity === "billing" ? undefined : activityEarliestDate(contract, activity, selectedTerms);
   const invoiceValueMode = selectedTerms?.method === "metered" && consideration[0]?.metered_value_mode === "invoice_value";
   const selectedRightExercise = contract.activities.find((item) => item.type === "right_exercise" && item.obligation_id === obligation && item.effective_date <= effective);
   const priorActivities = contract.activities.filter((item) => item.obligation_id === obligation && item.effective_date <= effective && item.id !== correctionTarget?.id);
@@ -1212,6 +1214,8 @@ export function ActivityForm(
           <input
             type="date"
             required
+            min={minimumEffectiveDate}
+            max={activity === "right_exercise" ? selectedTerms?.exercise_end : undefined}
             value={effective}
             onChange={(e) => setEffective(e.target.value)}
           />
@@ -1222,7 +1226,12 @@ export function ActivityForm(
               required
               value={obligation}
               disabled={Boolean(correctionTarget)}
-              onChange={(e) => setObligation(e.target.value)}
+              onChange={(e) => {
+                setObligation(e.target.value);
+                const chosen = eligibleObligations.find((item) => item.id === e.target.value);
+                const first = activityEarliestDate(contract, activity, chosen);
+                if (effective < first) setEffective(first);
+              }}
             >
               {!eligibleObligations.length && <option value="">No compatible obligation</option>}
               {eligibleObligations.map((o) => (
