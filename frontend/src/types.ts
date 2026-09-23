@@ -142,6 +142,8 @@ export type AccountProfile = {
   dimensions: Record<string, string>;
 };
 export type AccountDimensionRule = { account: string; dimensions: Record<string, string> };
+export type RunoffPosition = { account: string; dimensions: Record<string, string>; account_profile_id?: string | null; balance: string; opening_balance?: string };
+export type RunoffAllocation = { contract_id: string; role: "contract_asset" | "deferred_revenue"; period: string; positions: RunoffPosition[]; rationale: string; change_set_id?: string };
 export type Schedule = {
   period: string;
   contract_id: string;
@@ -173,6 +175,9 @@ export type Report = {
   journals: Journal[];
   account_transitions?: { contract_id: string; role: string; from_account: string; to_account: string; opening_balance: string; treatment: string; from_dimensions?: Record<string, string>; to_dimensions?: Record<string, string> }[];
   account_positions?: { contract_id: string; role: string; account: string; dimensions: Record<string, string>; account_profile_id?: string | null; balance: string }[];
+  runoff_active?: boolean;
+  runoff_pending?: { contract_id: string; role: "contract_asset" | "deferred_revenue"; period: string; closing_balance: string; positions: RunoffPosition[] }[];
+  runoff_unresolved?: { contract_id: string; role: "contract_asset" | "deferred_revenue"; period: string; closing_balance: string; positions: RunoffPosition[] }[];
   segment_imbalances?: { contract_id: string; dimensions: Record<string, string>; net_debit: string }[];
   account_dimension_exceptions?: { journal_id: string; contract_id: string; account: string; role: string; dimensions: Record<string, string> }[];
   account_dimension_unvalidated_accounts?: string[];
@@ -332,7 +337,7 @@ export type State = {
     account_profiles?: Record<string, AccountProfile>;
     profile_assignments?: Record<string, string>;
     obligation_profile_assignments?: Record<string, Record<string, string>>;
-    account_transition?: "transfer" | "external";
+    account_transition?: "transfer" | "external" | "runoff";
     account_dimension_rules?: AccountDimensionRule[];
     account_dimension_source?: string;
   };
@@ -362,6 +367,7 @@ export type State = {
   evidence?: Evidence[];
   judgment_reviews?: JudgmentReview[];
   term_reviews?: TermReview[];
+  runoff_allocations?: RunoffAllocation[];
   postings?: { period: string; batch_id: string; close_id?: string; external_journal_reference: string; posted_date: string; rationale: string; recorded_at: string }[];
   posting_comparisons?: PostingComparison[];
   report: Report;

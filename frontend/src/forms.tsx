@@ -23,6 +23,7 @@ import type {
   Command,
   Preview,
   AccountProfile,
+  RunoffPosition,
 } from "./types";
 
 type FormProps = {
@@ -1573,6 +1574,32 @@ export function NoteForm(props: FormProps & { entityId?: string }) {
     </CommandDialog>
   );
 }
+export function AccountRunoffForm(props: FormProps & { contractId: string; role: "contract_asset" | "deferred_revenue" }) {
+  const pending = props.state.report.runoff_pending?.find((item) => item.contract_id === props.contractId && item.role === props.role);
+  const accepted = props.state.runoff_allocations?.find((item) => item.contract_id === props.contractId && item.role === props.role && item.period === props.period);
+  const contract = props.state.contracts.find((item) => item.id === props.contractId);
+  const balance = props.state.report.contracts.find((item) => item.id === props.contractId)?.[props.role];
+  const source = accepted?.positions || pending?.positions;
+  const [rows, setRows] = useState<RunoffPosition[]>(() => source?.map((item) => ({ ...item })) || []);
+  const [rationale, setRationale] = useState(accepted?.rationale || "");
+  if (!source || balance === undefined) return <Modal title="Account runoff unavailable" onClose={props.onClose}><p>This period has no account balance to allocate.</p></Modal>;
+  const validAmounts = rows.every((row) => /^\d+(\.\d{1,2})?$/.test(row.balance));
+  const allocated = validAmounts ? total(rows.map((row) => row.balance)) : "";
+  return <CommandDialog {...props} wide title="Allocate historical account runoff" subtitle={`${contract?.name || props.contractId} · ${humanize(props.role)} · ${props.period}`}
+    confirmLabel={accepted ? "Revise allocation" : "Record allocation"} successMessage="Account runoff allocation recorded."
+    canSubmit={Boolean(validAmounts && allocated === balance && rationale.trim())}
+    command={() => ({ command: "record_account_runoff", payload: { contract_id: props.contractId, role: props.role, period: props.period,
+      positions: rows.map((row) => ({ account: row.account, dimensions: row.dimensions, account_profile_id: row.account_profile_id || null, balance: row.balance })), rationale } })}>
+    <p className="muted">Enter each account's closing balance. Together they must equal the contract's {humanize(props.role).toLowerCase()} balance of {money(balance, props.state.workspace.currency)}. An old account can decrease to zero but cannot increase.</p>
+    {rows.map((row, index) => <Field key={`${row.account}:${index}`} label={`${row.account} closing balance`} hint={Object.entries(row.dimensions).map(([key, value]) => `${key}: ${value}`).join(" · ") || "No dimensions"}>
+      <input required inputMode="decimal" value={row.balance}
+        onChange={(event) => setRows(rows.map((item, itemIndex) => itemIndex === index ? { ...item, balance: event.target.value } : item))} />
+    </Field>)}
+    <p className="fine-print">Allocated: {allocated ? money(allocated, props.state.workspace.currency) : "Enter valid amounts"} · Contract balance: {money(balance, props.state.workspace.currency)}</p>
+    <Field label="Accounting rationale"><textarea required rows={3} value={rationale} onChange={(event) => setRationale(event.target.value)} placeholder="Explain which historical services or billings support this split." /></Field>
+  </CommandDialog>;
+}
+
 export function PolicyForm(props: FormProps) {
   const [name, setName] = useState(props.state.workspace.name),
     [accounts, setAccounts] = useState(props.state.policy.accounts),
@@ -1755,8 +1782,8 @@ export function PolicyForm(props: FormProps) {
         </div>)}
         <Button type="button" onClick={() => setRuleRows([...ruleRows, { id: uid(), account: "", dimensions: [] }])}>Add approved combination</Button>
       </Section>
-      <Field label="Opening balance treatment" hint="Required when changing a deferred revenue or contract asset account or a profile dimension with an opening balance. Transfer adds balanced opening entries to this month's journal. External means you will post and reconcile the transfer outside OpenRevRec.">
-        <select value={transition} onChange={(e) => setTransition(e.target.value)}><option value="">Choose when needed</option><option value="transfer">Transfer opening balances in journal</option><option value="external">External transfer and reconciliation</option></select>
+      <Field label="Opening balance treatment" hint="Required when changing a deferred revenue or contract asset account or a profile dimension with an opening balance. Transfer adds balanced opening entries. External requires separate ledger reconciliation. Runoff keeps the old account balance until you explicitly allocate each month's closing balance by account; unallocated months cannot close.">
+        <select value={transition} onChange={(e) => setTransition(e.target.value)}><option value="">Choose when needed</option><option value="transfer">Transfer opening balances in journal</option><option value="external">External transfer and reconciliation</option><option value="runoff">Keep old balances for reviewed runoff</option></select>
       </Field>
       <Field label="Reason for change">
         <textarea

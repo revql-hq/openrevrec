@@ -1223,7 +1223,7 @@ def _linked_balances_offset(first: dict, second: dict) -> bool:
             or decimal(first["deferred_revenue"]) > ZERO and decimal(second["contract_asset"]) > ZERO)
 
 
-def _journals(report: dict, period: str, accounts: dict[str, str], overrides: dict, profiles: dict, assignments: dict, obligation_assignments: dict, schedule: list[dict], previous_accounts: dict, previous_overrides: dict, previous_profiles: dict, previous_assignments: dict, transition: str) -> tuple[list[dict], list[dict], list[str], list[dict], list[dict]]:
+def _journals(report: dict, period: str, accounts: dict[str, str], overrides: dict, profiles: dict, assignments: dict, obligation_assignments: dict, schedule: list[dict], previous_accounts: dict, previous_overrides: dict, previous_profiles: dict, previous_assignments: dict, transition: str, *, previous_positions: list[dict] | None = None, runoff_allocations: dict[str, dict] | None = None, runoff_active: bool = False) -> tuple[list[dict], list[dict], list[str], list[dict], list[dict], list[dict]]:
     movements = {
         "billing_clearing": decimal(report["billings"]),
         "contract_asset": decimal(report["contract_asset"]) - decimal(report["beginning_contract_asset"]),
@@ -1257,7 +1257,7 @@ def _journals(report: dict, period: str, accounts: dict[str, str], overrides: di
         result.append(row)
 
     description = f"{report['name']} — {period} revenue and billing movement"
-    for role in ("billing_clearing", "contract_asset", "deferred_revenue"):
+    for role in (("billing_clearing",) if runoff_active else ("billing_clearing", "contract_asset", "deferred_revenue")):
         entry(role, _resolved_account(accounts, overrides, contract_id, role, profiles=profiles, assignments=assignments), movements[role], description)
     revenue_by_route: dict[tuple[str, tuple[tuple[str, str], ...], str], Decimal] = defaultdict(lambda: ZERO)
     obligations_by_route: dict[tuple[str, tuple[tuple[str, str], ...], str], set[str]] = defaultdict(set)
@@ -1277,27 +1277,131 @@ def _journals(report: dict, period: str, accounts: dict[str, str], overrides: di
         suffix = "" if len(revenue_by_route) == 1 else f":{index + 1}"
         entry("revenue", account, -revenue, description, suffix, sorted(obligations_by_route[route]), dimensions=dict(dimension_items), profile_id=profile_id)
 
-    for role, opening_field in (("contract_asset", "beginning_contract_asset"), ("deferred_revenue", "beginning_deferred_revenue")):
-        if report.get("cutover_period") == period:
-            # A migrated balance enters under the cutover policy. It was not
-            # carried in the workspace's prior-period account to transfer.
-            continue
-        old = _resolved_account(previous_accounts, previous_overrides, contract_id, role, profiles=previous_profiles, assignments=previous_assignments)
-        new = _resolved_account(accounts, overrides, contract_id, role, profiles=profiles, assignments=assignments)
-        old_dimensions = _resolved_dimensions(previous_profiles, previous_assignments, contract_id)
-        opening = decimal(report[opening_field])
-        if (old == new and old_dimensions == current_dimensions) or opening == ZERO:
-            continue
-        change = {"contract_id": contract_id, "role": role, "from_account": old, "to_account": new, "opening_balance": amount(opening), "treatment": transition}
-        if old_dimensions or current_dimensions:
-            change.update(from_dimensions=old_dimensions.copy(), to_dimensions=current_dimensions.copy())
-        transitions.append(change)
-        if transition == "transfer":
-            direction = ONE if role == "deferred_revenue" else -ONE
-            entry(role, old, opening * direction, f"{report['name']} — transfer opening {ACCOUNT_NAMES[role].lower()} from {old} to {new}", ":transfer-out", dimensions=old_dimensions, profile_id=previous_assignments.get(contract_id, ""))
-            entry(role, new, -opening * direction, f"{report['name']} — transfer opening {ACCOUNT_NAMES[role].lower()} from {old} to {new}", ":transfer-in", dimensions=current_dimensions, profile_id=current_profile_id or "")
-        else:
-            warnings.append(f"{report['name']}: reconcile external transfer of {amount(opening)} {ACCOUNT_NAMES[role].lower()} from {old} to {new} for {period}, including segment dimensions.")
+    positions, runoff_pending = [], []
+    if runoff_active:
+        def route_of(row: dict) -> tuple[str, tuple[tuple[str, str], ...]]:
+            return row["account"], tuple(sorted(row.get("dimensions", {}).items()))
+
+        for role, opening_field in (("contract_asset", "beginning_contract_asset"), ("deferred_revenue", "beginning_deferred_revenue")):
+            new_account = _resolved_account(accounts, overrides, contract_id, role, profiles=profiles, assignments=assignments)
+            current_route = (new_account, tuple(sorted(current_dimensions.items())))
+            opening = decimal(report[opening_field])
+            closing = decimal(report[role])
+            prior = [row for row in previous_positions or [] if row["role"] == role]
+            if report.get("cutover_period") == period:
+                prior = []  # Migrated opening positions enter under the cutover policy.
+            if not prior and opening:
+                prior_account = (new_account if report.get("cutover_period") == period else
+                                 _resolved_account(previous_accounts, previous_overrides, contract_id, role,
+                                                   profiles=previous_profiles, assignments=previous_assignments))
+                prior_dimensions = (current_dimensions if report.get("cutover_period") == period else
+                                    _resolved_dimensions(previous_profiles, previous_assignments, contract_id))
+                prior = [{"role": role, "account": prior_account, "dimensions": prior_dimensions,
+                          "account_profile_id": (current_profile_id if report.get("cutover_period") == period else previous_assignments.get(contract_id)),
+                          "balance": amount(opening)}]
+            opening_routes: dict[tuple[str, tuple[tuple[str, str], ...]], Decimal] = defaultdict(lambda: ZERO)
+            route_profiles = {current_route: current_profile_id}
+            for row in prior:
+                route = route_of(row)
+                opening_routes[route] += decimal(row["balance"])
+                route_profiles.setdefault(route, row.get("account_profile_id"))
+            if sum(opening_routes.values(), ZERO) != opening:
+                raise ValueError(f"Account positions do not reconcile to opening {role} for contract {contract_id} in {period}.")
+            old_account = _resolved_account(previous_accounts, previous_overrides, contract_id, role,
+                                            profiles=previous_profiles, assignments=previous_assignments)
+            old_dimensions = _resolved_dimensions(previous_profiles, previous_assignments, contract_id)
+            route_changed = report.get("cutover_period") != period and (old_account, tuple(sorted(old_dimensions.items()))) != current_route
+            if route_changed and opening:
+                for index, (route, balance) in enumerate(sorted(opening_routes.items())):
+                    if route == current_route or not balance:
+                        continue
+                    change = {"contract_id": contract_id, "role": role, "from_account": route[0], "to_account": new_account,
+                              "opening_balance": amount(balance), "treatment": transition}
+                    if route[1] or current_route[1]:
+                        change.update(from_dimensions=dict(route[1]), to_dimensions=current_dimensions.copy())
+                    transitions.append(change)
+                    if transition == "transfer":
+                        direction = ONE if role == "deferred_revenue" else -ONE
+                        transfer_description = f"{report['name']} — transfer opening {ACCOUNT_NAMES[role].lower()} from {route[0]} to {new_account}"
+                        entry(role, route[0], balance * direction, transfer_description, f":transfer-out:{index}",
+                              dimensions=dict(route[1]), profile_id=route_profiles.get(route) or "")
+                        entry(role, new_account, -balance * direction, transfer_description, f":transfer-in:{index}",
+                              dimensions=current_dimensions, profile_id=current_profile_id or "")
+                    elif transition == "external":
+                        warnings.append(f"{report['name']}: reconcile external transfer of {amount(balance)} {ACCOUNT_NAMES[role].lower()} from {route[0]} to {new_account} for {period}, including segment dimensions.")
+                if transition in {"transfer", "external"}:
+                    opening_routes = defaultdict(lambda: ZERO, {current_route: opening})
+            available = set(opening_routes) | {current_route}
+            historical = {route for route, balance in opening_routes.items() if route != current_route and balance}
+            allocation = (runoff_allocations or {}).get(role)
+            if allocation:
+                if not historical:
+                    raise ValueError(f"No historical {role} account balance needs a runoff allocation for contract {contract_id} in {period}.")
+                provided = {route_of(row): decimal(row["balance"]) for row in allocation["positions"]}
+                if set(provided) != available:
+                    raise ValueError(f"Runoff allocation must name every existing and current {role} account route for contract {contract_id} in {period}.")
+                if sum(provided.values(), ZERO) != closing:
+                    raise ValueError(f"Runoff allocation does not reconcile to closing {role} for contract {contract_id} in {period}.")
+                if any(provided[route] > opening_routes[route] for route in historical):
+                    raise ValueError(f"Historical {role} account balances can run off but cannot increase for contract {contract_id} in {period}.")
+                ending_routes = provided
+            else:
+                remaining = closing
+                ending_routes = {}
+                for route in sorted(historical):
+                    ending_routes[route] = min(opening_routes[route], remaining)
+                    remaining -= ending_routes[route]
+                ending_routes[current_route] = remaining
+                if historical:
+                    runoff_pending.append({"contract_id": contract_id, "role": role, "period": period,
+                                           "closing_balance": amount(closing), "positions": [
+                                               {"account": route[0], "dimensions": dict(route[1]),
+                                                "account_profile_id": route_profiles.get(route),
+                                                "opening_balance": amount(opening_routes[route]),
+                                                "balance": amount(ending_routes.get(route, ZERO))}
+                                               for route in sorted(available)]})
+            for index, route in enumerate(sorted(available)):
+                balance = ending_routes.get(route, ZERO)
+                delta = balance - opening_routes[route]
+                if delta:
+                    entry(role, route[0], delta if role == "contract_asset" else -delta,
+                          f"{report['name']} — {period} account balance movement", f":route:{index}",
+                          dimensions=dict(route[1]), profile_id=route_profiles.get(route) or "")
+                if balance:
+                    positions.append({"contract_id": contract_id, "role": role, "account": route[0],
+                                      "dimensions": dict(route[1]), "account_profile_id": route_profiles.get(route),
+                                      "balance": amount(balance)})
+            if sum((decimal(row["balance"]) for row in positions if row["role"] == role), ZERO) != closing:
+                raise ValueError(f"Account positions do not reconcile to closing {role} for contract {contract_id} in {period}.")
+    else:
+        for role, opening_field in (("contract_asset", "beginning_contract_asset"), ("deferred_revenue", "beginning_deferred_revenue")):
+            if report.get("cutover_period") == period:
+                # A migrated balance enters under the cutover policy. It was not
+                # carried in the workspace's prior-period account to transfer.
+                continue
+            old = _resolved_account(previous_accounts, previous_overrides, contract_id, role, profiles=previous_profiles, assignments=previous_assignments)
+            new = _resolved_account(accounts, overrides, contract_id, role, profiles=profiles, assignments=assignments)
+            old_dimensions = _resolved_dimensions(previous_profiles, previous_assignments, contract_id)
+            opening = decimal(report[opening_field])
+            if (old == new and old_dimensions == current_dimensions) or opening == ZERO:
+                continue
+            change = {"contract_id": contract_id, "role": role, "from_account": old, "to_account": new, "opening_balance": amount(opening), "treatment": transition}
+            if old_dimensions or current_dimensions:
+                change.update(from_dimensions=old_dimensions.copy(), to_dimensions=current_dimensions.copy())
+            transitions.append(change)
+            if transition == "transfer":
+                direction = ONE if role == "deferred_revenue" else -ONE
+                entry(role, old, opening * direction, f"{report['name']} — transfer opening {ACCOUNT_NAMES[role].lower()} from {old} to {new}", ":transfer-out", dimensions=old_dimensions, profile_id=previous_assignments.get(contract_id, ""))
+                entry(role, new, -opening * direction, f"{report['name']} — transfer opening {ACCOUNT_NAMES[role].lower()} from {old} to {new}", ":transfer-in", dimensions=current_dimensions, profile_id=current_profile_id or "")
+            else:
+                warnings.append(f"{report['name']}: reconcile external transfer of {amount(opening)} {ACCOUNT_NAMES[role].lower()} from {old} to {new} for {period}, including segment dimensions.")
+        for role in ("contract_asset", "deferred_revenue"):
+            closing = decimal(report[role])
+            if closing:
+                positions.append({"contract_id": contract_id, "role": role,
+                                  "account": _resolved_account(accounts, overrides, contract_id, role, profiles=profiles, assignments=assignments),
+                                  "dimensions": current_dimensions.copy(), "account_profile_id": current_profile_id,
+                                  "balance": amount(closing)})
     dimension_nets: dict[tuple[tuple[str, str], ...], int] = defaultdict(int)
     for row in result:
         dimension_nets[tuple(sorted(row.get("dimensions", {}).items()))] += row["debit_minor"] - row["credit_minor"]
@@ -1305,18 +1409,12 @@ def _journals(report: dict, period: str, accounts: dict[str, str], overrides: di
                           for dimensions, net in sorted(dimension_nets.items()) if net]
     if segment_imbalances:
         warnings.append(f"{report['name']}: journal balances overall but not by dimension combination; confirm the destination ledger's interunit balancing rules or prepare separate balancing entries before posting.")
-    positions = []
-    for role in ("contract_asset", "deferred_revenue"):
-        closing = decimal(report[role])
-        if closing:
-            positions.append({"contract_id": contract_id, "role": role,
-                              "account": _resolved_account(accounts, overrides, contract_id, role, profiles=profiles, assignments=assignments),
-                              "dimensions": current_dimensions.copy(), "account_profile_id": current_profile_id,
-                              "balance": amount(closing)})
-    return result, transitions, warnings, segment_imbalances, positions
+    if sum((row["debit_minor"] - row["credit_minor"] for row in result), 0) != 0:
+        raise ValueError(f"Journal does not balance for contract {contract_id}")
+    return result, transitions, warnings, segment_imbalances, positions, runoff_pending
 
 
-def calculate(state: dict, period: str) -> dict:
+def calculate(state: dict, period: str, _runoff_cache: dict[str, dict] | None = None) -> dict:
     """Project every contract and derive balanced journals for a selected month.
 
 The supplied state is the already selected temporal/scenario frontier. This
@@ -1340,6 +1438,9 @@ spreads the residual allocation across remaining satisfaction; a subsequent
 catch-up conclusion supersedes that prior cumulative carrying amount.
     """
     period_end(period)
+    runoff_cache = _runoff_cache if _runoff_cache is not None else {}
+    if period in runoff_cache:
+        return runoff_cache[period]
     policy = state.get("policy", {})
     versions = state.get("policy_versions", [])
     if versions:
@@ -1356,6 +1457,24 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
     obligation_assignments = policy.get("obligation_profile_assignments", {})
     year, month = (int(part) for part in period.split("-"))
     previous_period = f"{year - 1:04d}-12" if month == 1 else f"{year:04d}-{month - 1:02d}"
+    # No account route can carry a balance before its contract enters this
+    # workspace's accounting population. This also avoids replaying from an
+    # ancient policy date when the first relevant contract begins much later.
+    population_start = min(((contract.get("cutover_date") or contract["start_date"])[:7]
+                            for contract in state.get("contracts", [])), default=period)
+    runoff_months = [row["effective_period"] for row in versions
+                     if row.get("account_transition") == "runoff" and population_start <= row["effective_period"] <= period]
+    first_runoff = min(runoff_months) if runoff_months else None
+    previous_runoff_report = (calculate(state, previous_period, runoff_cache)
+                              if first_runoff and first_runoff < period else None)
+    previous_positions_by_contract: dict[str, list[dict]] = defaultdict(list)
+    if previous_runoff_report:
+        for row in previous_runoff_report["account_positions"]:
+            previous_positions_by_contract[row["contract_id"]].append(row)
+    allocations_by_contract: dict[str, dict[str, dict]] = defaultdict(dict)
+    for allocation in state.get("runoff_allocations", []):
+        if allocation["period"] == period:
+            allocations_by_contract[allocation["contract_id"]][allocation["role"]] = allocation
     previous_policy = max((row for row in versions if row.get("effective_period", "0001-01") <= previous_period), key=lambda row: (row.get("effective_period", "0001-01"), row.get("version", 0)), default={})
     previous_accounts = {**DEFAULT_ACCOUNTS, **(previous_policy or policy).get("accounts", {})}
     previous_overrides = (previous_policy or policy).get("account_overrides", {"contracts": {}, "obligations": {}})
@@ -1363,7 +1482,7 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
     previous_assignments = (previous_policy or policy).get("profile_assignments", {})
     if any(not str(accounts[role]).strip() for role in DEFAULT_ACCOUNTS):
         raise ValueError("All four journal account roles require an account code")
-    report: dict[str, Any] = {"period": period, "summary": {}, "contracts": [], "schedule": [], "journals": [], "account_transitions": [], "account_positions": [], "segment_imbalances": [], "account_dimension_exceptions": [], "account_dimension_unvalidated_accounts": [], "warnings": [], "warning_details": [], "catch_ups": [], "renewal_links": [], "modification_links": [],
+    report: dict[str, Any] = {"period": period, "summary": {}, "contracts": [], "schedule": [], "journals": [], "account_transitions": [], "account_positions": [], "runoff_pending": [], "runoff_unresolved": list(previous_runoff_report.get("runoff_unresolved", [])) if previous_runoff_report else [], "runoff_active": bool(first_runoff), "segment_imbalances": [], "account_dimension_exceptions": [], "account_dimension_unvalidated_accounts": [], "warnings": [], "warning_details": [], "catch_ups": [], "renewal_links": [], "modification_links": [],
                               "policy_version": policy.get("version", 1), "policy_effective_period": policy.get("effective_period", "0001-01"),
                               "policy_accounts": accounts, "policy_account_overrides": overrides,
                               "policy_account_profiles": profiles, "policy_profile_assignments": assignments, "policy_obligation_profile_assignments": obligation_assignments,
@@ -1394,10 +1513,16 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
             report["catch_ups"].extend(catch_ups)
             for warning in warnings:
                 record_warning(warning["message"], warning.get("contract_id"), warning.get("obligation_id"))
-            journals, transitions, transition_warnings, segment_imbalances, positions = _journals(projection, period, accounts, overrides, profiles, assignments, obligation_assignments, schedule, previous_accounts, previous_overrides, previous_profiles, previous_assignments, policy.get("account_transition", "external"))
+            journals, transitions, transition_warnings, segment_imbalances, positions, runoff_pending = _journals(
+                projection, period, accounts, overrides, profiles, assignments, obligation_assignments, schedule,
+                previous_accounts, previous_overrides, previous_profiles, previous_assignments,
+                policy.get("account_transition", "external"), previous_positions=previous_positions_by_contract[contract["id"]],
+                runoff_allocations=allocations_by_contract[contract["id"]], runoff_active=bool(first_runoff))
             report["journals"].extend(journals)
             report["account_transitions"].extend(transitions)
             report["account_positions"].extend(positions)
+            report["runoff_pending"].extend(runoff_pending)
+            report["runoff_unresolved"].extend(runoff_pending)
             for warning in transition_warnings:
                 record_warning(warning, contract["id"])
             report["segment_imbalances"].extend(segment_imbalances)
@@ -1485,4 +1610,5 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
             unique_warnings.append(detail)
     report["warnings"] = [detail["message"] for detail in unique_warnings]
     report["warning_details"] = unique_warnings
+    runoff_cache[period] = report
     return report

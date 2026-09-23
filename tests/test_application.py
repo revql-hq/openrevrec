@@ -2030,6 +2030,132 @@ def test_balance_account_change_with_zero_opening_needs_no_transfer(tmp_path):
     assert sum(row["debit_minor"] - row["credit_minor"] for row in october["journals"]) == 0
 
 
+def test_reviewed_deferred_account_runoff_allocates_each_month_without_transfer(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "contract", "name": "Quarterly service", "customer_id": "customer",
+        "start_date": "2026-09-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "400.00"}],
+        "obligations": [{"id": "service", "name": "Service", "kind": "service", "ssp": "400.00", "method": "monthly", "start_date": "2026-09-01", "end_date": "2026-12-31"}],
+    }, period="2026-09")
+    application.execute("record_billing", {"contract_id": "contract", "effective_date": "2026-09-01", "amount": "300.00"}, period="2026-09")
+    application.execute("record_billing", {"contract_id": "contract", "effective_date": "2026-10-01", "amount": "100.00"}, period="2026-10")
+    september_journals = application.state(period="2026-09")["report"]["journals"]
+    application.execute("set_policy", {"effective_period": "2026-10", "accounts": {"deferred_revenue": "2310"},
+                                       "account_transition": "runoff", "rationale": "Keep the existing liability in its historical account."}, period="2026-10")
+    provisional = application.state(period="2026-10")["report"]
+    assert provisional["account_transitions"][0]["treatment"] == "runoff"
+    assert not any(":transfer" in row["id"] for row in provisional["journals"])
+    assert len(provisional["runoff_pending"]) == 1
+    assert next(check for check in application.reports(period="2026-10")["checks"] if check["id"] == "account_runoff")["status"] == "block"
+    assert any(item["period"] == "2026-10" for item in application.state(period="2026-11")["report"]["runoff_unresolved"])
+    assert next(check for check in application.reports(period="2026-11")["checks"] if check["id"] == "account_runoff")["status"] == "block"
+    january = application.state(period="2027-01")["report"]
+    assert january["runoff_pending"] == [] and any(item["period"] == "2026-10" for item in january["runoff_unresolved"])
+    assert next(check for check in application.reports(period="2027-01")["checks"] if check["id"] == "account_runoff")["status"] == "block"
+    draft_book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-10"))), read_only=True)
+    assert draft_book["Account runoff"]["A2"].value == "Provisional - do not post"
+    assert draft_book["Posting guide"]["A2"].value == "Draft account runoff"
+    draft_book.close()
+    routes = [
+        {"account": "2300", "dimensions": {}, "balance": "100.00"},
+        {"account": "2310", "dimensions": {}, "balance": "100.00"},
+    ]
+    with pytest.raises(ValueError, match="does not reconcile"):
+        application.execute("record_account_runoff", {"contract_id": "contract", "role": "deferred_revenue", "period": "2026-10",
+                                                      "positions": [{**routes[0], "balance": "200.00"}, routes[1]], "rationale": "Invalid split"}, period="2026-10")
+    application.execute("record_account_runoff", {"contract_id": "contract", "role": "deferred_revenue", "period": "2026-10",
+                                                  "positions": routes, "rationale": "Release half of the historical deferral this month."}, period="2026-10")
+    october = application.state(period="2026-10")["report"]
+    assert october["runoff_pending"] == []
+    assert next(check for check in application.reports(period="2026-10")["checks"] if check["id"] == "account_runoff")["status"] == "pass"
+    assert {(row["account"], row["balance"]) for row in october["account_positions"]} == {("2300", "100.00"), ("2310", "100.00")}
+    assert {(row["account"], row["debit"], row["credit"]) for row in october["journals"] if row["role"] == "deferred_revenue"} == {("2300", "100.00", "0.00"), ("2310", "0.00", "100.00")}
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in october["journals"]) == 0
+    accepted_book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-10"))), read_only=True)
+    assert [row[0] for row in list(accepted_book["Account runoff"].values)[1:]] == ["Recorded", "Recorded"]
+    assert {row[4] for row in list(accepted_book["Account runoff"].values)[1:]} == {"2300", "2310"}
+    accepted_book.close()
+    assert application.state(period="2026-09")["report"]["journals"] == september_journals
+    assert len(application.state(period="2026-11")["report"]["runoff_pending"]) == 1
+    application.execute("record_account_runoff", {"contract_id": "contract", "role": "deferred_revenue", "period": "2026-11",
+                                                  "positions": [{**routes[0], "balance": "0.00"}, routes[1]],
+                                                  "rationale": "Remaining historical obligation delivered in November."}, period="2026-11")
+    november = application.state(period="2026-11")["report"]
+    assert november["runoff_pending"] == []
+    assert [(row["account"], row["balance"]) for row in november["account_positions"]] == [("2310", "100.00")]
+    with pytest.raises(ValueError, match="No historical"):
+        application.execute("record_account_runoff", {"contract_id": "contract", "role": "deferred_revenue", "period": "2026-10",
+                                                      "positions": [{**routes[0], "balance": "0.00"}, {**routes[1], "balance": "200.00"}],
+                                                      "rationale": "Would invalidate the accepted November allocation."}, period="2026-10")
+    assert {(row["account"], row["balance"]) for row in application.state(period="2026-10")["report"]["account_positions"]} == {("2300", "100.00"), ("2310", "100.00")}
+    assert application.state(period="2026-12")["report"]["runoff_pending"] == []
+    assert application.state(period="2026-12")["report"]["account_positions"] == []
+    application.execute("close_period", {"period": "2026-10", "review_dispositions": accept_review_items(application, "2026-10")}, period="2026-10")
+    checkpoint = application.state(period="2026-10")["report"]
+    assert checkpoint["runoff_pending"] == []
+    assert {(row["account"], row["balance"]) for row in checkpoint["account_positions"]} == {("2300", "100.00"), ("2310", "100.00")}
+    with pytest.raises(ValueError, match="Reopen closed periods"):
+        application.execute("record_account_runoff", {"contract_id": "contract", "role": "deferred_revenue", "period": "2026-10",
+                                                      "positions": routes, "rationale": "Cannot revise an accepted close."}, period="2026-10")
+
+
+def test_asset_runoff_can_retain_old_dimension_and_later_transfer_every_route(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "contract", "name": "Quarterly service", "customer_id": "customer",
+        "start_date": "2026-09-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "400.00"}],
+        "obligations": [{"id": "service", "name": "Service", "kind": "service", "ssp": "400.00", "method": "monthly", "start_date": "2026-09-01", "end_date": "2026-12-31"}],
+    }, period="2026-09")
+    application.execute("set_policy", {"effective_period": "2026-09", "account_profiles": {"old": {"name": "Old", "accounts": {"contract_asset": "1200"}, "dimensions": {"Department": "Old"}}},
+                                       "profile_assignments": {"contract": "old"}}, period="2026-09")
+    application.execute("set_policy", {"effective_period": "2026-10", "account_profiles": {"old": {"name": "Old", "accounts": {"contract_asset": "1200"}, "dimensions": {"Department": "Old"}},
+                                                                                       "new": {"name": "New", "accounts": {"contract_asset": "1210"}, "dimensions": {"Department": "New"}}},
+                                       "profile_assignments": {"contract": "new"}, "account_transition": "runoff", "rationale": "Carry the old asset by department."}, period="2026-10")
+    pending = application.state(period="2026-10")["report"]["runoff_pending"]
+    assert len(pending) == 1 and pending[0]["role"] == "contract_asset"
+    positions = [{"account": row["account"], "dimensions": row["dimensions"], "account_profile_id": row.get("account_profile_id"),
+                  "balance": "50.00" if row["account"] == "1200" else "150.00"} for row in pending[0]["positions"]]
+    with pytest.raises(ValueError, match="cannot increase"):
+        application.execute("record_account_runoff", {"contract_id": "contract", "role": "contract_asset", "period": "2026-10",
+                                                      "positions": [{**row, "balance": "150.00" if row["account"] == "1200" else "50.00"} for row in positions],
+                                                      "rationale": "Invalid increase to an old account."}, period="2026-10")
+    application.execute("record_account_runoff", {"contract_id": "contract", "role": "contract_asset", "period": "2026-10", "positions": positions,
+                                                  "rationale": "Allocate the old asset to the remaining prior service."}, period="2026-10")
+    october = application.state(period="2026-10")["report"]
+    assert {(row["account"], row["dimensions"]["Department"], row["balance"]) for row in october["account_positions"]} == {
+        ("1200", "Old", "50.00"), ("1210", "New", "150.00")}
+    assert {(row["account"], row["debit"], row["credit"]) for row in october["journals"] if row["role"] == "contract_asset"} == {
+        ("1200", "0.00", "50.00"), ("1210", "150.00", "0.00")}
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in october["journals"]) == 0
+    application.execute("set_policy", {"effective_period": "2026-11", "account_profiles": {"old": {"name": "Old", "accounts": {"contract_asset": "1200"}, "dimensions": {"Department": "Old"}},
+                                                                                       "new": {"name": "New", "accounts": {"contract_asset": "1220"}, "dimensions": {"Department": "New"}}},
+                                       "account_transition": "transfer", "rationale": "Transfer the full asset to the replacement account."}, period="2026-11")
+    november = application.state(period="2026-11")["report"]
+    assert len([row for row in november["account_transitions"] if row["role"] == "contract_asset"]) == 2
+    assert [(row["account"], row["balance"]) for row in november["account_positions"]] == [("1220", "300.00")]
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in november["journals"]) == 0
+
+
+def test_runoff_policy_before_population_does_not_replay_empty_history(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "contract", "name": "New service", "customer_id": "customer",
+        "start_date": "2026-09-01", "end_date": "2026-09-30",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "100.00"}],
+        "obligations": [{"id": "service", "name": "Service", "kind": "service", "ssp": "100.00", "method": "monthly", "start_date": "2026-09-01", "end_date": "2026-09-30"}],
+    }, period="2026-09")
+    application.execute("set_policy", {"effective_period": "1900-01", "accounts": {"contract_asset": "1210"},
+                                       "account_transition": "runoff", "rationale": "Initial route predates this accounting population."}, period="2026-09")
+    report = application.state(period="2026-09")["report"]
+    assert report["runoff_active"] is False
+    assert report["summary"]["revenue"] == "100.00"
+
+
 def test_reusable_account_profile_maps_multiple_contracts_and_balances_dimension_change(tmp_path):
     application = app(tmp_path)
     seed(application)

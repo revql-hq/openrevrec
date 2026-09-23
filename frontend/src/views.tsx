@@ -1677,6 +1677,30 @@ export function JournalView(props: ViewProps) {
           onContract={(id) => props.navigate("Contracts", id)}
         />
       </Section>
+      {Boolean(state.report.runoff_unresolved?.some((item) => item.period !== props.period)) && <Section title="Earlier runoff allocations still needed" subtitle="The current journal carries provisional balances from these months. Select each month in the period picker, record its account split, and review the resulting journals before close.">
+        <div className="table-wrap"><table><thead><tr><th>Month</th><th>Contract</th><th>Balance</th></tr></thead><tbody>{state.report.runoff_unresolved?.filter((item) => item.period !== props.period).map((item) => <tr key={`${item.period}:${item.contract_id}:${item.role}`}>
+          <td>{monthLabel(item.period)}</td>
+          <td>{state.contracts.find((contract) => contract.id === item.contract_id)?.name || item.contract_id}</td>
+          <td>{humanize(item.role)}</td>
+        </tr>)}</tbody></table></div>
+      </Section>}
+      {Boolean(state.report.runoff_pending?.length) && <Section title="Historical account runoff needs allocation" subtitle="These account splits are provisional. Record a supported closing balance for each account before closing or posting this period.">
+        <div className="table-wrap"><table><thead><tr><th>Contract</th><th>Balance</th><th className="number">Closing total</th><th>Action</th></tr></thead><tbody>{state.report.runoff_pending?.map((item) => <tr key={`${item.contract_id}:${item.role}`}>
+          <td><button className="table-link" onClick={() => props.navigate("Contracts", item.contract_id)}>{state.contracts.find((contract) => contract.id === item.contract_id)?.name || item.contract_id}</button></td>
+          <td>{humanize(item.role)}</td>
+          <td className="number">{money(item.closing_balance, state.workspace.currency)}</td>
+          <td><Button type="button" disabled={state.scenario_id !== "main"} onClick={() => props.dialog({ type: "account_runoff", contractId: item.contract_id, action: item.role })}>Allocate accounts</Button></td>
+        </tr>)}</tbody></table></div>
+      </Section>}
+      {Boolean(state.runoff_allocations?.some((item) => item.period === props.period)) && <Section title="Recorded account runoff" subtitle="Review each contract's account split and rationale. A revised allocation creates a new change set and needs review before close.">
+        <div className="table-wrap"><table><thead><tr><th>Contract</th><th>Balance</th><th>Account balances</th><th>Rationale</th><th>Action</th></tr></thead><tbody>{state.runoff_allocations?.filter((item) => item.period === props.period).map((item) => <tr key={`${item.contract_id}:${item.role}`}>
+          <td><button className="table-link" onClick={() => props.navigate("Contracts", item.contract_id)}>{state.contracts.find((contract) => contract.id === item.contract_id)?.name || item.contract_id}</button></td>
+          <td>{humanize(item.role)}</td>
+          <td>{item.positions.map((position) => `${position.account}: ${money(position.balance, state.workspace.currency)}`).join(" · ")}</td>
+          <td>{item.rationale}</td>
+          <td><Button type="button" disabled={state.scenario_id !== "main" || Boolean(state.closes?.some((close) => close.period === props.period && close.status === "closed"))} onClick={() => props.dialog({ type: "account_runoff", contractId: item.contract_id, action: item.role })}>Revise</Button></td>
+        </tr>)}</tbody></table></div>
+      </Section>}
       {Boolean(state.report.account_transitions?.length) && <Section title="Opening balance transitions" subtitle="Review how each prior-month balance moves when an account or contract dimension changes. External reconciliations require a separate ledger posting.">
         <div className="table-wrap"><table><thead><tr><th>Contract</th><th>Role</th><th>From</th><th>To</th><th className="number">Opening balance</th><th>Treatment</th></tr></thead><tbody>{state.report.account_transitions?.map((item, index) => <tr key={`${item.contract_id}:${item.role}:${index}`}>
           <td><button className="table-link" onClick={() => props.navigate("Contracts", item.contract_id)}>{state.contracts.find((contract) => contract.id === item.contract_id)?.name || item.contract_id}</button></td>
@@ -1687,7 +1711,7 @@ export function JournalView(props: ViewProps) {
           <td>{item.treatment === "transfer" ? "Journal transfer" : item.treatment === "external" ? "External reconciliation" : humanize(item.treatment)}</td>
         </tr>)}</tbody></table></div>
       </Section>}
-      {Boolean(state.report.account_positions?.length) && <Section title="Projected contract balances by account" subtitle="These balances follow the workspace's account mapping and assume any selected external transfer was completed in the ledger. Reconcile them to the ledger before posting.">
+      {Boolean(state.report.account_positions?.length) && <Section title="Projected contract balances by account" subtitle={state.report.runoff_pending?.length ? "This period includes provisional account splits above. Allocate them before close or posting, then reconcile every account to the ledger." : "These balances reflect the recorded account allocations and mapping. Confirm any external transfer in the ledger and reconcile before posting."}>
         <div className="table-wrap"><table><thead><tr><th>Contract</th><th>Role</th><th>Account</th><th>Dimensions</th><th className="number">Closing balance</th></tr></thead><tbody>{state.report.account_positions?.map((item, index) => <tr key={`${item.contract_id}:${item.role}:${item.account}:${index}`}>
           <td><button className="table-link" onClick={() => props.navigate("Contracts", item.contract_id)}>{state.contracts.find((contract) => contract.id === item.contract_id)?.name || item.contract_id}</button></td>
           <td>{humanize(item.role)}</td>

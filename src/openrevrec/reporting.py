@@ -252,6 +252,11 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
                "Every judgment change has a supported review record." if not unsupported_judgments else f"{len(unsupported_judgments)} judgment change(s) lack a supported review record or have an open exception.",
                "review", len(unsupported_judgments)),
     ]
+    if report.get("runoff_active"):
+        pending_runoff = report.get("runoff_unresolved", report.get("runoff_pending", []))
+        checks.insert(3, _check("account_runoff", "Historical account runoff allocated", not pending_runoff,
+                                "Every historical account balance has an explicit closing allocation." if not pending_runoff else f"{len(pending_runoff)} contract-period balance(s) need an account allocation before close, including earlier periods.",
+                                "block", len(pending_runoff)))
     if report.get("policy_account_dimension_rules"):
         invalid = report.get("account_dimension_exceptions", [])
         uncovered = report.get("account_dimension_unvalidated_accounts", [])
@@ -267,6 +272,7 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
         "account_dimensions": {"view": "Journal entries"},
         "allocation": {"view": "Contracts", "id": allocation_mismatches[0]["id"], "tab": "Allocation"} if allocation_mismatches else {"view": "Contracts"},
         "cutover": {"view": "Contracts", "id": pending_cutovers[0]["id"], "tab": "Overview"} if pending_cutovers else {"view": "Contracts"},
+        "account_runoff": {"view": "Journal entries"},
         "external_controls": {"view": "Reports", "tab": "External controls"},
         "source_population": {"view": "Reports", "tab": "Source population"},
         "warnings": {"view": "Contracts", "id": warning_targets[0]["contract_id"], "tab": "Recognition", "obligation_id": warning_targets[0]["obligation_id"]} if warning_targets and warning_targets[0]["contract_id"] else {"view": "Revenue"},

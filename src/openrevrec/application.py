@@ -25,8 +25,8 @@ ACTIVITY_TYPES = {
 }
 SCENARIO_COMMANDS = {"create_scenario", "apply_scenario", "rebase_scenario", "archive_scenario", "restore_scenario"}
 CORRECTABLE_COMMANDS = {"record_billing", "record_progress", "record_usage", "record_milestone", "record_rate_change"}
-JUDGMENT_COMMANDS = {"create_contract", "record_opening_position", "record_right_exercise", "link_renewal_contract", "link_modification_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "record_rate_change", "set_policy", "reopen_period"}
-COMMANDS = {"create_customer", "create_contract", "link_renewal_contract", "link_modification_contract", "set_policy", "record_control_totals", "record_population_manifest", "record_export_posting", "record_term_review", "close_period", "reopen_period", "add_note", "edit_note", "edit_details", "attach_evidence", "record_judgment_review", "correct_activity"} | set(ACTIVITY_TYPES) | SCENARIO_COMMANDS
+JUDGMENT_COMMANDS = {"create_contract", "record_opening_position", "record_right_exercise", "link_renewal_contract", "link_modification_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "record_rate_change", "record_account_runoff", "set_policy", "reopen_period"}
+COMMANDS = {"create_customer", "create_contract", "link_renewal_contract", "link_modification_contract", "set_policy", "record_account_runoff", "record_control_totals", "record_population_manifest", "record_export_posting", "record_term_review", "close_period", "reopen_period", "add_note", "edit_note", "edit_details", "attach_evidence", "record_judgment_review", "correct_activity"} | set(ACTIVITY_TYPES) | SCENARIO_COMMANDS
 DEFAULT_ACCOUNTS = {"revenue": "4000", "deferred_revenue": "2300", "contract_asset": "1200", "billing_clearing": "1100"}
 DESCRIPTIVE_COMMANDS = {"edit_details", "add_note", "edit_note", "attach_evidence", "record_judgment_review"}
 
@@ -175,7 +175,7 @@ class Application:
         baseline_policy = {"version": 1, "effective_period": "0001-01", "currency": meta["currency"], "rounding": "ROUND_HALF_UP", "ruleset_version": "orr-0.1", "accounts": DEFAULT_ACCOUNTS.copy(), "account_changes": DEFAULT_ACCOUNTS.copy(), "account_overrides": {"contracts": {}, "obligations": {}}, "override_changes": {}, "account_profiles": {}, "profile_changes": {}, "profile_assignments": {}, "profile_assignment_changes": {}, "obligation_profile_assignments": {}, "obligation_profile_assignment_changes": {}, "account_dimension_rules": [], "account_dimension_source": ""}
         state = {"workspace": meta, "scenario_id": scenario_id,
                  "policy": baseline_policy, "policy_versions": [baseline_policy],
-                 "customers": [], "contracts": [], "renewal_links": [], "modification_links": [], "notes": [], "evidence": [], "judgment_reviews": [], "term_reviews": [], "closes": [], "controls": [], "population_manifests": [], "postings": []}
+                 "customers": [], "contracts": [], "renewal_links": [], "modification_links": [], "runoff_allocations": [], "notes": [], "evidence": [], "judgment_reviews": [], "term_reviews": [], "closes": [], "controls": [], "population_manifests": [], "postings": []}
         rows = self._rows(db, scenario_id, frontier)
         customers, contracts, notes, closes = {}, {}, {}, {}
         for row in rows:
@@ -235,6 +235,10 @@ class Application:
                 state["judgment_reviews"].append({**p, "recorded_at": row["recorded_at"], "change_set_id": row["id"], "scenario_id": row["scenario_id"]})
             elif command == "record_term_review":
                 state["term_reviews"].append({**p, "version": row["version"], "recorded_at": row["recorded_at"], "change_set_id": row["id"], "scenario_id": row["scenario_id"]})
+            elif command == "record_account_runoff":
+                state["runoff_allocations"] = [item for item in state["runoff_allocations"]
+                                               if (item["contract_id"], item["role"], item["period"]) != (p["contract_id"], p["role"], p["period"])]
+                state["runoff_allocations"].append({**p, "version": row["version"], "recorded_at": row["recorded_at"], "change_set_id": row["id"]})
             elif command == "record_control_totals":
                 state["controls"] = [item for item in state["controls"] if item["period"] != p["period"]]
                 state["controls"].append({**p, "recorded_at": row["recorded_at"], "change_set_id": row["id"]})
@@ -336,6 +340,9 @@ class Application:
                     report.update({k: snapshot[k] for k in ("summary", "contracts", "journals", "warnings")})
                     report["warning_details"] = snapshot.get("warning_details", [])
                     report["account_transitions"] = snapshot.get("account_transitions", [])
+                    report["runoff_pending"] = snapshot.get("runoff_pending", [])
+                    report["runoff_unresolved"] = snapshot.get("runoff_unresolved", snapshot.get("runoff_pending", []))
+                    report["runoff_active"] = snapshot.get("runoff_active", False)
                     if "account_positions" in snapshot:
                         report["account_positions"] = snapshot["account_positions"]
                     else:
@@ -799,8 +806,8 @@ class Application:
                     p.pop("account_dimension_source")
             elif "account_dimension_source" in p:
                 raise ValueError("The account-dimension source must accompany its approved combinations.")
-            if p.get("account_transition") not in (None, "transfer", "external"):
-                raise ValueError("Choose transfer or external reconciliation for existing balance-sheet positions.")
+            if p.get("account_transition") not in (None, "transfer", "external", "runoff"):
+                raise ValueError("Choose transfer, external reconciliation, or reviewed runoff for existing balance-sheet positions.")
             effective_year, effective_month = (int(part) for part in p["effective_period"].split("-"))
             if (effective_year, effective_month) == (1, 1):
                 previous_period = None
@@ -834,7 +841,7 @@ class Application:
                 opening_balances = {row["id"]: row for row in previous_report["contracts"]}
                 if any(Decimal(opening_balances.get(contract_id, {}).get(role, "0")) != 0
                        for contract_id, role in changed_balance_routes):
-                    raise ValueError("Choose how existing balance-sheet balances move to the new account: transfer or external reconciliation.")
+                    raise ValueError("Choose how existing balance-sheet balances move to the new account: transfer, external reconciliation, or reviewed runoff.")
             if not p.get("account_transition"):
                 p.pop("account_transition", None)
             latest_closed = max((c["period"] for c in state["closes"] if c["status"] == "closed"), default=None)
@@ -947,6 +954,47 @@ class Application:
                 valid_date(p["next_review_date"], "Next review date")
                 if p["next_review_date"] <= p["effective_date"]:
                     raise ValueError("Next review date must follow the completed review.")
+        elif command == "record_account_runoff":
+            if set(p) - {"contract_id", "role", "period", "positions", "rationale"}:
+                raise ValueError("Account runoff allocation has unsupported fields.")
+            if not any(contract["id"] == p.get("contract_id") for contract in state["contracts"]):
+                raise ValueError("Choose an existing contract for account runoff.")
+            if p.get("role") not in {"contract_asset", "deferred_revenue"}:
+                raise ValueError("Account runoff applies to a contract asset or deferred revenue balance.")
+            p["period"] = valid_period(p.get("period"))
+            if not any(policy.get("account_transition") == "runoff" and policy["effective_period"] <= p["period"]
+                       for policy in state["policy_versions"]):
+                raise ValueError("Choose reviewed runoff in accounting policy before allocating account balances.")
+            if scenario_id == "main" and any(close["status"] == "closed" and close["period"] >= p["period"] for close in state["closes"]):
+                raise ValueError("Reopen closed periods before revising their account runoff allocation.")
+            p["rationale"] = required_text(p, "rationale")
+            if not isinstance(p.get("positions"), list) or not p["positions"]:
+                raise ValueError("Provide the closing balance for each account route in this runoff allocation.")
+            normalized_positions, seen_routes = [], set()
+            for item in p["positions"]:
+                if not isinstance(item, dict) or set(item) - {"account", "dimensions", "account_profile_id", "balance"}:
+                    raise ValueError("Each runoff position needs an account, dimensions, and closing balance.")
+                account, dimensions = item.get("account"), item.get("dimensions", {})
+                profile_id = item.get("account_profile_id") or None
+                if not isinstance(account, str) or not account.strip() or not isinstance(dimensions, dict):
+                    raise ValueError("Runoff account and dimensions must be named.")
+                if profile_id is not None and (not isinstance(profile_id, str) or not profile_id.strip()):
+                    raise ValueError("Runoff profile ID must be text.")
+                if any(not isinstance(key, str) or not key.strip() or not isinstance(value, str) or not value.strip() for key, value in dimensions.items()):
+                    raise ValueError("Runoff dimensions need nonempty names and values.")
+                normalized_dimensions = {key.strip(): value.strip() for key, value in dimensions.items()}
+                if len(normalized_dimensions) != len(dimensions):
+                    raise ValueError("Runoff dimension names must be unique after trimming spaces.")
+                route = (account.strip(), tuple(sorted(normalized_dimensions.items())))
+                if route in seen_routes:
+                    raise ValueError("A runoff account route can appear only once per allocation.")
+                seen_routes.add(route)
+                balance = decimal_string(item.get("balance"), "Closing balance", True)
+                if Decimal(balance) != Decimal(balance).quantize(Decimal("0.01")):
+                    raise ValueError("Runoff closing balances must be stated in cents.")
+                normalized_positions.append({"account": route[0], "dimensions": normalized_dimensions,
+                                             "account_profile_id": profile_id, "balance": f"{Decimal(balance):.2f}"})
+            p["positions"] = normalized_positions
         elif command == "record_control_totals":
             if scenario_id != "main":
                 raise ValueError("External control totals belong to Main, not a scenario.")
@@ -1136,9 +1184,13 @@ class Application:
         p = self._prepare(db, command, payload, scenario_id)
         result = self._append(db, command, p, scenario_id, source, idempotency_key, request_hash, originating_change_set_id)
         after = self._project(db, scenario_id)
-        if command in ACTIVITY_TYPES or command in {"create_contract", "link_renewal_contract", "link_modification_contract", "set_policy", "correct_activity"}:
+        if command in ACTIVITY_TYPES or command in {"create_contract", "link_renewal_contract", "link_modification_contract", "set_policy", "record_account_runoff", "correct_activity"}:
             # Full replay validates progress, allocation, usage and amendments together.
-            _calculation(after, p.get("effective_date", p.get("start_date", date.today().isoformat()))[:7])
+            changed_period = p.get("effective_date", p.get("start_date", p.get("effective_period", p.get("period", date.today().isoformat()))))[:7]
+            _calculation(after, changed_period)
+            later_allocations = [item["period"] for item in after["runoff_allocations"] if item["period"] > changed_period]
+            if later_allocations:
+                _calculation(after, max(later_allocations))
             if scenario_id == "main":
                 self._validate_closed(db, before, after)
         if command == "close_period":

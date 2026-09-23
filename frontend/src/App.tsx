@@ -36,6 +36,7 @@ import {
   LifecycleForm,
   CloseForm,
   NoteForm,
+  AccountRunoffForm,
   PolicyForm,
   DetailsForm,
 } from "./forms";
@@ -78,6 +79,7 @@ export type Dialog = {
     | "lifecycle"
     | "close"
     | "note"
+    | "account_runoff"
     | "policy"
     | "workspace"
     | "details";
@@ -527,6 +529,9 @@ export default function App() {
           )}{" "}
           {dialog.type === "note" && (
             <NoteForm {...formProps} entityId={dialog.entityId} />
+          )}{" "}
+          {dialog.type === "account_runoff" && dialog.contractId && (dialog.action === "contract_asset" || dialog.action === "deferred_revenue") && (
+            <AccountRunoffForm {...formProps} contractId={dialog.contractId} role={dialog.action} />
           )}{" "}
           {dialog.type === "policy" && <PolicyForm {...formProps} />}{" "}
           {dialog.type === "details" && detailEntity && (
