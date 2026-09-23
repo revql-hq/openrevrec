@@ -2004,6 +2004,68 @@ def test_scenario_rebase_keeps_same_obligation_progress_in_conflict(tmp_path):
         application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-01")
 
 
+def test_scenario_rebase_combines_separate_dated_progress_on_one_obligation(tmp_path):
+    application = _two_progress_obligations(tmp_path)
+    scenario = application.execute("create_scenario", {"name": "Later build progress"})["result"]["id"]
+    application.execute("record_progress", {**_progress_fact("build", "50"), "effective_date": "2026-02-15"},
+                        scenario_id=scenario, period="2026-02")
+    application.execute("record_progress", _progress_fact("build", "20"), period="2026-01")
+    assert application.compare(scenario, "2026-02")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-02")
+    application.execute("apply_scenario", {"scenario_id": scenario}, period="2026-02")
+    assert application.state(period="2026-01")["report"]["summary"]["revenue"] == "100.00"
+    report = application.state(period="2026-02")["report"]
+    assert report["summary"]["revenue"] == "150.00"
+    assert report["summary"]["recognized_to_date"] == "250.00"
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in report["journals"]) == 0
+
+
+def test_scenario_rebase_keeps_reused_progress_source_in_conflict(tmp_path):
+    application = _two_progress_obligations(tmp_path)
+    scenario = application.execute("create_scenario", {"name": "Later build progress"})["result"]["id"]
+    application.execute("record_progress", {**_progress_fact("build", "50"), "effective_date": "2026-02-15",
+                                            "reference": "STATUS-1"}, scenario_id=scenario, period="2026-02")
+    application.execute("record_progress", {**_progress_fact("build", "20"), "reference": "STATUS-1"}, period="2026-01")
+    assert application.compare(scenario, "2026-02")["conflicts"]
+
+
+def test_scenario_rebase_combines_corrections_to_different_dated_progress(tmp_path):
+    application = _two_progress_obligations(tmp_path)
+    january = application.execute("record_progress", _progress_fact("build", "10"), period="2026-01")["result"]["change_set_id"]
+    february = application.execute("record_progress", {**_progress_fact("build", "30"), "effective_date": "2026-02-15"},
+                                   period="2026-02")["result"]["change_set_id"]
+    scenario = application.execute("create_scenario", {"name": "Correct January progress"})["result"]["id"]
+    application.execute("correct_activity", {"target_change_set_id": january, "rationale": "Correct January report",
+                        "replacement": _progress_fact("build", "20")}, scenario_id=scenario, period="2026-01")
+    application.execute("correct_activity", {"target_change_set_id": february, "rationale": "Correct February report",
+                        "replacement": {**_progress_fact("build", "40"), "effective_date": "2026-02-15"}}, period="2026-02")
+    assert application.compare(scenario, "2026-02")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-02")
+    application.execute("apply_scenario", {"scenario_id": scenario}, period="2026-02")
+    assert application.state(period="2026-01")["report"]["summary"]["revenue"] == "100.00"
+    assert application.state(period="2026-02")["report"]["summary"]["revenue"] == "100.00"
+
+
+def test_scenario_rebase_progress_correction_detects_replacement_date_collision(tmp_path):
+    application = _two_progress_obligations(tmp_path)
+    original = application.execute("record_progress", _progress_fact("build", "10"), period="2026-01")["result"]["change_set_id"]
+    scenario = application.execute("create_scenario", {"name": "Move January measure"})["result"]["id"]
+    application.execute("correct_activity", {"target_change_set_id": original, "rationale": "Correct report date",
+                        "replacement": {**_progress_fact("build", "20"), "effective_date": "2026-01-20"}},
+                        scenario_id=scenario, period="2026-01")
+    application.execute("record_progress", {**_progress_fact("build", "30"), "effective_date": "2026-01-20"}, period="2026-01")
+    assert application.compare(scenario, "2026-01")["conflicts"]
+
+
+def test_scenario_rebase_keeps_same_obligation_milestones_in_conflict(tmp_path):
+    application = _two_progress_obligations(tmp_path, integration_method="milestone")
+    scenario = application.execute("create_scenario", {"name": "Integration delivery"})["result"]["id"]
+    application.execute("record_milestone", _progress_fact("integration", "100"), scenario_id=scenario, period="2026-01")
+    application.execute("record_milestone", {**_progress_fact("integration", "100"), "effective_date": "2026-02-15"},
+                        period="2026-02")
+    assert application.compare(scenario, "2026-02")["conflicts"]
+
+
 def test_scenario_rebase_combines_progress_with_distinct_milestone(tmp_path):
     application = _two_progress_obligations(tmp_path, integration_method="milestone")
     scenario = application.execute("create_scenario", {"name": "Build progress"})["result"]["id"]

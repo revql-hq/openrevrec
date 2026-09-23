@@ -119,7 +119,7 @@ def _independent_usage_changes(left: dict, right: dict, originals: dict[str, dic
 
 
 def _independent_satisfaction_changes(left: dict, right: dict, originals: dict[str, dict]) -> bool:
-    """Cumulative progress and milestones on different obligations do not overwrite one another."""
+    """Independent measures can be replayed in obligation and effective-date order."""
     kinds = {"record_progress", "record_milestone"}
 
     def original_obligation(change_id: str, seen: set[str]) -> str | None:
@@ -149,7 +149,59 @@ def _independent_satisfaction_changes(left: dict, right: dict, originals: dict[s
         return obligation_id if isinstance(replacement, dict) and replacement.get("obligation_id") == obligation_id else None
 
     first, second = obligation(left), obligation(right)
-    return first is not None and second is not None and first != second
+    if first is None or second is None:
+        return False
+    if first != second:
+        return True
+
+    # A progress obligation can have successive cumulative measurements. A
+    # point-in-time milestone is one satisfaction event, so retain conflict
+    # review when both branches change that same obligation.
+    def progress_fact(change_id: str, seen: set[str]) -> tuple[str, dict, set[str]] | None:
+        if change_id in seen:
+            return None
+        seen.add(change_id)
+        row = originals.get(change_id)
+        if row is None:
+            return None
+        payload = row["payload"]
+        if row["command"] == "record_progress":
+            return change_id, payload, source_ids(payload)
+        if row["command"] != "correct_activity":
+            return None
+        prior = progress_fact(payload.get("target_change_set_id"), seen)
+        replacement = payload.get("replacement")
+        if prior is None or not isinstance(replacement, dict) or replacement.get("obligation_id") != prior[1].get("obligation_id"):
+            return None
+        return prior[0], replacement, prior[2] | source_ids(payload) | source_ids(replacement)
+
+    def source_ids(payload: dict) -> set[str]:
+        ids = set()
+        if payload.get("reference"):
+            ids.add("reference:" + payload["reference"])
+        if payload.get("import_source_identity") is not None:
+            ids.add("import:" + dumps(payload["import_source_identity"]))
+        return ids
+
+    def fact(row: dict) -> tuple[set[str], str | None, set[str]] | None:
+        payload = row["payload"]
+        if row["command"] == "record_progress":
+            return {payload.get("effective_date")}, None, source_ids(payload)
+        if row["command"] != "correct_activity":
+            return None
+        prior = progress_fact(payload.get("target_change_set_id"), set())
+        replacement = payload.get("replacement")
+        if prior is None or not isinstance(replacement, dict) or replacement.get("obligation_id") != first:
+            return None
+        return ({prior[1].get("effective_date"), replacement.get("effective_date")}, prior[0],
+                prior[2] | source_ids(payload) | source_ids(replacement))
+
+    a, b = fact(left), fact(right)
+    if a is None or b is None or None in a[0] | b[0]:
+        return False
+    if a[1] is not None and a[1] == b[1]:
+        return False
+    return not (a[0] & b[0] or a[2] & b[2])
 
 
 def _independent_rate_changes(left: dict, right: dict, originals: dict[str, dict]) -> bool:
