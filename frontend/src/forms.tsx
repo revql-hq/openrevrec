@@ -1284,10 +1284,10 @@ export function ActivityForm(
           </Field>
         )}
         {activity === "usage" && (
-          <Field label="Units delivered">
+          <Field label="Units delivered" hint={correctionTarget ? "Enter zero if the original source row recorded units that were not delivered." : undefined}>
             <input
               type="number"
-              min="0.000001"
+              min={correctionTarget ? "0" : "0.000001"}
               step="any"
               required
               value={quantity}

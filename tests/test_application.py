@@ -2744,6 +2744,14 @@ def test_usage_source_correction_replaces_measure_without_erasing_history(tmp_pa
     assert any(change["id"] == original for change in correction["state"]["change_sets"])
     with pytest.raises(ValueError, match="current"):
         application.execute("correct_activity", {"target_change_set_id": original, "rationale": "Duplicate correction", "replacement": {"contract_id": "con_1", "obligation_id": "units", "effective_date": "2026-01-10", "quantity": "40"}}, period="2026-02")
+    removed = application.execute("correct_activity", {
+        "target_change_set_id": correction["result"]["change_set_id"],
+        "rationale": "Source reconciliation confirmed no January units were delivered",
+        "replacement": {"contract_id": "con_1", "obligation_id": "units", "effective_date": "2026-01-10", "quantity": "0"},
+    }, period="2026-02")
+    assert removed["state"]["report"]["summary"]["recognized_to_date"] == "100.00"
+    assert removed["state"]["report"]["summary"]["revenue"] == "100.00"
+    assert removed["state"]["contracts"][0]["activities"][0]["corrects"] == correction["result"]["change_set_id"]
 
 
 def test_metered_usage_correction_reprices_open_period_and_closed_period_is_protected(tmp_path):
