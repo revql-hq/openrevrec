@@ -32,17 +32,22 @@ DESCRIPTIVE_COMMANDS = {"edit_details", "add_note", "edit_note", "attach_evidenc
 
 
 def _independent_invoices(left: dict, right: dict) -> bool:
-    """Two identified positive invoices add independently to a contract balance."""
+    """Identified invoices can combine with a credit to an older workspace invoice."""
     if left["command"] != "record_billing" or right["command"] != "record_billing":
         return False
     a, b = left["payload"], right["payload"]
-    if Decimal(a["amount"]) <= 0 or Decimal(b["amount"]) <= 0:
+    left_ids = [a[field] for field in ("reference", "import_source_identity") if a.get(field)]
+    right_ids = [b[field] for field in ("reference", "import_source_identity") if b.get(field)]
+    if not left_ids or not right_ids or any(first == second for first in left_ids for second in right_ids):
         return False
-    for field in ("reference", "import_source_identity"):
-        if a.get(field) and b.get(field):
-            if a[field] == b[field]:
-                return False
-    return any(a.get(field) and b.get(field) for field in ("reference", "import_source_identity"))
+    left_amount, right_amount = Decimal(a["amount"]), Decimal(b["amount"])
+    if left_amount > 0 and right_amount > 0:
+        return True
+    if left_amount < 0 < right_amount:
+        return bool(a.get("applies_to_change_set_id"))
+    if right_amount < 0 < left_amount:
+        return bool(b.get("applies_to_change_set_id"))
+    return False
 
 
 def valid_date(value, label="Effective date") -> str:

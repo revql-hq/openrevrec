@@ -1205,8 +1205,8 @@ def test_scenario_rebase_accepts_distinct_identified_invoices_on_one_contract(tm
         row["credit_minor"] for row in accepted["report"]["journals"])
 
 
-@pytest.mark.parametrize("main_amount,main_reference", [("200.00", "INV-102"), ("-20.00", "CM-101")])
-def test_scenario_rebase_retains_invoice_collision_and_credit_review(tmp_path, main_amount, main_reference):
+@pytest.mark.parametrize("main_amount,main_reference", [("200.00", "INV-102"), ("-20.00", "")])
+def test_scenario_rebase_retains_invoice_collision_and_unidentified_credit_review(tmp_path, main_amount, main_reference):
     application = app(tmp_path)
     seed(application)
     original = application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-01",
@@ -1219,6 +1219,61 @@ def test_scenario_rebase_retains_invoice_collision_and_credit_review(tmp_path, m
     if Decimal(main_amount) < 0:
         main_invoice.update(applies_to_change_set_id=original, rationale="Correct original invoice")
     application.execute("record_billing", main_invoice, period="2026-10")
+    assert len(application.compare(scenario, "2026-10")["conflicts"]) == 1
+    with pytest.raises(ValueError, match="same accounting records"):
+        application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-10")
+
+
+def test_scenario_rebase_combines_new_invoice_with_identified_credit_to_older_invoice(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    original = application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-01",
+                                                     "amount": "500.00", "reference": "INV-100"}, period="2026-09")["result"]["change_set_id"]
+    scenario = application.execute("create_scenario", {"name": "Second invoice"})["result"]["id"]
+    application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-10-02",
+                                           "amount": "100.00", "reference": "INV-102"}, scenario_id=scenario, period="2026-10")
+    application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-10-01",
+                                           "amount": "-20.00", "reference": "CM-100", "applies_to_change_set_id": original,
+                                           "rationale": "Credit against the September invoice"}, period="2026-10")
+    assert application.compare(scenario, "2026-10")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-10")
+    assert application.state(scenario, "2026-10")["report"]["summary"]["billings"] == "80.00"
+    application.execute("apply_scenario", {"scenario_id": scenario}, period="2026-10")
+    accepted = application.state(period="2026-10")
+    assert accepted["report"]["summary"]["billings"] == "80.00"
+    assert any(activity.get("applies_to_change_set_id") == original for activity in accepted["contracts"][0]["activities"])
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in accepted["report"]["journals"]) == 0
+
+
+def test_scenario_rebase_combines_identified_credit_with_new_main_invoice(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    original = application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-01",
+                                                     "amount": "500.00", "reference": "INV-100"}, period="2026-09")["result"]["change_set_id"]
+    scenario = application.execute("create_scenario", {"name": "Invoice credit"})["result"]["id"]
+    application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-10-02",
+                                           "amount": "-20.00", "reference": "CM-100", "applies_to_change_set_id": original,
+                                           "rationale": "Credit against the September invoice"}, scenario_id=scenario, period="2026-10")
+    application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-10-01",
+                                           "amount": "100.00", "reference": "INV-102"}, period="2026-10")
+    assert application.compare(scenario, "2026-10")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-10")
+    application.execute("apply_scenario", {"scenario_id": scenario}, period="2026-10")
+    accepted = application.state(period="2026-10")
+    assert accepted["report"]["summary"]["billings"] == "80.00"
+    assert any(activity.get("applies_to_change_set_id") == original for activity in accepted["contracts"][0]["activities"])
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in accepted["report"]["journals"]) == 0
+
+
+def test_scenario_rebase_reviews_credit_with_only_external_original_reference(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    scenario = application.execute("create_scenario", {"name": "Second invoice"})["result"]["id"]
+    application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-10-02",
+                                           "amount": "100.00", "reference": "INV-102"}, scenario_id=scenario, period="2026-10")
+    application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-10-01",
+                                           "amount": "-20.00", "reference": "CM-100", "applies_to_reference": "LEGACY-100",
+                                           "rationale": "Credit against a pre-workspace invoice"}, period="2026-10")
     assert len(application.compare(scenario, "2026-10")["conflicts"]) == 1
     with pytest.raises(ValueError, match="same accounting records"):
         application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-10")
