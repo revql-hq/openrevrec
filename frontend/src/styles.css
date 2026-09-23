@@ -290,6 +290,17 @@ tfoot th, tfoot td { background: #f7f7f4; border-top: 1px solid var(--line); bor
 .check-icon { width: 23px; height: 23px; border-radius: 50%; display: grid; place-items: center; background: #f0f1ee; color: #657068; font-size: 10px; font-weight: 650; }
 .check-row.review .check-icon { background: var(--warning-bg); color: var(--warning); }
 .check-row.block .check-icon { background: var(--error-bg); color: var(--error); }
+.source-exception-group { border-bottom: 1px solid var(--line-soft); }
+.source-exception-group summary { min-height: 48px; padding: 9px 12px; display: grid; grid-template-columns: 27px minmax(0,1fr) auto; align-items: center; gap: 9px; cursor: pointer; list-style: none; }
+.source-exception-group summary::-webkit-details-marker { display: none; }
+.source-exception-group summary:hover { background: #fafaf8; }
+.source-exception-group summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.source-exception-group .check-icon { background: var(--warning-bg); color: var(--warning); }
+.source-exception-toggle { color: var(--muted); font-size: 11px; }
+.source-exception-detail { padding: 0 12px 12px 48px; }
+.source-exception-detail ul { max-height: 220px; margin: 0 0 10px; padding: 8px 0 8px 18px; overflow: auto; border: 1px solid var(--line-soft); border-radius: 6px; font-size: 12px; overflow-wrap: anywhere; }
+.source-exception-detail li + li { margin-top: 5px; }
+.source-exception-detail .fine-print { margin-bottom: 10px; }
 .sql-editor { width: 100%; min-height: 128px; resize: vertical; border: 1px solid var(--line); border-radius: var(--radius); background: #222622; color: #edf0ec; padding: 13px; outline: 0; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; }
 .sql-editor:focus { border-color: #7f8781; box-shadow: 0 0 0 2px rgba(68,80,71,.12); }
 .sql-actions { justify-content: flex-end; margin: 8px 0; }

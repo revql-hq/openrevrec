@@ -303,30 +303,38 @@ function SourcePopulation({ review, props }: { review: Review; props: ViewProps 
     finally { setBusy(false); }
   };
   const groups = [
-    ["Missing contracts", comparison.missing_contracts],
-    ["Unexpected contracts", comparison.unexpected_contracts],
-    ["Duplicate workspace contracts", comparison.duplicate_contracts],
-    ["Missing invoices", comparison.missing_billings.map((item) => item.join(" / "))],
-    ["Unexpected invoices", comparison.unexpected_billings.map((item) => item.join(" / "))],
-    ["Duplicate workspace invoices", comparison.duplicate_billings.map((item) => item.join(" / "))],
-    ["Invoice amounts not checked", (comparison.unverified_billings || []).map((item) => item.join(" / "))],
-    ["Missing priced usage", (comparison.missing_usage || []).map((item) => item.join(" / "))],
-    ["Unexpected priced usage", (comparison.unexpected_usage || []).map((item) => item.join(" / "))],
-    ["Duplicate workspace priced usage", (comparison.duplicate_usage || []).map((item) => item.join(" / "))],
-    ["Priced usage values not checked", (comparison.unverified_usage || []).map((item) => item.join(" / "))],
-    ["Missing cutover openings", (comparison.missing_openings || []).map((item) => item.join(" / "))],
-    ["Unexpected cutover openings", (comparison.unexpected_openings || []).map((item) => item.join(" / "))],
-    ["Duplicate workspace openings", (comparison.duplicate_openings || []).map((item) => item.join(" / "))],
-    ["Opening balances not checked", (comparison.unverified_openings || []).map((item) => item.join(" / "))],
-    ["Missing opening obligations", (comparison.missing_opening_obligations || []).map((item) => item.join(" / "))],
-    ["Unexpected opening obligations", (comparison.unexpected_opening_obligations || []).map((item) => item.join(" / "))],
-    ["Opening obligation amounts not checked", (comparison.unverified_opening_obligations || []).map((item) => item.join(" / "))],
-  ] as const;
+    { label: "Missing contracts", items: comparison.missing_contracts, sourceField: "contracts" },
+    { label: "Unexpected contracts", items: comparison.unexpected_contracts, sourceField: "contracts" },
+    { label: "Duplicate workspace contracts", items: comparison.duplicate_contracts, sourceField: "contracts" },
+    { label: "Missing invoices", items: comparison.missing_billings.map((item) => item.join(" / ")), sourceField: "invoices" },
+    { label: "Unexpected invoices", items: comparison.unexpected_billings.map((item) => item.join(" / ")), sourceField: "invoices" },
+    { label: "Duplicate workspace invoices", items: comparison.duplicate_billings.map((item) => item.join(" / ")), sourceField: "invoices" },
+    { label: "Invoice amounts not checked", items: (comparison.unverified_billings || []).map((item) => item.join(" / ")), sourceField: "invoices" },
+    { label: "Missing priced usage", items: (comparison.missing_usage || []).map((item) => item.join(" / ")), sourceField: "usage" },
+    { label: "Unexpected priced usage", items: (comparison.unexpected_usage || []).map((item) => item.join(" / ")), sourceField: "usage" },
+    { label: "Duplicate workspace priced usage", items: (comparison.duplicate_usage || []).map((item) => item.join(" / ")), sourceField: "usage" },
+    { label: "Priced usage values not checked", items: (comparison.unverified_usage || []).map((item) => item.join(" / ")), sourceField: "usage" },
+    { label: "Missing cutover openings", items: (comparison.missing_openings || []).map((item) => item.join(" / ")), sourceField: "openings" },
+    { label: "Unexpected cutover openings", items: (comparison.unexpected_openings || []).map((item) => item.join(" / ")), sourceField: "openings" },
+    { label: "Duplicate workspace openings", items: (comparison.duplicate_openings || []).map((item) => item.join(" / ")), sourceField: "openings" },
+    { label: "Opening balances not checked", items: (comparison.unverified_openings || []).map((item) => item.join(" / ")), sourceField: "openings" },
+    { label: "Missing opening obligations", items: (comparison.missing_opening_obligations || []).map((item) => item.join(" / ")), sourceField: "obligations" },
+    { label: "Unexpected opening obligations", items: (comparison.unexpected_opening_obligations || []).map((item) => item.join(" / ")), sourceField: "obligations" },
+    { label: "Opening obligation amounts not checked", items: (comparison.unverified_opening_obligations || []).map((item) => item.join(" / ")), sourceField: "obligations" },
+  ];
+  const canEditSource = props.state.scenario_id === "main" && !props.state.report.closed;
   return <Section title="Source population" subtitle="Compare independent agreements, invoices, priced usage, and cutover openings with workspace records.">
     <p className="muted">Include contracts active or carrying a balance and {monthLabel(props.period)} invoices, priced usage, and cutover openings. Use the accounting contract reference for an opening position; its balance covers the combined contract if agreements were combined.</p>
     {manifest ? <>
       <p className="notice">{manifest.source_name} · Workspace/source: {comparison.actual_contract_count}/{comparison.expected_contract_count} agreements · {comparison.actual_billing_count}/{comparison.expected_billing_count} invoices · {comparison.actual_usage_count || 0}/{comparison.expected_usage_count || 0} priced usage · {comparison.actual_opening_count || 0}/{comparison.expected_opening_count || 0} cutover openings.</p>
-      {groups.map(([label, items]) => items.length > 0 && <div className="check-row review" key={label}><span className="check-icon">{items.length}</span><div><strong>{label}</strong><p>{items.join(", ")}</p></div></div>)}
+      {groups.map(({ label, items, sourceField }) => items.length > 0 && <details className="source-exception-group" key={label}>
+        <summary><span className="check-icon">{items.length}</span><strong>{label}</strong><span className="source-exception-toggle">Details</span></summary>
+        <div className="source-exception-detail">
+          <ul>{items.slice(0, 50).map((item, index) => <li key={`${item}:${index}`}>{item}</li>)}</ul>
+          {items.length > 50 && <p className="fine-print">Showing 50 of {items.length}. Export the workbook for every row.</p>}
+          {canEditSource && <Button type="button" onClick={() => document.getElementById(`source-${sourceField}`)?.focus()}>Compare source list</Button>}
+        </div>
+      </details>)}
       {comparison.unidentified_contracts.map((item) => <div className="check-row review" key={item.id}><span className="check-icon">1</span><div><strong>Contract missing source reference</strong><p>{item.name}</p></div><Button onClick={() => props.navigate("Contracts", item.id, "Overview")}>Open</Button></div>)}
       {comparison.unidentified_billings.map((item) => <div className="check-row review" key={item.activity_id}><span className="check-icon">1</span><div><strong>Billing missing source identity</strong><p>{item.contract_id}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
       {(comparison.mismatched_billings || []).map((item) => <div className="check-row review" key={`${item.contract_reference}:${item.invoice_reference}`}><span className="check-icon">1</span><div><strong>Invoice amount differs</strong><p>{item.contract_reference} / {item.invoice_reference}: source {money(item.source_amount, props.state.workspace.currency)}; workspace {money(item.workspace_amount, props.state.workspace.currency)}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
@@ -338,14 +346,14 @@ function SourcePopulation({ review, props }: { review: Review; props: ViewProps 
       {(comparison.opening_measure_review_rows || []).map((item) => <div className="check-row review" key={`${item.contract_reference}:${item.cutover_date}:${item.obligation_id}:unverified-measure`}><span className="check-icon">1</span><div><strong>Source opening measure not supplied</strong><p>{item.contract_reference} / {item.obligation_id}: workspace {item.workspace_measure}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
       {(comparison.mismatched_opening_obligation_measures || []).map((item) => <div className="check-row review" key={`${item.contract_reference}:${item.cutover_date}:${item.obligation_id}:measure`}><span className="check-icon">1</span><div><strong>Opening cumulative measure differs</strong><p>{item.contract_reference} / {item.obligation_id}{item.source_obligation_reference ? ` (legacy ${item.source_obligation_reference})` : ""}: source {item.source_measure || "none"}; workspace {item.workspace_measure || "none"}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
       {(comparison.mismatched_source_opening_obligation_totals || []).map((item) => <div className="check-row review" key={`${item.contract_reference}:${item.cutover_date}:source-total`}><span className="check-icon">1</span><div><strong>Source obligation amounts do not sum to the source opening</strong><p>{item.contract_reference}: obligation sum {money(item.source_total, props.state.workspace.currency)}; opening recognized {money(item.source_opening_total, props.state.workspace.currency)}</p></div></div>)}
-      {!groups.some(([, items]) => items.length) && !comparison.unidentified_contracts.length && !comparison.unidentified_billings.length && !(comparison.mismatched_billings || []).length && !(comparison.unidentified_usage || []).length && !(comparison.mismatched_usage || []).length && !(comparison.unidentified_openings || []).length && !(comparison.mismatched_openings || []).length && !(comparison.mismatched_opening_obligations || []).length && !(comparison.opening_measure_review_rows || []).length && !(comparison.mismatched_opening_obligation_measures || []).length && !(comparison.mismatched_source_opening_obligation_totals || []).length && <p className="notice">Every listed source record matches a workspace record.</p>}
+      {!groups.some(({ items }) => items.length) && !comparison.unidentified_contracts.length && !comparison.unidentified_billings.length && !(comparison.mismatched_billings || []).length && !(comparison.unidentified_usage || []).length && !(comparison.mismatched_usage || []).length && !(comparison.unidentified_openings || []).length && !(comparison.mismatched_openings || []).length && !(comparison.mismatched_opening_obligations || []).length && !(comparison.opening_measure_review_rows || []).length && !(comparison.mismatched_opening_obligation_measures || []).length && !(comparison.mismatched_source_opening_obligation_totals || []).length && <p className="notice">Every listed source record matches a workspace record.</p>}
     </> : <p className="notice">No independent source population has been recorded for this period.</p>}
     {props.state.scenario_id === "main" && !props.state.report.closed ? <form onSubmit={(event) => void submit(event)}>
       <div className="form-grid"><Field label="Independent source name"><input required value={sourceName} onChange={(event) => setSourceName(event.target.value)} placeholder="Billing extract and contract register" /></Field><Field label="Population and cutoff basis"><input required value={rationale} onChange={(event) => setRationale(event.target.value)} placeholder="Identify filters, cutoff, and source owner" /></Field></div>
-      <div className="form-grid"><Field label="Source contract references" hint="One contract reference per line; leave empty only if the source population is empty."><textarea rows={8} value={contracts} onChange={(event) => setContracts(event.target.value)} /></Field><Field label="Source invoices and credits" hint="One per line: contract reference | invoice reference | signed amount. Paste three tab-separated columns or use |. Older ID-only rows stay under review until amounts are supplied."><textarea rows={8} value={billings} onChange={(event) => setBillings(event.target.value)} /></Field></div>
-      <Field label="Source priced-usage records" hint="One per line: contract reference | unique usage record ID | delivered units | invoice value. Paste four tab-separated columns or use |. Older ID-only rows stay under review until values are supplied."><textarea rows={6} value={usage} onChange={(event) => setUsage(event.target.value)} /></Field>
-      <Field label="Source cutover openings" hint="One per line: accounting contract reference | cutover date | billed to date | contract asset | deferred revenue | recognized to date. Paste six tab-separated columns or use |. Include only openings effective in this month; enter zero balances explicitly."><textarea rows={6} value={openings} onChange={(event) => setOpenings(event.target.value)} /></Field>
-      <Field label="Source opening obligation amounts" hint="Each row: contract | cutover date | mapped obligation ID | recognized amount | cumulative measure | legacy reference (optional). Leave the measure blank for time-based rows with a legacy reference. Include zero amounts and verify the mapping against the legacy schedule."><textarea rows={6} value={openingObligations} onChange={(event) => setOpeningObligations(event.target.value)} /></Field>
+      <div className="form-grid"><Field label="Source contract references" hint="One contract reference per line; leave empty only if the source population is empty."><textarea id="source-contracts" rows={8} value={contracts} onChange={(event) => setContracts(event.target.value)} /></Field><Field label="Source invoices and credits" hint="One per line: contract reference | invoice reference | signed amount. Paste three tab-separated columns or use |. Older ID-only rows stay under review until amounts are supplied."><textarea id="source-invoices" rows={8} value={billings} onChange={(event) => setBillings(event.target.value)} /></Field></div>
+      <Field label="Source priced-usage records" hint="One per line: contract reference | unique usage record ID | delivered units | invoice value. Paste four tab-separated columns or use |. Older ID-only rows stay under review until values are supplied."><textarea id="source-usage" rows={6} value={usage} onChange={(event) => setUsage(event.target.value)} /></Field>
+      <Field label="Source cutover openings" hint="One per line: accounting contract reference | cutover date | billed to date | contract asset | deferred revenue | recognized to date. Paste six tab-separated columns or use |. Include only openings effective in this month; enter zero balances explicitly."><textarea id="source-openings" rows={6} value={openings} onChange={(event) => setOpenings(event.target.value)} /></Field>
+      <Field label="Source opening obligation amounts" hint="Each row: contract | cutover date | mapped obligation ID | recognized amount | cumulative measure | legacy reference (optional). Leave the measure blank for time-based rows with a legacy reference. Include zero amounts and verify the mapping against the legacy schedule."><textarea id="source-obligations" rows={6} value={openingObligations} onChange={(event) => setOpeningObligations(event.target.value)} /></Field>
       <Button primary type="submit" busy={busy}>Record source population</Button>
     </form> : <p className="fine-print">Reopen the period to revise the accepted source population.</p>}
     <ErrorMessage error={error} />
