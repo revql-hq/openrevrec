@@ -1327,7 +1327,10 @@ export function RenewalLinkForm(props: FormProps & { contract: Contract }) {
   const [confirmed, setConfirmed] = useState(false);
   const [rationale, setRationale] = useState("");
   const exercise = available.find((item) => item.obligation_id === obligationId);
-  const renewals = state.contracts.filter((item) => item.id !== contract.id && item.customer_id === contract.customer_id && item.start_date === exercise?.delivery_start && item.end_date === exercise?.delivery_end && !(state.renewal_links || []).some((link) => link.renewal_contract_id === item.id));
+  const renewals = state.contracts.filter((item) => item.id !== contract.id && item.customer_id === contract.customer_id && Boolean(exercise) &&
+    item.start_date <= String(exercise?.delivery_start) && item.end_date >= String(exercise?.delivery_end) &&
+    item.obligations.every((obligation) => obligation.start_date >= String(exercise?.delivery_start) && obligation.end_date <= String(exercise?.delivery_end)) &&
+    !(state.renewal_links || []).some((link) => link.renewal_contract_id === item.id));
   const renewal = renewals.find((item) => item.id === renewalId);
   const newPrice = renewal ? total(renewal.consideration.map((item) => ["variable", "usage"].includes(item.kind) ? item.included_amount ?? item.amount : item.amount)) : "0.00";
   const rightAllocation = state.report.contracts.find((item) => item.id === contract.id)?.allocation.find((item) => item.obligation_id === obligationId)?.amount;
@@ -1336,7 +1339,7 @@ export function RenewalLinkForm(props: FormProps & { contract: Contract }) {
     <Field label="Exercised material right"><select required value={obligationId} onChange={(event) => { setObligationId(event.target.value); setRenewalId(""); setConfirmed(false); }}><option value="">Choose right</option>{available.map((item) => <option key={item.id} value={item.obligation_id}>{contract.obligations.find((obligation) => obligation.id === item.obligation_id)?.name || item.obligation_id} · exercised {dateLabel(item.effective_date)}</option>)}</select></Field>
     {exercise && <p className="fine-print">Delivery: {dateLabel(String(exercise.delivery_start))} – {dateLabel(String(exercise.delivery_end))}</p>}
     <Field label="Renewal contract"><select required value={renewalId} onChange={(event) => { setRenewalId(event.target.value); setConfirmed(false); }}><option value="">Choose contract</option>{renewals.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
-    {exercise && renewals.length === 0 && <p className="notice">No unlinked contract for this customer matches the right's delivery dates. Create that contract first, with only its new price.</p>}
+    {exercise && renewals.length === 0 && <p className="notice">No eligible renewal. Create one whose term covers this delivery window, with all obligations inside it and only new consideration.</p>}
     {renewal && <p>Original right allocation: <strong>{rightAllocation ? money(rightAllocation, state.workspace.currency) : "See original contract"}</strong>. Initial new consideration: <strong>{money(newPrice, state.workspace.currency)}</strong>.</p>}
     <label className="confirmation-row"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> I reviewed the renewal contract and confirm its price contains only new consideration.</label>
     <Field label="Accounting rationale"><textarea required rows={3} value={rationale} onChange={(event) => setRationale(event.target.value)} placeholder="Explain the renewal price and the carried right allocation." /></Field>

@@ -584,8 +584,8 @@ class Application:
             exercise = next((item for item in source["activities"] if item["type"] == "right_exercise" and item["obligation_id"] == p.get("obligation_id")), None)
             if exercise is None:
                 raise ValueError("Exercise the material right before linking its renewal contract.")
-            if renewal["start_date"] != exercise["delivery_start"] or renewal["end_date"] != exercise["delivery_end"]:
-                raise ValueError("The linked renewal contract dates must match the exercised right's delivery dates.")
+            if renewal["start_date"] > exercise["delivery_start"] or renewal["end_date"] < exercise["delivery_end"]:
+                raise ValueError("The linked renewal contract must cover the exercised right's delivery dates.")
             if any(item["start_date"] < exercise["delivery_start"] or item["end_date"] > exercise["delivery_end"] for item in renewal["obligations"]):
                 raise ValueError("The linked renewal obligations must fall within the exercised right's delivery dates.")
             if any(item["contract_id"] == source["id"] and item["obligation_id"] == p["obligation_id"] for item in state["renewal_links"]):

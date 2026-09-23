@@ -1073,7 +1073,7 @@ def test_linked_renewal_keeps_old_right_allocation_separate_from_new_price(tmp_p
                          "start_date": "2026-01-01", "end_date": "2026-06-30", "exercise_start": "2026-04-01", "exercise_end": "2026-06-30"}],
     }, period="2026-01")
     application.execute("create_contract", {
-        "id": "renewal", "name": "Renewal service", "customer_id": "cus_1", "start_date": "2026-07-01", "end_date": "2026-12-31",
+        "id": "renewal", "name": "Renewal service", "customer_id": "cus_1", "start_date": "2026-06-15", "end_date": "2027-01-31",
         "consideration": [{"id": "new_fee", "kind": "fixed", "amount": "300.00"}],
         "obligations": [{"id": "service", "name": "Renewal service", "kind": "service", "ssp": "300.00", "method": "monthly",
                          "start_date": "2026-07-01", "end_date": "2026-12-31"}],
@@ -1105,10 +1105,34 @@ def test_linked_renewal_keeps_old_right_allocation_separate_from_new_price(tmp_p
             support["right_revenue"], support["renewal_revenue"], support["combined_revenue"]) == (
                 "600.00", "300.00", "900.00", "100.00", "50.00", "150.00")
     assert sum(row["debit_minor"] - row["credit_minor"] for row in july["journals"]) == 0
+    assert application.state(period="2027-01")["report"]["summary"]["revenue"] == "0.00"
     exported = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-07"))), read_only=True)
     assert exported["Renewal links"]["J2"].value == 900
     assert exported["Renewal links"]["M2"].value == 150
     exported.close()
+
+
+def test_linked_renewal_rejects_service_outside_exercised_delivery(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "original", "name": "Original option", "customer_id": "cus_1", "start_date": "2026-01-01", "end_date": "2026-06-30",
+        "consideration": [{"id": "fee", "kind": "fixed", "amount": "600.00"}],
+        "obligations": [{"id": "right", "name": "Renewal right", "kind": "material_right", "ssp": "600.00", "method": "point_in_time",
+                         "start_date": "2026-01-01", "end_date": "2026-06-30", "exercise_start": "2026-04-01", "exercise_end": "2026-06-30"}],
+    }, period="2026-01")
+    application.execute("create_contract", {
+        "id": "renewal", "name": "Renewal service", "customer_id": "cus_1", "start_date": "2026-06-15", "end_date": "2027-01-31",
+        "consideration": [{"id": "new_fee", "kind": "fixed", "amount": "300.00"}],
+        "obligations": [{"id": "service", "name": "Renewal service", "kind": "service", "ssp": "300.00", "method": "monthly",
+                         "start_date": "2026-07-01", "end_date": "2027-01-31"}],
+    }, period="2026-06")
+    application.execute("record_right_exercise", {"contract_id": "original", "obligation_id": "right", "effective_date": "2026-06-15",
+        "delivery_method": "monthly", "delivery_start": "2026-07-01", "delivery_end": "2026-12-31",
+        "rationale": "Option elected for six months"}, period="2026-06")
+    with pytest.raises(ValueError, match="obligations must fall within"):
+        application.execute("link_renewal_contract", {"contract_id": "original", "obligation_id": "right", "renewal_contract_id": "renewal",
+            "additional_consideration": "300.00", "price_basis": "new_consideration_only", "rationale": "Reviewed renewal price"}, period="2026-07")
 
 
 def test_linked_renewal_imports_after_contracts_and_exercise(tmp_path):
