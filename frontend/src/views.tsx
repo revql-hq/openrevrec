@@ -293,6 +293,11 @@ function ChangesList({
                 change.payload?.name ||
                   change.payload?.reference ||
                   change.payload?.rationale ||
+                  change.payload?.body ||
+                  change.payload?.conclusion ||
+                  (change.command === "edit_note" && typeof change.payload?.completed === "boolean"
+                    ? change.payload.completed ? "Task marked complete" : "Task reopened"
+                    : "") ||
                   change.rationale ||
                   "Recorded through an accounting command",
               )}

@@ -121,6 +121,9 @@ export function ChangeDetail(props: ViewProps & { changeSetId: string }) {
   const replacement = change.command === "correct_activity" ? change.payload?.replacement as Record<string, unknown> | undefined : undefined;
   const correctedOpening = change.command === "correct_opening_position" ? beforeContract?.activities.find((item) => item.id === change.payload?.target_change_set_id) : undefined;
   const replacementOpening = change.command === "correct_opening_position" ? change.payload?.replacement as Record<string, unknown> | undefined : undefined;
+  const recordedNote = change.command === "add_note" || change.command === "edit_note"
+    ? detail.after_state.notes.find((item) => item.id === change.payload?.id)
+    : undefined;
   const openingRows = (value?: Record<string, unknown>) => (value?.opening_obligations as { obligation_id: string; recognized_to_date: string; measure?: string }[] | undefined) || [];
   return <>
     <div className="page-heading">
@@ -148,6 +151,14 @@ export function ChangeDetail(props: ViewProps & { changeSetId: string }) {
         {isContract && <Button onClick={() => props.navigate("Contracts", change.entity_id)}>Open contract</Button>}
       </div>
     </Section>
+    {recordedNote && <Section title={recordedNote.kind === "task" ? "Task" : recordedNote.kind === "memo" ? "Accounting memo" : "Note"}>
+      <p className="body-copy recorded-note-body">{recordedNote.body}</p>
+      {(recordedNote.kind === "task" || recordedNote.due_date || recordedNote.period) && <dl className="definition-list">
+        {recordedNote.kind === "task" && <div><dt>Status</dt><dd>{recordedNote.completed ? "Complete" : "Open"}</dd></div>}
+        {recordedNote.due_date && <div><dt>Due</dt><dd>{dateLabel(recordedNote.due_date)}</dd></div>}
+        {recordedNote.period && <div><dt>Close period</dt><dd>{recordedNote.period}</dd></div>}
+      </dl>}
+    </Section>}
     {termRows.length > 0 && <Section title="Contract terms changed" subtitle={`Terms immediately before and after this change, effective ${dateLabel(change.effective_date)}.`}><div className="table-wrap"><table><thead><tr><th>Area</th><th>Item</th><th>Before</th><th>After</th></tr></thead><tbody>{termRows.map((row) => <tr key={`${row.area}:${row.item}`}><td>{row.area}</td><td>{row.item}</td><td>{row.before}</td><td>{row.after}</td></tr>)}</tbody></table></div></Section>}
     {change.command === "record_opening_position" && <Section title="Accepted legacy position" subtitle="These are cumulative amounts before cutover, not current-month revenue or journal entries.">
       <dl className="definition-list">

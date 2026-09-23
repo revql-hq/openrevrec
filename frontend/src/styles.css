@@ -123,6 +123,7 @@ nav { display: flex; flex-direction: column; gap: 2px; }
 .eyebrow { margin-bottom: 7px; color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: .085em; text-transform: uppercase; }
 .fine-print { color: var(--quiet); font-size: 11px; line-height: 1.5; }
 .body-copy { color: #555b56; max-width: 720px; }
+.recorded-note-body { white-space: pre-wrap; margin-bottom: 12px; }
 
 .metrics { margin-bottom: 24px; display: grid; grid-template-columns: repeat(5, minmax(120px,1fr)); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--panel); }
 .metrics.compact { grid-template-columns: repeat(4,minmax(120px,1fr)); }
