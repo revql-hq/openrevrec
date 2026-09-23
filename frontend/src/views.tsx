@@ -1486,6 +1486,8 @@ export function ScenarioView(props: ViewProps) {
   const behind = comparisonReady && Number(comparison?.main_version) > scenario.base_version;
   const conflictCount = comparisonReady ? comparison?.conflicts?.length || 0 : 0;
   const active = scenario.status === "active";
+  const reviewChange = (id: string, effectiveDate?: string) =>
+    navigate("Activity", id, undefined, undefined, effectiveDate?.slice(0, 7));
   return (
     <>
       <Heading
@@ -1599,17 +1601,17 @@ export function ScenarioView(props: ViewProps) {
             comparison && (
               <>
                 <Section title="Proposed accounting changes" subtitle="Every proposal recorded in this scenario remains visible even when financial effects offset.">
-                  {comparison.proposals?.length ? <div className="table-wrap"><table><thead><tr><th>Effective</th><th>Change</th><th>Entity</th><th>Review note</th></tr></thead><tbody>{comparison.proposals.map((proposal) => <tr key={proposal.id}><td>{dateLabel(proposal.effective_date)}</td><td><button className="table-link" onClick={() => navigate("Activity", proposal.id)}>{humanize(proposal.command)}</button></td><td>{state.contracts.find((contract) => contract.id === proposal.entity_id)?.name || state.customers.find((customer) => customer.id === proposal.entity_id)?.name || proposal.entity_id}</td><td>{proposal.rationale || "—"}</td></tr>)}</tbody></table></div> : <p className="muted">No accounting proposals recorded.</p>}
+                  {comparison.proposals?.length ? <div className="table-wrap"><table><thead><tr><th>Effective</th><th>Change</th><th>Entity</th><th>Review note</th></tr></thead><tbody>{comparison.proposals.map((proposal) => <tr key={proposal.id}><td>{dateLabel(proposal.effective_date)}</td><td><button className="table-link" onClick={() => reviewChange(proposal.id, proposal.effective_date)}>{humanize(proposal.command)}</button></td><td>{state.contracts.find((contract) => contract.id === proposal.entity_id)?.name || state.customers.find((customer) => customer.id === proposal.entity_id)?.name || proposal.entity_id}</td><td>{proposal.rationale || "—"}</td></tr>)}</tbody></table></div> : <p className="muted">No accounting proposals recorded.</p>}
                 </Section>
                 {Boolean(comparison.conflicts?.length) && <Section title="Main changes requiring conflict review" subtitle="Open both changes. To revise the proposal, start a scenario from current Main." action={<Button type="button" onClick={() => dialog({ type: "scenario" })}>New scenario from Main</Button>}>
                   <div className="table-wrap"><table><thead><tr><th>Main change</th><th>Conflicting proposal</th><th>Record</th></tr></thead><tbody>{comparison.conflicts?.map((conflict) => {
                     const contract = state.contracts.find((item) => item.id === conflict.entity_id);
                     const customer = state.customers.find((item) => item.id === conflict.entity_id);
                     return <tr key={conflict.id}>
-                      <td><button className="table-link" onClick={() => navigate("Activity", conflict.id)}>{humanize(conflict.command)}</button><div className="fine-print">{dateLabel(conflict.effective_date)} · Main v{conflict.version}</div></td>
+                      <td><button className="table-link" onClick={() => reviewChange(conflict.id, conflict.effective_date)}>{humanize(conflict.command)}</button><div className="fine-print">{dateLabel(conflict.effective_date)} · Main v{conflict.version}</div></td>
                       <td>{conflict.proposal_ids.map((id) => {
                         const proposal = comparison.proposals?.find((item) => item.id === id);
-                        return <div key={id}><button className="table-link" onClick={() => navigate("Activity", id)}>{proposal ? humanize(proposal.command) : "Open proposal"}</button></div>;
+                        return <div key={id}><button className="table-link" onClick={() => reviewChange(id, proposal?.effective_date)}>{proposal ? humanize(proposal.command) : "Open proposal"}</button></div>;
                       })}</td>
                       <td>{contract ? <button className="table-link" onClick={() => navigate("Contracts", contract.id)}>{contract.name}</button> : customer ? <button className="table-link" onClick={() => navigate("Customers", customer.id)}>{customer.name}</button> : conflict.entity_id}</td>
                     </tr>;

@@ -95,7 +95,7 @@ export type ViewProps = {
   state: State;
   period: string;
   dialog: (dialog: Dialog) => void;
-  navigate: (view: View, id?: string, tab?: string, focus?: string) => void;
+  navigate: (view: View, id?: string, tab?: string, focus?: string, period?: string) => void;
   refresh: (message?: string) => Promise<void>;
   setScenario: (scenario: string) => void;
   selected?: string;
@@ -197,7 +197,8 @@ export default function App() {
     const timeout = setTimeout(() => setNotice(""), 4500);
     return () => clearTimeout(timeout);
   }, [notice]);
-  const navigate = (next: View, id?: string, tab?: string, focus?: string) => {
+  const navigate = (next: View, id?: string, tab?: string, focus?: string, targetPeriod?: string) => {
+    if (targetPeriod) setPeriod(targetPeriod);
     setView(next);
     setSelected(id);
     setSelectedTab(tab);
