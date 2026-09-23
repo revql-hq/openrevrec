@@ -118,6 +118,40 @@ def _independent_usage_changes(left: dict, right: dict, originals: dict[str, dic
     return all(_distinct_source_identity(first, second) for first in a for second in b)
 
 
+def _independent_satisfaction_changes(left: dict, right: dict, originals: dict[str, dict]) -> bool:
+    """Cumulative progress and milestones on different obligations do not overwrite one another."""
+    kinds = {"record_progress", "record_milestone"}
+
+    def original_obligation(change_id: str, seen: set[str]) -> str | None:
+        if change_id in seen:
+            return None
+        seen.add(change_id)
+        row = originals.get(change_id)
+        if row is None:
+            return None
+        if row["command"] in kinds:
+            return row["payload"].get("obligation_id")
+        if row["command"] == "correct_activity":
+            obligation_id = original_obligation(row["payload"].get("target_change_set_id"), seen)
+            replacement = row["payload"].get("replacement")
+            if isinstance(replacement, dict) and replacement.get("obligation_id") == obligation_id:
+                return obligation_id
+        return None
+
+    def obligation(row: dict) -> str | None:
+        if row["command"] in kinds:
+            return row["payload"].get("obligation_id")
+        if row["command"] != "correct_activity":
+            return None
+        payload = row["payload"]
+        obligation_id = original_obligation(payload.get("target_change_set_id"), set())
+        replacement = payload.get("replacement")
+        return obligation_id if isinstance(replacement, dict) and replacement.get("obligation_id") == obligation_id else None
+
+    first, second = obligation(left), obligation(right)
+    return first is not None and second is not None and first != second
+
+
 def valid_date(value, label="Effective date") -> str:
     _date(value, label)
     return value
@@ -1444,6 +1478,8 @@ class Application:
                      for row in db.execute("SELECT id, payload FROM change_sets WHERE command='record_billing'")}
         usage_originals = {row["id"]: json.loads(row["payload"])
                            for row in db.execute("SELECT id, payload FROM change_sets WHERE command='record_usage'")}
+        satisfaction_originals = {row["id"]: {"command": row["command"], "payload": json.loads(row["payload"])}
+                                  for row in db.execute("SELECT id, command, payload FROM change_sets WHERE command IN ('record_progress', 'record_milestone', 'correct_activity')")}
         conflicts = []
         for raw in main_rows:
             main = {**dict(raw), "payload": json.loads(raw["payload"])}
@@ -1453,7 +1489,8 @@ class Application:
                    (proposal["entity_id"] == main["entity_id"]
                     and not (_independent_invoices(proposal, main, originals)
                              or _independent_billing_corrections(proposal, main, originals)
-                             or _independent_usage_changes(proposal, main, usage_originals)))
+                             or _independent_usage_changes(proposal, main, usage_originals)
+                             or _independent_satisfaction_changes(proposal, main, satisfaction_originals)))
                    for proposal in own):
                 conflicts.append({key: main[key] for key in ("command", "entity_id", "version")})
         return conflicts

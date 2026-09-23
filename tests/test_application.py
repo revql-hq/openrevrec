@@ -1893,6 +1893,94 @@ def test_scenario_rebase_accepts_distinct_identified_invoices_on_one_contract(tm
         row["credit_minor"] for row in accepted["report"]["journals"])
 
 
+def _two_progress_obligations(tmp_path, integration_method="progress"):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "contract", "customer_id": "customer", "name": "Two workstreams",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "fee", "kind": "fixed", "amount": "1000.00"}],
+        "obligations": [
+            {"id": "build", "name": "Build", "kind": "implementation", "ssp": "500.00",
+             "method": "progress", "start_date": "2026-01-01", "end_date": "2026-12-31"},
+            {"id": "integration", "name": "Integration", "kind": "implementation", "ssp": "500.00",
+             "method": integration_method, "start_date": "2026-01-01", "end_date": "2026-12-31"},
+        ],
+    }, period="2026-01")
+    return application
+
+
+def _progress_fact(obligation_id, percentage):
+    return {"contract_id": "contract", "obligation_id": obligation_id,
+            "effective_date": "2026-01-15", "percentage": percentage}
+
+
+def test_scenario_rebase_combines_progress_on_different_obligations(tmp_path):
+    application = _two_progress_obligations(tmp_path)
+    scenario = application.execute("create_scenario", {"name": "Build progress"})["result"]["id"]
+    application.execute("record_progress", _progress_fact("build", "50"), scenario_id=scenario, period="2026-01")
+    application.execute("record_progress", _progress_fact("integration", "40"), period="2026-01")
+    assert application.compare(scenario, "2026-01")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-01")
+    assert application.state(scenario, "2026-01")["report"]["summary"]["revenue"] == "450.00"
+    application.execute("apply_scenario", {"scenario_id": scenario}, period="2026-01")
+    accepted = application.state(period="2026-01")["report"]
+    assert accepted["summary"]["revenue"] == "450.00"
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in accepted["journals"]) == 0
+
+
+def test_scenario_rebase_keeps_same_obligation_progress_in_conflict(tmp_path):
+    application = _two_progress_obligations(tmp_path)
+    scenario = application.execute("create_scenario", {"name": "Build progress"})["result"]["id"]
+    application.execute("record_progress", _progress_fact("build", "50"), scenario_id=scenario, period="2026-01")
+    application.execute("record_progress", _progress_fact("build", "40"), period="2026-01")
+    assert len(application.compare(scenario, "2026-01")["conflicts"]) == 1
+    with pytest.raises(ValueError, match="same accounting records"):
+        application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-01")
+
+
+def test_scenario_rebase_combines_progress_with_distinct_milestone(tmp_path):
+    application = _two_progress_obligations(tmp_path, integration_method="milestone")
+    scenario = application.execute("create_scenario", {"name": "Build progress"})["result"]["id"]
+    application.execute("record_progress", _progress_fact("build", "50"), scenario_id=scenario, period="2026-01")
+    application.execute("record_milestone", _progress_fact("integration", "100"), period="2026-01")
+    assert application.compare(scenario, "2026-01")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-01")
+    application.execute("apply_scenario", {"scenario_id": scenario}, period="2026-01")
+    assert application.state(period="2026-01")["report"]["summary"]["revenue"] == "750.00"
+
+
+def test_scenario_rebase_combines_progress_corrections_on_different_obligations(tmp_path):
+    application = _two_progress_obligations(tmp_path)
+    build = application.execute("record_progress", _progress_fact("build", "10"), period="2026-01")["result"]["change_set_id"]
+    integration = application.execute("record_progress", _progress_fact("integration", "10"), period="2026-01")["result"]["change_set_id"]
+    build = application.execute("correct_activity", {"target_change_set_id": build, "rationale": "Earlier build source revision",
+        "replacement": _progress_fact("build", "20")}, period="2026-01")["result"]["change_set_id"]
+    scenario = application.execute("create_scenario", {"name": "Correct build progress"})["result"]["id"]
+    application.execute("correct_activity", {"target_change_set_id": build, "rationale": "Correct build source report",
+        "replacement": _progress_fact("build", "50")}, scenario_id=scenario, period="2026-01")
+    application.execute("correct_activity", {"target_change_set_id": integration, "rationale": "Correct integration source report",
+        "replacement": _progress_fact("integration", "40")}, period="2026-01")
+    assert application.compare(scenario, "2026-01")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-01")
+    assert application.state(scenario, "2026-01")["report"]["summary"]["revenue"] == "450.00"
+    application.execute("apply_scenario", {"scenario_id": scenario}, period="2026-01")
+    assert application.state(period="2026-01")["report"]["summary"]["revenue"] == "450.00"
+
+
+def test_scenario_rebase_keeps_same_progress_correction_target_in_conflict(tmp_path):
+    application = _two_progress_obligations(tmp_path)
+    original = application.execute("record_progress", _progress_fact("build", "10"), period="2026-01")["result"]["change_set_id"]
+    scenario = application.execute("create_scenario", {"name": "Correct build progress"})["result"]["id"]
+    application.execute("correct_activity", {"target_change_set_id": original, "rationale": "Scenario source report",
+        "replacement": _progress_fact("build", "50")}, scenario_id=scenario, period="2026-01")
+    application.execute("correct_activity", {"target_change_set_id": original, "rationale": "Main source report",
+        "replacement": _progress_fact("build", "40")}, period="2026-01")
+    assert len(application.compare(scenario, "2026-01")["conflicts"]) == 1
+    with pytest.raises(ValueError, match="same accounting records"):
+        application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-01")
+
+
 def _metered_usage_scenario_app(tmp_path):
     application = app(tmp_path)
     application.execute("create_customer", {"id": "customer", "name": "Customer"})
