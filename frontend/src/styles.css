@@ -301,6 +301,12 @@ tfoot th, tfoot td { background: #f7f7f4; border-top: 1px solid var(--line); bor
 .source-exception-detail ul { max-height: 220px; margin: 0 0 10px; padding: 8px 0 8px 18px; overflow: auto; border: 1px solid var(--line-soft); border-radius: 6px; font-size: 12px; overflow-wrap: anywhere; }
 .source-exception-detail li + li { margin-top: 5px; }
 .source-exception-detail .fine-print { margin-bottom: 10px; }
+.source-exception-detail .button + .button { margin-left: 8px; }
+.source-exception-action-list { max-height: 300px; margin: 0 12px 12px 48px; overflow: auto; border: 1px solid var(--line-soft); border-radius: 6px; }
+.source-exception-action-list .check-row { grid-template-columns: minmax(0, 1fr) auto; }
+.source-exception-action-list .check-row:last-of-type { border-bottom: 0; }
+.source-exception-action-detail { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.source-exception-more { padding: 10px 12px; border-top: 1px solid var(--line-soft); }
 .sql-editor { width: 100%; min-height: 128px; resize: vertical; border: 1px solid var(--line); border-radius: var(--radius); background: #222622; color: #edf0ec; padding: 13px; outline: 0; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; }
 .sql-editor:focus { border-color: #7f8781; box-shadow: 0 0 0 2px rgba(68,80,71,.12); }
 .sql-actions { justify-content: flex-end; margin: 8px 0; }

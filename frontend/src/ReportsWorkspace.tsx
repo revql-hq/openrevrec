@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { CircleCheck, LoaderCircle, TerminalSquare } from "lucide-react";
 import type { ViewProps } from "./App";
 import type { View } from "./types";
@@ -122,6 +122,40 @@ const views = [
   "SQL inspector",
 ] as const;
 type ReportView = (typeof views)[number];
+
+type SourceAction = { label: string; onClick: () => void };
+type SourceActionRow = { key: string; detail: ReactNode; actions?: SourceAction[] };
+const sourceExceptionPageSize = 50;
+
+function SourceTextGroup({ label, items, sourceField, canEditSource }: { label: string; items: string[]; sourceField: string; canEditSource: boolean }) {
+  const [visibleCount, setVisibleCount] = useState(sourceExceptionPageSize);
+  if (!items.length) return null;
+  const showing = Math.min(visibleCount, items.length);
+  return <details className="source-exception-group">
+    <summary><span className="check-icon">{items.length}</span><strong>{label}</strong><span className="source-exception-toggle">Details</span></summary>
+    <div className="source-exception-detail">
+      <ul>{items.slice(0, showing).map((item, index) => <li key={`${item}:${index}`}>{item}</li>)}</ul>
+      {showing < items.length && <Button type="button" onClick={() => setVisibleCount(visibleCount + sourceExceptionPageSize)}>Show more ({showing} of {items.length})</Button>}
+      {canEditSource && <Button type="button" onClick={() => document.getElementById(`source-${sourceField}`)?.focus()}>Compare source list</Button>}
+    </div>
+  </details>;
+}
+
+function SourceActionGroup({ label, rows }: { label: string; rows: SourceActionRow[] }) {
+  const [visibleCount, setVisibleCount] = useState(sourceExceptionPageSize);
+  if (!rows.length) return null;
+  const showing = Math.min(visibleCount, rows.length);
+  return <details className="source-exception-group">
+    <summary><span className="check-icon">{rows.length}</span><strong>{label}</strong><span className="source-exception-toggle">Details</span></summary>
+    <div className="source-exception-action-list">
+      {rows.slice(0, showing).map((row) => <div className="check-row review" key={row.key}>
+        <div className="source-exception-action-detail">{row.detail}</div>
+        {row.actions?.map((action) => <Button key={action.label} onClick={action.onClick}>{action.label}</Button>)}
+      </div>)}
+      {showing < rows.length && <div className="source-exception-more"><Button type="button" onClick={() => setVisibleCount(visibleCount + sourceExceptionPageSize)}>Show more ({showing} of {rows.length})</Button></div>}
+    </div>
+  </details>;
+}
 
 export function ReportsWorkspace(props: ViewProps) {
   const { state, period } = props;
@@ -322,31 +356,59 @@ function SourcePopulation({ review, props }: { review: Review; props: ViewProps 
     { label: "Unexpected opening obligations", items: (comparison.unexpected_opening_obligations || []).map((item) => item.join(" / ")), sourceField: "obligations" },
     { label: "Opening obligation amounts not checked", items: (comparison.unverified_opening_obligations || []).map((item) => item.join(" / ")), sourceField: "obligations" },
   ];
+  const actionGroups: { label: string; rows: SourceActionRow[] }[] = [
+    { label: "Contracts missing source references", rows: comparison.unidentified_contracts.map((item) => ({
+      key: item.id, detail: item.name,
+      actions: [{ label: "Open", onClick: () => props.navigate("Contracts", item.id, "Overview") }],
+    })) },
+    { label: "Invoices missing source identities", rows: comparison.unidentified_billings.map((item) => ({
+      key: item.activity_id, detail: item.contract_id,
+      actions: [{ label: "Open", onClick: () => props.navigate("Activity", item.activity_id) }],
+    })) },
+    { label: "Invoice amount differences", rows: (comparison.mismatched_billings || []).map((item) => ({
+      key: `${item.contract_reference}:${item.invoice_reference}`, detail: <>{item.contract_reference} / {item.invoice_reference}: source {money(item.source_amount, props.state.workspace.currency)}; workspace {money(item.workspace_amount, props.state.workspace.currency)}</>,
+      actions: [{ label: "Open", onClick: () => props.navigate("Activity", item.activity_id) }],
+    })) },
+    { label: "Priced usage missing source identities", rows: (comparison.unidentified_usage || []).map((item) => ({
+      key: item.activity_id, detail: item.contract_id,
+      actions: [{ label: "Open", onClick: () => props.navigate("Activity", item.activity_id) }],
+    })) },
+    { label: "Priced usage value differences", rows: (comparison.mismatched_usage || []).map((item) => ({
+      key: `${item.contract_reference}:${item.usage_reference}`, detail: <>{item.contract_reference} / {item.usage_reference}: source {item.source_quantity} units, {money(item.source_invoice_value, props.state.workspace.currency)}; workspace {item.workspace_quantity} units, {money(item.workspace_invoice_value, props.state.workspace.currency)}</>,
+      actions: [{ label: "Open", onClick: () => props.navigate("Activity", item.activity_id) }],
+    })) },
+    { label: "Openings missing contract references", rows: (comparison.unidentified_openings || []).map((item) => ({
+      key: item.activity_id, detail: item.contract_id,
+      actions: [{ label: "Open", onClick: () => props.navigate("Activity", item.activity_id) }],
+    })) },
+    { label: "Opening balance differences", rows: (comparison.mismatched_openings || []).map((item) => ({
+      key: `${item.contract_reference}:${item.cutover_date}`, detail: <>{item.contract_reference} / {item.cutover_date}: {Object.keys(item.source_values).filter((field) => item.source_values[field] !== item.workspace_values[field]).map((field) => `${field.replaceAll("_", " ")} source ${money(item.source_values[field], props.state.workspace.currency)}, workspace ${money(item.workspace_values[field], props.state.workspace.currency)}`).join("; ")}</>,
+      actions: [{ label: "Open", onClick: () => props.navigate("Activity", item.activity_id) }],
+    })) },
+    { label: "Opening obligation amount differences", rows: (comparison.mismatched_opening_obligations || []).map((item) => ({
+      key: `${item.contract_reference}:${item.cutover_date}:${item.obligation_id}`, detail: <>{item.contract_reference} / {item.obligation_id}{item.source_obligation_reference ? ` (legacy ${item.source_obligation_reference})` : ""}: source {money(item.source_amount, props.state.workspace.currency)}; workspace {money(item.workspace_amount, props.state.workspace.currency)}</>,
+      actions: [{ label: "Open", onClick: () => props.navigate("Activity", item.activity_id) }],
+    })) },
+    { label: "Opening measures missing from source", rows: (comparison.opening_measure_review_rows || []).map((item) => ({
+      key: `${item.contract_reference}:${item.cutover_date}:${item.obligation_id}`, detail: <>{item.contract_reference} / {item.obligation_id}: workspace {item.workspace_measure}</>,
+      actions: [{ label: "Open", onClick: () => props.navigate("Activity", item.activity_id) }],
+    })) },
+    { label: "Opening cumulative measure differences", rows: (comparison.mismatched_opening_obligation_measures || []).map((item) => ({
+      key: `${item.contract_reference}:${item.cutover_date}:${item.obligation_id}`, detail: <>{item.contract_reference} / {item.obligation_id}{item.source_obligation_reference ? ` (legacy ${item.source_obligation_reference})` : ""}: source {item.source_measure || "none"}; workspace {item.workspace_measure || "none"}</>,
+      actions: [{ label: "Open", onClick: () => props.navigate("Activity", item.activity_id) }],
+    })) },
+    { label: "Source opening obligation totals differ", rows: (comparison.mismatched_source_opening_obligation_totals || []).map((item) => ({
+      key: `${item.contract_reference}:${item.cutover_date}`, detail: <>{item.contract_reference}: obligation sum {money(item.source_total, props.state.workspace.currency)}; opening recognized {money(item.source_opening_total, props.state.workspace.currency)}</>,
+    })) },
+  ];
   const canEditSource = props.state.scenario_id === "main" && !props.state.report.closed;
   return <Section title="Source population" subtitle="Compare independent agreements, invoices, priced usage, and cutover openings with workspace records.">
     <p className="muted">Include contracts active or carrying a balance and {monthLabel(props.period)} invoices, priced usage, and cutover openings. Use the accounting contract reference for an opening position; its balance covers the combined contract if agreements were combined.</p>
     {manifest ? <>
       <p className="notice">{manifest.source_name} · Workspace/source: {comparison.actual_contract_count}/{comparison.expected_contract_count} agreements · {comparison.actual_billing_count}/{comparison.expected_billing_count} invoices · {comparison.actual_usage_count || 0}/{comparison.expected_usage_count || 0} priced usage · {comparison.actual_opening_count || 0}/{comparison.expected_opening_count || 0} cutover openings.</p>
-      {groups.map(({ label, items, sourceField }) => items.length > 0 && <details className="source-exception-group" key={label}>
-        <summary><span className="check-icon">{items.length}</span><strong>{label}</strong><span className="source-exception-toggle">Details</span></summary>
-        <div className="source-exception-detail">
-          <ul>{items.slice(0, 50).map((item, index) => <li key={`${item}:${index}`}>{item}</li>)}</ul>
-          {items.length > 50 && <p className="fine-print">Showing 50 of {items.length}. Export the workbook for every row.</p>}
-          {canEditSource && <Button type="button" onClick={() => document.getElementById(`source-${sourceField}`)?.focus()}>Compare source list</Button>}
-        </div>
-      </details>)}
-      {comparison.unidentified_contracts.map((item) => <div className="check-row review" key={item.id}><span className="check-icon">1</span><div><strong>Contract missing source reference</strong><p>{item.name}</p></div><Button onClick={() => props.navigate("Contracts", item.id, "Overview")}>Open</Button></div>)}
-      {comparison.unidentified_billings.map((item) => <div className="check-row review" key={item.activity_id}><span className="check-icon">1</span><div><strong>Billing missing source identity</strong><p>{item.contract_id}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
-      {(comparison.mismatched_billings || []).map((item) => <div className="check-row review" key={`${item.contract_reference}:${item.invoice_reference}`}><span className="check-icon">1</span><div><strong>Invoice amount differs</strong><p>{item.contract_reference} / {item.invoice_reference}: source {money(item.source_amount, props.state.workspace.currency)}; workspace {money(item.workspace_amount, props.state.workspace.currency)}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
-      {(comparison.unidentified_usage || []).map((item) => <div className="check-row review" key={item.activity_id}><span className="check-icon">1</span><div><strong>Priced usage missing source identity</strong><p>{item.contract_id}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
-      {(comparison.mismatched_usage || []).map((item) => <div className="check-row review" key={`${item.contract_reference}:${item.usage_reference}`}><span className="check-icon">1</span><div><strong>Priced usage values differ</strong><p>{item.contract_reference} / {item.usage_reference}: source {item.source_quantity} units, {money(item.source_invoice_value, props.state.workspace.currency)}; workspace {item.workspace_quantity} units, {money(item.workspace_invoice_value, props.state.workspace.currency)}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
-      {(comparison.unidentified_openings || []).map((item) => <div className="check-row review" key={item.activity_id}><span className="check-icon">1</span><div><strong>Opening missing contract reference</strong><p>{item.contract_id}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
-      {(comparison.mismatched_openings || []).map((item) => <div className="check-row review" key={`${item.contract_reference}:${item.cutover_date}`}><span className="check-icon">1</span><div><strong>Opening balances differ</strong><p>{item.contract_reference} / {item.cutover_date}: {Object.keys(item.source_values).filter((field) => item.source_values[field] !== item.workspace_values[field]).map((field) => `${field.replaceAll("_", " ")} source ${money(item.source_values[field], props.state.workspace.currency)}, workspace ${money(item.workspace_values[field], props.state.workspace.currency)}`).join("; ")}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
-      {(comparison.mismatched_opening_obligations || []).map((item) => <div className="check-row review" key={`${item.contract_reference}:${item.cutover_date}:${item.obligation_id}`}><span className="check-icon">1</span><div><strong>Opening obligation amount differs</strong><p>{item.contract_reference} / {item.obligation_id}{item.source_obligation_reference ? ` (legacy ${item.source_obligation_reference})` : ""}: source {money(item.source_amount, props.state.workspace.currency)}; workspace {money(item.workspace_amount, props.state.workspace.currency)}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
-      {(comparison.opening_measure_review_rows || []).map((item) => <div className="check-row review" key={`${item.contract_reference}:${item.cutover_date}:${item.obligation_id}:unverified-measure`}><span className="check-icon">1</span><div><strong>Source opening measure not supplied</strong><p>{item.contract_reference} / {item.obligation_id}: workspace {item.workspace_measure}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
-      {(comparison.mismatched_opening_obligation_measures || []).map((item) => <div className="check-row review" key={`${item.contract_reference}:${item.cutover_date}:${item.obligation_id}:measure`}><span className="check-icon">1</span><div><strong>Opening cumulative measure differs</strong><p>{item.contract_reference} / {item.obligation_id}{item.source_obligation_reference ? ` (legacy ${item.source_obligation_reference})` : ""}: source {item.source_measure || "none"}; workspace {item.workspace_measure || "none"}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
-      {(comparison.mismatched_source_opening_obligation_totals || []).map((item) => <div className="check-row review" key={`${item.contract_reference}:${item.cutover_date}:source-total`}><span className="check-icon">1</span><div><strong>Source obligation amounts do not sum to the source opening</strong><p>{item.contract_reference}: obligation sum {money(item.source_total, props.state.workspace.currency)}; opening recognized {money(item.source_opening_total, props.state.workspace.currency)}</p></div></div>)}
-      {!groups.some(({ items }) => items.length) && !comparison.unidentified_contracts.length && !comparison.unidentified_billings.length && !(comparison.mismatched_billings || []).length && !(comparison.unidentified_usage || []).length && !(comparison.mismatched_usage || []).length && !(comparison.unidentified_openings || []).length && !(comparison.mismatched_openings || []).length && !(comparison.mismatched_opening_obligations || []).length && !(comparison.opening_measure_review_rows || []).length && !(comparison.mismatched_opening_obligation_measures || []).length && !(comparison.mismatched_source_opening_obligation_totals || []).length && <p className="notice">Every listed source record matches a workspace record.</p>}
+      {groups.map(({ label, items, sourceField }) => <SourceTextGroup key={label} label={label} items={items} sourceField={sourceField} canEditSource={canEditSource} />)}
+      {actionGroups.map(({ label, rows }) => <SourceActionGroup key={label} label={label} rows={rows} />)}
+      {!groups.some(({ items }) => items.length) && !actionGroups.some(({ rows }) => rows.length) && <p className="notice">Every listed source record matches a workspace record.</p>}
     </> : <p className="notice">No independent source population has been recorded for this period.</p>}
     {props.state.scenario_id === "main" && !props.state.report.closed ? <form onSubmit={(event) => void submit(event)}>
       <div className="form-grid"><Field label="Independent source name"><input required value={sourceName} onChange={(event) => setSourceName(event.target.value)} placeholder="Billing extract and contract register" /></Field><Field label="Population and cutoff basis"><input required value={rationale} onChange={(event) => setRationale(event.target.value)} placeholder="Identify filters, cutoff, and source owner" /></Field></div>
