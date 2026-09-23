@@ -188,7 +188,7 @@ def create_app(application: Application, token=None, static_dir=None):
         for c in state["customers"]:
             add("customer", c["id"], c["name"], c.get("reference"), c.get("source_system"))
         for c in state["contracts"]:
-            add("contract", c["id"], c["name"], c.get("reference"), contract_id=c["id"])
+            add("contract", c["id"], c["name"], *[source["reference"] for source in c.get("source_contracts", [])], c.get("reference"), contract_id=c["id"])
             obligations = c["obligations"] + [o for event in c["activities"] for o in event.get("obligations", [])]
             for o in obligations:
                 add("obligation", o["id"], o["name"], contract_id=c["id"])

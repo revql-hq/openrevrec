@@ -22,6 +22,133 @@ def app(tmp_path):
     return Application.create(tmp_path / "Test company.orr", "Test company")
 
 
+def test_combined_source_agreements_share_accounting_and_reconcile_independent_register(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    contract = {
+        "id": "combined", "customer_id": "customer", "name": "Combined service", "reference": "AG-A",
+        "start_date": "2026-01-01", "end_date": "2026-02-28",
+        "source_contracts": [{"reference": "AG-A", "agreement_date": "2026-01-01"},
+                             {"reference": "AG-B", "agreement_date": "2026-01-02"}],
+        "combination_basis": "single_obligation",
+        "combination_rationale": "Two same-customer agreements were approved together and promise one integrated service.",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "300.00"}],
+        "obligations": [{"id": "service", "name": "Integrated service", "kind": "service", "ssp": "300.00",
+                         "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-02-28"}],
+    }
+    with pytest.raises(ValueError, match="source agreement"):
+        application.execute("create_contract", {**contract, "source_contracts": contract["source_contracts"][:1]}, period="2026-01")
+    with pytest.raises(ValueError, match="paragraph 17 basis"):
+        application.execute("create_contract", {**contract, "combination_basis": ""}, period="2026-01")
+    application.execute("create_contract", contract, period="2026-01")
+    with pytest.raises(ValueError, match="Choose the source agreement"):
+        application.execute("record_billing", {"contract_id": "combined", "effective_date": "2026-01-15",
+                                               "amount": "100.00", "reference": "INV-1"}, period="2026-01")
+    first = application.execute("record_billing", {"contract_id": "combined", "effective_date": "2026-01-15",
+                                                   "amount": "100.00", "reference": "INV-1",
+                                                   "source_contract_reference": "AG-A"}, period="2026-01")
+    application.execute("record_billing", {"contract_id": "combined", "effective_date": "2026-02-15",
+                                           "amount": "200.00", "reference": "INV-1",
+                                           "source_contract_reference": "AG-B"}, period="2026-02")
+    january = application.state(period="2026-01")["report"]
+    february = application.state(period="2026-02")["report"]
+    assert january["summary"]["revenue"] == "150.00"
+    assert january["summary"]["contract_asset"] == "50.00"
+    assert february["summary"]["revenue"] == "150.00"
+    assert february["summary"]["contract_asset"] == "0.00"
+    with pytest.raises(ValueError, match="original invoice's source agreement"):
+        application.execute("record_billing", {"contract_id": "combined", "effective_date": "2026-02-16",
+                                               "amount": "-10.00", "reference": "CREDIT-1",
+                                               "source_contract_reference": "AG-B",
+                                               "applies_to_change_set_id": first["result"]["change_set_id"],
+                                               "rationale": "Incorrect agreement"}, period="2026-02")
+    application.execute("record_population_manifest", {"period": "2026-02", "source_name": "Contract and invoice registers",
+                         "rationale": "All February source agreements and invoices.",
+                         "contract_references": ["AG-A", "AG-B"],
+                         "billing_references": [{"contract_reference": "AG-B", "invoice_reference": "INV-1"}],
+                         "usage_references": []}, period="2026-02")
+    comparison = application.reports(period="2026-02")["population_comparison"]
+    assert comparison["actual_contract_count"] == 2
+    assert not any(comparison[key] for key in ("missing_contracts", "unexpected_contracts", "missing_billings", "unexpected_billings"))
+    with pytest.raises(ValueError, match="source agreement reference already belongs"):
+        application.execute("create_contract", {**contract, "id": "duplicate", "reference": "AG-B",
+                                                "source_contracts": [{"reference": "AG-B", "agreement_date": "2026-01-02"},
+                                                                     {"reference": "AG-C", "agreement_date": "2026-01-03"}]}, period="2026-01")
+    book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-02"), application.reports(period="2026-02"))), read_only=True)
+    assert [(row[1], row[2], row[3]) for row in list(book["Contract combinations"].values)[1:]] == [
+        ("AG-A", "2026-01-01", "single_obligation"), ("AG-B", "2026-01-02", "single_obligation")]
+    assert [(row[0], row[1], row[2]) for row in list(book["Source invoices"].values)[1:]] == [("AG-B", "INV-1", "Matched")]
+    book.close()
+    scenario = application.execute("create_scenario", {"name": "Second agreement invoice"})["result"]["id"]
+    application.execute("record_billing", {"contract_id": "combined", "effective_date": "2026-02-20",
+                                           "amount": "10.00", "reference": "INV-2",
+                                           "source_contract_reference": "AG-A"}, scenario_id=scenario, period="2026-02")
+    application.execute("record_billing", {"contract_id": "combined", "effective_date": "2026-02-21",
+                                           "amount": "20.00", "reference": "INV-2",
+                                           "source_contract_reference": "AG-B"}, period="2026-02")
+    assert application.compare(scenario, "2026-02")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-02")
+    assert application.state(scenario, "2026-02")["report"]["summary"]["billings"] == "230.00"
+
+
+def test_combined_contract_import_keeps_invoice_and_priced_usage_source_agreements(tmp_path):
+    application = app(tmp_path)
+    book = load_workbook(io.BytesIO(template_bytes()))
+    rows = {
+        "Customers": [{"id": "customer", "name": "Customer"}],
+        "Contracts": [{"id": "combined", "customer_id": "customer", "name": "Combined usage",
+                       "start_date": "2026-01-01", "end_date": "2026-12-31", "reference": "AG-A",
+                       "combination_basis": "package", "combination_rationale": "Two agreements signed together for one commercial package."}],
+        "Contract Sources": [{"contract_id": "combined", "reference": "AG-A", "agreement_date": "2026-01-01"},
+                             {"contract_id": "combined", "reference": "AG-B", "agreement_date": "2026-01-02"}],
+        "Consideration": [{"contract_id": "combined", "id": "meter", "kind": "metered", "amount": "0",
+                           "metered_value_mode": "invoice_value", "pricing_basis": "right_to_invoice",
+                           "rounding_period": "calendar_month", "rationale": "Source-priced delivery reflects customer value."}],
+        "Obligations": [{"contract_id": "combined", "id": "service", "name": "Metered service", "kind": "service",
+                         "ssp": "0", "method": "metered", "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+        "Usage": [{"contract_id": "combined", "obligation_id": "service", "effective_date": "2026-01-10",
+                   "quantity": "100", "invoice_value": "15.17", "reference": "USG-B", "source_id": "usage:b",
+                   "source_contract_reference": "AG-B"}],
+        "Billing": [{"contract_id": "combined", "effective_date": "2026-01-11", "amount": "5.00",
+                     "reference": "INV-1", "source_contract_reference": "AG-A"},
+                    {"contract_id": "combined", "effective_date": "2026-01-12", "amount": "10.00",
+                     "reference": "INV-1", "source_contract_reference": "AG-B"}],
+    }
+    for name, items in rows.items():
+        headers = [cell.value for cell in book[name][1]]
+        for item in items:
+            book[name].append([item.get(key) for key in headers])
+    book["Usage"][2][len(book["Usage"][1]) - 1].value = None
+    missing_source = io.BytesIO()
+    book.save(missing_source)
+    with pytest.raises(ValueError, match="Choose the source agreement"):
+        preview_import_bytes(application, missing_source.getvalue(), period="2026-01")
+    assert application.state(period="2026-01")["contracts"] == []
+    book["Usage"][2][len(book["Usage"][1]) - 1].value = "AG-B"
+    data = io.BytesIO()
+    book.save(data)
+    book.close()
+    preview = preview_import_bytes(application, data.getvalue(), period="2026-01")
+    assert preview["state"]["report"]["summary"]["revenue"] == "15.17"
+    imported = import_bytes(application, data.getvalue(), period="2026-01")
+    assert imported["state"]["report"]["summary"]["contract_asset"] == "0.17"
+    application.execute("record_population_manifest", {"period": "2026-01", "source_name": "Independent registers",
+                         "rationale": "All January agreements, invoices, and priced usage.",
+                         "contract_references": ["AG-A", "AG-B"],
+                         "billing_references": [{"contract_reference": "AG-A", "invoice_reference": "INV-1"},
+                                                {"contract_reference": "AG-B", "invoice_reference": "INV-1"}],
+                         "usage_references": [{"contract_reference": "AG-B", "usage_reference": "USG-B",
+                                               "quantity": "100", "invoice_value": "15.17"}]}, period="2026-01")
+    comparison = application.reports(period="2026-01")["population_comparison"]
+    assert comparison["actual_contract_count"] == 2
+    assert comparison["actual_billing_count"] == 2
+    assert comparison["missing_billings"] == comparison["unexpected_billings"] == []
+    assert comparison["usage_value_rows"][0]["status"] == "Matched"
+    support = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-01"))), read_only=True)
+    assert support["Metered usage valuation"]["J2"].value == "AG-B"
+    support.close()
+
+
 def test_cancellable_term_records_assessment_and_review_trigger_through_amendment_and_export(tmp_path):
     application = app(tmp_path)
     application.execute("create_customer", {"id": "cus_1", "name": "Customer"})

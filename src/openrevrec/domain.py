@@ -429,6 +429,22 @@ def validate_contract(contract: dict) -> None:
     end = _date(contract.get("end_date"), "contract end_date")
     if end < start:
         raise ValueError("Contract end_date cannot precede start_date")
+    source_contracts = contract.get("source_contracts")
+    if source_contracts is not None:
+        if not isinstance(source_contracts, list) or len(source_contracts) < 2:
+            raise ValueError("A combined accounting contract needs at least two source agreements")
+        if contract.get("combination_basis") not in {"package", "interdependent_price", "single_obligation"} or not str(contract.get("combination_rationale", "")).strip():
+            raise ValueError("A combined accounting contract needs a paragraph 17 basis and rationale")
+        references = []
+        for source in source_contracts:
+            if not isinstance(source, dict) or set(source) != {"reference", "agreement_date"} or not isinstance(source["reference"], str) or not source["reference"].strip() or source["reference"] != source["reference"].strip():
+                raise ValueError("Each combined source agreement needs a reference and agreement date")
+            _date(source["agreement_date"], "source agreement date")
+            references.append(source["reference"])
+        if len(set(references)) != len(references) or contract.get("reference") != references[0]:
+            raise ValueError("Combined source agreements must be unique and start with the contract's primary reference")
+    elif contract.get("combination_basis") or contract.get("combination_rationale"):
+        raise ValueError("A combination conclusion needs at least two source agreements")
     term_assessment = {field: contract[field] for field in TERM_FIELDS if field in contract}
     _validate_term_assessment(term_assessment, start)
     declared_cutover = _date(contract["cutover_date"], "cutover_date") if contract.get("cutover_date") else None
@@ -487,6 +503,12 @@ def validate_contract(contract: dict) -> None:
         kind = activity.get("type")
         if kind not in ACTIVITY_TYPES:
             raise ValueError(f"Unsupported activity type: {kind}")
+        if kind in {"billing", "usage"}:
+            source_reference = activity.get("source_contract_reference")
+            if source_contracts and source_reference not in {item["reference"] for item in source_contracts}:
+                raise ValueError("Billing and usage on a combined contract must identify a source agreement")
+            if not source_contracts and source_reference is not None and source_reference != contract.get("reference"):
+                raise ValueError("Activity source agreement must match the contract reference")
         if mixed_recorded and kind in {"opening_position", "modification", "reassessment", "adjustment"}:
             raise ValueError("A later accounting change to a mixed modification needs a reviewed follow-on treatment")
         if kind == "opening_position":
@@ -878,7 +900,8 @@ def _project_metered(contract: dict, selected: str) -> tuple[dict, list[dict], l
             usage_valuation.append({"activity_id": activity.get("id", ""), "effective_date": activity["effective_date"],
                                     "period": month, "quantity": str(units), "unit_rate": str(rate) if rate is not None else "",
                                     "unrounded_value": str(value), "value_source": value_mode,
-                                    "reference": activity.get("reference", "")})
+                                    "reference": activity.get("reference", ""),
+                                    "source_contract_reference": activity.get("source_contract_reference", contract.get("reference", ""))})
     schedule = {month: money(value) for month, value in value_by_month.items()}
     selected_earned = sum((value for month, value in schedule.items() if month <= selected), ZERO)
     prior_earned = sum((value for month, value in schedule.items() if month < selected), ZERO)

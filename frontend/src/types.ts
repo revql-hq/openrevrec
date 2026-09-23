@@ -52,6 +52,7 @@ export type Activity = {
   invoice_value?: string;
   component_id?: string;
   reference?: string;
+  source_contract_reference?: string;
   rationale?: string;
   [key: string]: unknown;
 };
@@ -72,6 +73,9 @@ export type Contract = {
   activities: Activity[];
   rationale?: string;
   reference?: string;
+  source_contracts?: { reference: string; agreement_date: string }[];
+  combination_basis?: "package" | "interdependent_price" | "single_obligation";
+  combination_rationale?: string;
   description?: string;
 };
 export type Totals = {

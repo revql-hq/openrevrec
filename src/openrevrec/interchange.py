@@ -18,7 +18,8 @@ from .application import JUDGMENT_COMMANDS
 TEMPLATE_VERSION = "2"
 SHEETS = {
     "Customers": ["id", "name", "email", "reference", "source_system"],
-    "Contracts": ["id", "customer_id", "name", "start_date", "end_date", "rationale", "cutover_date", "term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date", "reference"],
+    "Contracts": ["id", "customer_id", "name", "start_date", "end_date", "rationale", "cutover_date", "term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date", "reference", "combination_basis", "combination_rationale"],
+    "Contract Sources": ["contract_id", "reference", "agreement_date"],
     "Consideration": ["contract_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale", "target_period", "unit_rate", "pricing_basis", "rounding_period", "metered_value_mode"],
     "Obligations": ["contract_id", "id", "name", "kind", "ssp", "method", "start_date", "end_date", "total_units", "exercise_start", "exercise_end", "rationale"],
     "Opening Positions": ["source_id", "contract_id", "effective_date", "billed_to_date", "contract_asset", "deferred_revenue", "source_name", "rationale"],
@@ -27,17 +28,17 @@ SHEETS = {
     "Amendment Consideration": ["amendment_source_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale", "target_period", "unit_rate", "pricing_basis", "rounding_period", "metered_value_mode"],
     "Amendment Obligations": ["amendment_source_id", "id", "name", "kind", "ssp", "method", "start_date", "end_date", "total_units", "exercise_start", "exercise_end", "rationale"],
     "Mixed Allocations": ["amendment_source_id", "obligation_id", "treatment", "amount", "revised_progress"],
-    "Billing": ["contract_id", "effective_date", "amount", "reference", "applies_to_change_set_id", "applies_to_reference", "rationale", "source_id"],
+    "Billing": ["contract_id", "effective_date", "amount", "reference", "applies_to_change_set_id", "applies_to_reference", "rationale", "source_id", "source_contract_reference"],
     "Rate Changes": ["contract_id", "component_id", "effective_date", "unit_rate", "rationale", "source_id"],
     "Progress": ["contract_id", "obligation_id", "effective_date", "percentage", "rationale", "source_id"],
-    "Usage": ["contract_id", "obligation_id", "effective_date", "quantity", "reference", "rationale", "source_id", "invoice_value"],
+    "Usage": ["contract_id", "obligation_id", "effective_date", "quantity", "reference", "rationale", "source_id", "invoice_value", "source_contract_reference"],
     "Right Exercises": ["contract_id", "obligation_id", "effective_date", "delivery_method", "delivery_start", "delivery_end", "rationale", "source_id"],
     "Renewal Links": ["contract_id", "obligation_id", "renewal_contract_id", "additional_consideration", "price_basis", "rationale", "source_id"],
     "Modification Links": ["contract_id", "added_contract_id", "effective_date", "additional_consideration", "price_basis", "original_terms_effect", "rationale", "source_id"],
     "Milestones": ["contract_id", "obligation_id", "effective_date", "percentage", "rationale", "source_id"],
     "Adjustments": ["contract_id", "obligation_id", "effective_date", "amount", "rationale", "source_id"],
     "Reassessments": ["contract_id", "component_id", "effective_date", "included_amount", "rationale", "source_id"],
-    "Corrections": ["source_id", "target_change_set_id", "target_source_id", "activity_type", "contract_id", "obligation_id", "effective_date", "amount", "percentage", "quantity", "reference", "rationale", "component_id", "unit_rate", "invoice_value"],
+    "Corrections": ["source_id", "target_change_set_id", "target_source_id", "activity_type", "contract_id", "obligation_id", "effective_date", "amount", "percentage", "quantity", "reference", "rationale", "component_id", "unit_rate", "invoice_value", "source_contract_reference"],
     "Notes": ["entity_id", "kind", "body", "due_date", "source_id"],
     "Commands": ["command", "payload_json", "source_id"],
 }
@@ -79,6 +80,7 @@ def template_bytes():
         ["Dates", "YYYY-MM-DD. Service start and end dates are inclusive."],
         ["Relationships", "Supply IDs for customers, contracts, consideration, and obligations; reference these IDs on related sheets."],
         ["Contract setup", "Contracts, Consideration and Obligations are combined into one create_contract command."],
+        ["Combined contracts", "When two or more source agreements meet a reviewed AASB 15 paragraph 17 criterion, represent them as one accounting contract. Enter the primary agreement reference in Contracts.reference, choose combination_basis (package, interdependent_price, or single_obligation), and explain the conclusion. Put every source agreement, including the primary, on Contract Sources with its agreement date. Billing and Usage rows for that accounting contract must identify the source_contract_reference. The software does not infer the combination conclusion or apply a fixed near-time threshold."],
         ["Source population", "Set reference on each contract to its stable register ID. Record independent contract, invoice/credit, and externally priced usage lists for each close period in Reports > Source population. For priced usage, supply each source record ID, delivered units, and invoice value so both population and amounts can be compared. Older ID-only lists remain review items. An imported billing source_id can identify a billing transaction when invoice reference is blank."],
         ["Cancellable or evergreen terms", "The contract end is the assessed accounting end, not an unlimited legal end. Enter term_basis as cancellable or evergreen, explain the assessment and reassessment trigger, and optionally enter term_review_date. Revisit the obligation dates through a reviewed amendment when the assessment changes."],
         ["Recognition methods", "exact_days, monthly, prorated_monthly, point_in_time, progress, usage, metered, milestone"],
@@ -200,6 +202,9 @@ def export_bytes(state, review=None):
     modification_keys = ("contract_id", "contract_name", "added_contract_id", "effective_date", "added_contract_name", "price_basis", "original_terms_effect", "initial_additional_consideration", "current_added_price", "original_revenue", "added_revenue", "combined_revenue", "original_contract_asset", "original_deferred_revenue", "added_contract_asset", "added_deferred_revenue", "rationale", "recorded_at", "change_set_id")
     modification_money = {"initial_additional_consideration", "current_added_price", "original_revenue", "added_revenue", "combined_revenue", "original_contract_asset", "original_deferred_revenue", "added_contract_asset", "added_deferred_revenue"}
     _sheet(book, "Modification links", list(modification_keys), [[Decimal(item[key]) if key in modification_money else item.get(key, "") for key in modification_keys] for item in report.get("modification_links", [])])
+    _sheet(book, "Contract combinations", ["Accounting contract ID", "Source agreement reference", "Agreement date", "Paragraph 17 basis", "Accounting rationale", "Change set ID"],
+           [[contract["id"], source["reference"], source["agreement_date"], contract["combination_basis"], contract["combination_rationale"], contract.get("change_set_id", "")]
+            for contract in state["contracts"] for source in contract.get("source_contracts", [])])
     _sheet(book, "Mixed modifications", ["Contract ID", "Effective date", "Obligation ID", "Treatment", "Revised lifetime allocation", "Revised completion (%)", "Rationale", "Change set ID"],
            [[change["payload"]["contract_id"], change["payload"]["effective_date"], row["obligation_id"], row["treatment"], Decimal(row["amount"]), Decimal(row["revised_progress"]) if "revised_progress" in row else "", change["payload"]["rationale"], change["id"]]
             for change in reversed(state["change_sets"]) if change["command"] == "modify_contract" and change["payload"].get("treatment") == "mixed"
@@ -283,8 +288,8 @@ def export_bytes(state, review=None):
     _sheet(book, "Metered rate history", ["Contract ID", "Effective date", "Unit rate", "Accounting conclusion", "Activity ID"],
            [[contract["id"], item["effective_date"], item["unit_rate"], item["rationale"], item["activity_id"]]
             for contract in report["contracts"] for item in contract.get("metered_rate_history", [])])
-    _sheet(book, "Metered usage valuation", ["Contract ID", "Activity ID", "Delivery date", "Calendar month", "Units", "Applied rate", "Unrounded value", "Value source", "Source reference"],
-           [[contract["id"], item["activity_id"], item["effective_date"], item["period"], item["quantity"], item.get("unit_rate", ""), item["unrounded_value"], item.get("value_source", "unit_rate"), item.get("reference", "")]
+    _sheet(book, "Metered usage valuation", ["Contract ID", "Activity ID", "Delivery date", "Calendar month", "Units", "Applied rate", "Unrounded value", "Value source", "Source reference", "Source agreement"],
+           [[contract["id"], item["activity_id"], item["effective_date"], item["period"], item["quantity"], item.get("unit_rate", ""), item["unrounded_value"], item.get("value_source", "unit_rate"), item.get("reference", ""), item.get("source_contract_reference", "")]
             for contract in report["contracts"] for item in contract.get("metered_usage_valuation", [])])
     _sheet(book, "Metered monthly revenue", ["Contract ID", "Calendar month", "Units", "Unrounded value", "Recognized revenue"],
            [[contract["id"], item["period"], item["quantity"], item["unrounded_value"], Decimal(item["revenue"])]
@@ -422,7 +427,14 @@ def parse_workbook(data):
             for field, sheet in (("consideration", "Consideration"), ("obligations", "Obligations")):
                 contract[field] = [_component_row({k: v for k, v in p.items() if k != "contract_id"}) if field == "consideration" else {k: v for k, v in p.items() if k != "contract_id"}
                                    for _, p in parsed[sheet] if p.get("contract_id") == contract.get("id")]
+            sources = [{k: v for k, v in item.items() if k != "contract_id"}
+                       for _, item in parsed["Contract Sources"] if item.get("contract_id") == contract.get("id")]
+            if sources:
+                contract["source_contracts"] = sources
             commands.append(("Contracts", row, "create_contract", contract))
+        for row, item in parsed["Contract Sources"]:
+            if item.get("contract_id") not in contract_ids:
+                raise ValueError(f"Contract Sources row {row}: contract_id must reference a Contracts row.")
         opening_ids = set()
         for row, opening in parsed["Opening Positions"]:
             source_id = opening.get("source_id")
@@ -484,7 +496,7 @@ def parse_workbook(data):
             activity_type = item.get("activity_type")
             if activity_type not in {"billing", "progress", "usage", "milestone", "rate_change"}:
                 raise ValueError(f"Corrections row {row}: choose billing, progress, usage, milestone, or rate_change activity_type.")
-            replacement = {key: item[key] for key in ("contract_id", "obligation_id", "component_id", "effective_date", "amount", "percentage", "quantity", "unit_rate", "invoice_value", "reference") if key in item}
+            replacement = {key: item[key] for key in ("contract_id", "obligation_id", "component_id", "effective_date", "amount", "percentage", "quantity", "unit_rate", "invoice_value", "reference", "source_contract_reference") if key in item}
             payload = {"replacement": replacement, "rationale": item.get("rationale", ""), "source_id": item.get("source_id", "")}
             if item.get("target_change_set_id"):
                 payload["target_change_set_id"] = item["target_change_set_id"]
@@ -509,7 +521,7 @@ def _source_key(scenario_id, command, payload):
     if source_id:
         identity = ["source_id", source_id]
     elif command == "record_billing" and payload.get("reference"):
-        identity = ["invoice_reference", payload.get("contract_id"), payload["reference"]]
+        identity = ["invoice_reference", payload.get("contract_id"), payload.get("source_contract_reference"), payload["reference"]]
     else:
         identity = ["contents", dumps(payload)]
     return "import:" + hashlib.sha256(dumps([scenario_id, command, identity]).encode()).hexdigest(), source_id, identity

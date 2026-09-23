@@ -31,13 +31,20 @@ DEFAULT_ACCOUNTS = {"revenue": "4000", "deferred_revenue": "2300", "contract_ass
 DESCRIPTIVE_COMMANDS = {"edit_details", "add_note", "edit_note", "attach_evidence", "record_judgment_review"}
 
 
+def _contract_source_references(contract: dict) -> list[str]:
+    return ([item["reference"] for item in contract["source_contracts"]]
+            if contract.get("source_contracts") else [contract["reference"]] if contract.get("reference") else [])
+
+
 def _distinct_billing_identity(left: dict, right: dict) -> bool:
     shared_identity = False
     for field in ("reference", "import_source_identity"):
         if left.get(field) and right.get(field):
             shared_identity = True
             if left[field] == right[field]:
-                return False
+                if field != "reference" or not (left.get("source_contract_reference") and right.get("source_contract_reference")
+                                                and left["source_contract_reference"] != right["source_contract_reference"]):
+                    return False
     return shared_identity
 
 
@@ -57,7 +64,7 @@ def _independent_invoices(left: dict, right: dict, originals: dict[str, dict]) -
             second = originals.get(b["applies_to_change_set_id"])
             return bool(first and second and _distinct_billing_identity(first, second))
         if a.get("applies_to_reference") and b.get("applies_to_reference"):
-            return a["applies_to_reference"] != b["applies_to_reference"]
+            return (a.get("source_contract_reference"), a["applies_to_reference"]) != (b.get("source_contract_reference"), b["applies_to_reference"])
         return False
     if left_amount < 0 < right_amount or right_amount < 0 < left_amount:
         credit, invoice = (a, b) if left_amount < 0 else (b, a)
@@ -67,7 +74,8 @@ def _independent_invoices(left: dict, right: dict, originals: dict[str, dict]) -
         # An external-original credit is independent only if the newly added
         # invoice has its own reference and is not the named original.
         return bool(credit.get("applies_to_reference") and invoice.get("reference")
-                    and credit["applies_to_reference"] != invoice["reference"])
+                    and (credit.get("source_contract_reference"), credit["applies_to_reference"])
+                    != (invoice.get("source_contract_reference"), invoice["reference"]))
     return False
 
 
@@ -465,8 +473,22 @@ class Application:
             if not any(c["id"] == p.get("customer_id") for c in state["customers"]):
                 raise ValueError("Choose an existing customer.")
             p["reference"] = str(p.get("reference") or "").strip()
-            if p["reference"] and any(c.get("reference") == p["reference"] for c in state["contracts"]):
-                raise ValueError("A contract already uses this source reference.")
+            if p.get("source_contracts") is not None:
+                sources = p["source_contracts"]
+                if not isinstance(sources, list) or len(sources) < 2:
+                    raise ValueError("A combined accounting contract needs at least two source agreements.")
+                normalized_sources = []
+                for source in sources:
+                    if not isinstance(source, dict) or set(source) != {"reference", "agreement_date"}:
+                        raise ValueError("Each source agreement needs a reference and agreement date.")
+                    normalized_sources.append({"reference": required_text(source, "reference"),
+                                               "agreement_date": valid_date(source.get("agreement_date"), "Agreement date")})
+                p["source_contracts"] = normalized_sources
+                p["combination_rationale"] = required_text(p, "combination_rationale")
+            new_references = _contract_source_references(p)
+            if len(new_references) != len(set(new_references)) or any(reference in _contract_source_references(c)
+                                                                     for c in state["contracts"] for reference in new_references):
+                raise ValueError("A source agreement reference already belongs to an accounting contract.")
             valid_date(p.get("start_date"), "Start date")
             valid_date(p.get("end_date"), "End date")
             if p["start_date"] > p["end_date"]:
@@ -556,7 +578,7 @@ class Application:
             if not isinstance(replacement, dict):
                 raise ValueError("Provide the replacement source facts.")
             target_command = f"record_{target['type']}"
-            allowed = {"contract_id", "effective_date", "rationale", "reference"}
+            allowed = {"contract_id", "effective_date", "rationale", "reference", "source_contract_reference"}
             allowed |= ({"amount", "applies_to_change_set_id", "applies_to_reference"} if target_command == "record_billing" else
                         {"component_id", "unit_rate"} if target_command == "record_rate_change" else
                         {"obligation_id", "quantity", "invoice_value"} if target_command == "record_usage" else
@@ -624,6 +646,18 @@ class Application:
                 p["rationale"] = required_text(p, "rationale")
             if command in {"record_billing", "record_adjustment"}:
                 p["amount"] = decimal_string(p.get("amount"))
+            if command in {"record_billing", "record_usage"}:
+                source_reference = str(p.get("source_contract_reference") or "").strip()
+                if contract.get("source_contracts"):
+                    if source_reference not in _contract_source_references(contract):
+                        raise ValueError("Choose the source agreement for this billing or usage fact.")
+                    p["source_contract_reference"] = source_reference
+                elif source_reference:
+                    if source_reference != contract.get("reference"):
+                        raise ValueError("Activity source agreement must match the contract reference.")
+                    p["source_contract_reference"] = source_reference
+                else:
+                    p.pop("source_contract_reference", None)
             if command == "record_billing":
                 if Decimal(p["amount"]) < 0:
                     original_id = p.get("applies_to_change_set_id")
@@ -634,6 +668,8 @@ class Application:
                         original = next((item for item in contract["activities"] if item["id"] == original_id and item["type"] == "billing" and Decimal(item["amount"]) > 0), None)
                         if original is None or original["effective_date"] > p["effective_date"]:
                             raise ValueError("Choose an earlier positive billing entry on this contract for the credit.")
+                        if (original.get("source_contract_reference") or contract.get("reference")) != (p.get("source_contract_reference") or contract.get("reference")):
+                            raise ValueError("A billing credit must use the original invoice's source agreement.")
                     else:
                         p["applies_to_reference"] = original_reference
                     p["rationale"] = required_text(p, "rationale")
@@ -922,8 +958,11 @@ class Application:
                     p["reference"], p["source_system"] = reference, source_system
                 elif "reference" in p:
                     reference = str(p["reference"] or "").strip()
-                    if reference and any(c["id"] != p["entity_id"] and c.get("reference") == reference for c in state["contracts"]):
-                        raise ValueError("A contract already uses this source reference.")
+                    current = next((c for c in state["contracts"] if c["id"] == p["entity_id"]), None)
+                    if current and current.get("source_contracts") and reference != current.get("reference"):
+                        raise ValueError("A combined contract's primary source reference is fixed; correct the source conclusion in a reviewed workspace.")
+                    if reference and any(c["id"] != p["entity_id"] and reference in _contract_source_references(c) for c in state["contracts"]):
+                        raise ValueError("A source agreement reference already belongs to an accounting contract.")
                     p["reference"] = reference
         elif command == "attach_evidence":
             p["id"] = p.get("id") or identifier("doc")
@@ -1161,7 +1200,7 @@ class Application:
         for key in ("id", "contract_id", "customer_id", "obligation_id", "component_id", "scenario_id", "target_change_set_id", "period_close_id"):
             if key in payload and (not isinstance(payload[key], str) or not payload[key].strip()):
                 raise ValueError(f"{key} must be a nonempty string.")
-        for key in ("name", "email", "reference", "source_system", "description", "rationale", "body", "kind", "label", "method", "treatment", "path", "allocation_scope", "allocation_rationale"):
+        for key in ("name", "email", "reference", "source_system", "source_contract_reference", "combination_basis", "combination_rationale", "description", "rationale", "body", "kind", "label", "method", "treatment", "path", "allocation_scope", "allocation_rationale"):
             if key in payload and not isinstance(payload[key], str):
                 raise ValueError(f"{key} must be text.")
         if payload.get("entity_id") is not None and (not isinstance(payload["entity_id"], str) or not payload["entity_id"].strip()):

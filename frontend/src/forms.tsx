@@ -147,7 +147,7 @@ export function CommandDialog({
                   profileName={(id) => preview.state.policy.account_profiles?.[id]?.name || id}
                 />
               </Section>
-              {["record_opening_position", "link_renewal_contract", "link_modification_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "set_policy", "reopen_period"].includes(command().command) && <Section title="Support this judgment" subtitle="Attach the document or analysis used for this accounting conclusion.">
+              {["create_contract", "record_opening_position", "link_renewal_contract", "link_modification_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "set_policy", "reopen_period"].includes(command().command) && <Section title="Support this judgment" subtitle="Attach the document or analysis used for this accounting conclusion.">
                 <Field label="Supporting file (optional)"><input type="file" onChange={(event) => setSupportFile(event.target.files?.[0] || null)} /></Field>
                 {supportFile && <Field label="Evidence note"><input value={supportNote} onChange={(event) => setSupportNote(event.target.value)} placeholder="What this file supports" /></Field>}
               </Section>}
@@ -281,11 +281,13 @@ export function DetailsForm(
         <Field label="Reference">
           <input
             value={reference}
+            disabled={!customer && Boolean((entity as Contract).source_contracts?.length)}
             onChange={(e) => setReference(e.target.value)}
           />
         </Field>
         {customer && <Field label="Source system"><input value={sourceSystem} onChange={(e) => setSourceSystem(e.target.value)} /></Field>}
       </div>
+      {!customer && Boolean((entity as Contract).source_contracts?.length) && <p className="fine-print">This primary source agreement belongs to a reviewed combined contract and stays fixed in its accounting history.</p>}
       <Field label="Description">
         <textarea
           rows={4}
@@ -716,6 +718,11 @@ export function ContractForm(
   const annualEnd = new Date(Date.UTC(Number(props.period.slice(0, 4)) + 1, Number(props.period.slice(5)) - 1, 0)).toISOString().slice(0, 10);
   const [name, setName] = useState(contract?.name || ""),
     [sourceReference, setSourceReference] = useState(contract?.reference || ""),
+    [combineSources, setCombineSources] = useState(false),
+    [primaryAgreementDate, setPrimaryAgreementDate] = useState(""),
+    [additionalSources, setAdditionalSources] = useState(""),
+    [combinationBasis, setCombinationBasis] = useState(""),
+    [combinationRationale, setCombinationRationale] = useState(""),
     [customer, setCustomer] = useState(
       contract?.customer_id ||
         props.customerId ||
@@ -798,6 +805,17 @@ export function ContractForm(
             consideration: components,
             obligations,
             rationale,
+            ...(combineSources ? {
+              source_contracts: [
+                { reference: sourceReference, agreement_date: primaryAgreementDate },
+                ...additionalSources.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+                  const [reference, ...dateParts] = line.split("|");
+                  return { reference: reference.trim(), agreement_date: dateParts.join("|").trim() };
+                }),
+              ],
+              combination_basis: combinationBasis,
+              combination_rationale: combinationRationale,
+            } : {}),
             ...termAssessment,
           },
         };
@@ -846,8 +864,8 @@ export function ContractForm(
                 placeholder="2026 subscription agreement"
               />
             </Field>
-            <Field label="Source contract reference" hint="Use the stable ID from the contract register so close can compare its full population.">
-              <input value={sourceReference} onChange={(event) => setSourceReference(event.target.value)} placeholder="Agreement ID" />
+            <Field label={combineSources ? "Primary source agreement reference" : "Source contract reference"} hint="Use the stable ID from the contract register so close can compare its full population.">
+              <input required={combineSources} value={sourceReference} onChange={(event) => setSourceReference(event.target.value)} placeholder="Agreement ID" />
             </Field>
             <Field label="Customer">
               <select
@@ -864,6 +882,13 @@ export function ContractForm(
               </select>
             </Field>
           </div>
+          <label className="confirmation-row"><input type="checkbox" checked={combineSources} onChange={(event) => setCombineSources(event.target.checked)} /> Account for multiple source agreements as one contract</label>
+          {combineSources && <Section title="Combined source agreements" subtitle="Record the legal agreements and the accountant's AASB 15 paragraph 17 conclusion. Their consideration and obligations belong in this one accounting contract.">
+            <Field label="Primary agreement date"><input required type="date" value={primaryAgreementDate} onChange={(event) => setPrimaryAgreementDate(event.target.value)} /></Field>
+            <Field label="Additional source agreements" hint="One per line: agreement reference | agreement date (YYYY-MM-DD). Include at least one additional agreement."><textarea required rows={3} value={additionalSources} onChange={(event) => setAdditionalSources(event.target.value)} placeholder="AG-2 | 2026-01-02" /></Field>
+            <Field label="Combination basis"><select required value={combinationBasis} onChange={(event) => setCombinationBasis(event.target.value)}><option value="">Choose criterion</option><option value="package">Single commercial objective</option><option value="interdependent_price">Interdependent price or performance</option><option value="single_obligation">One performance obligation across agreements</option></select></Field>
+            <Field label="Why these agreements form one accounting contract"><textarea required rows={3} value={combinationRationale} onChange={(event) => setCombinationRationale(event.target.value)} placeholder="Explain the timing, common customer, and selected criterion." /></Field>
+          </Section>}
           <div className="form-grid">
             <Field label="Contract start">
               <input
@@ -1055,6 +1080,7 @@ export function ActivityForm(
     [invoiceValue, setInvoiceValue] = useState(correctionTarget?.invoice_value || ""),
     [unitRate, setUnitRate] = useState(String(correctionTarget?.unit_rate || "")),
     [reference, setReference] = useState(correctionTarget?.reference || ""),
+    [sourceContractReference, setSourceContractReference] = useState(correctionTarget?.source_contract_reference || ""),
     [deliveryMethod, setDeliveryMethod] = useState(""),
     [deliveryStart, setDeliveryStart] = useState(""),
     [deliveryEnd, setDeliveryEnd] = useState(""),
@@ -1137,6 +1163,9 @@ export function ActivityForm(
           contract_id: contract.id,
           effective_date: effective,
           rationale,
+          ...(["billing", "usage"].includes(activity) && contract.source_contracts?.length
+            ? { source_contract_reference: sourceContractReference }
+            : {}),
           ...(activity === "billing"
             ? { amount, reference, ...(Number(amount) < 0 ? creditOriginal === "external" ? { applies_to_reference: externalInvoice } : { applies_to_change_set_id: creditOriginal } : {}) }
             : activity === "reassessment"
@@ -1162,6 +1191,7 @@ export function ActivityForm(
       successMessage={correctionTarget ? `${humanize(activity)} source fact corrected.` : `${humanize(activity)} recorded.`}
     >
       <p className="notice">{correctionTarget ? "Replace the original source facts. The original entry stays in change history; this correction recalculates all affected periods." : descriptions[activity]}</p>
+      {["billing", "usage"].includes(activity) && Boolean(contract.source_contracts?.length) && <Field label="Source agreement" hint="Choose the legal agreement that carries this invoice or usage source record; the accounting schedule remains combined."><select required value={sourceContractReference} onChange={(event) => setSourceContractReference(event.target.value)}><option value="">Choose source agreement</option>{contract.source_contracts?.map((source) => <option key={source.reference} value={source.reference}>{source.reference}</option>)}</select></Field>}
       {changedOriginalPromise && <p className="warning">This variable amount changed as part of a prospective amendment. A later estimate change needs a reviewed split between the original and amended promises.</p>}
       {reassessmentNeedsOriginalPromise && !changedOriginalPromise && <p className="fine-print">This amount predates a prospective amendment. Its change follows the original allocation, with revenue for services already delivered recognized in this period. Preview checks whether the original promise and satisfaction path remain identifiable.</p>}
       {activity === "milestone" && selectedTerms?.kind === "material_right" && <p className="fine-print">{selectedRightExercise ? `This exercised right requires a 100% delivery milestone on ${dateLabel(String(selectedRightExercise.delivery_start))}.` : "A milestone for an unexercised right represents delivery within its exercise window, not an election with later delivery."}</p>}

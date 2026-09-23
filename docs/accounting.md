@@ -2,6 +2,10 @@
 
 These are the calculation conventions in the current prototype. Commercial facts and accounting conclusions are separate inputs: billing does not establish satisfaction, usage does not automatically change an estimate of consideration, and the software does not choose a modification treatment for you.
 
+## Multiple source agreements
+
+When an accountant concludes that two or more agreements with the same customer were entered into at or near the same time and satisfy an [AASB 15 paragraph 17](https://standards.aasb.gov.au/aasb-15-dec-2022) criterion, create one accounting contract with every legal agreement reference and date. Record whether the agreements form a package with one commercial objective, have interdependent consideration or performance, or promise one performance obligation, and explain the timing and conclusion. Put the combined consideration and obligations in that single contract; its revenue schedule and net balance are calculated once. Billing and usage facts identify their own source agreement, so the independent register, invoice, and priced-usage comparisons retain legal agreement identities. The workbook exports the combination conclusion and source agreements. The application does not infer whether agreements qualify or impose a fixed interpretation of “at or near the same time.” The conclusion is fixed after creation; related-party customers recorded under different customer IDs, historic conversion, and a later revision of the combination conclusion need separate review.
+
 ## Amounts and allocation
 
 Enter money as decimal strings. The engine uses decimal arithmetic, rounds to cents, and allocates transaction price using relative standalone selling prices. Rounding residuals use the largest remainder, with stable obligation IDs breaking ties, so the allocated cents reconcile exactly to the transaction price.

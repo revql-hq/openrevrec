@@ -38,8 +38,11 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
         has_period_billing = any(item["type"] == "billing" and item["effective_date"][:7] == period for item in contract["activities"])
         if effective_end >= period_start or outstanding or has_period_billing:
             contracts.append(contract)
-    actual_contracts = [str(item.get("reference") or "").strip() for item in contracts]
-    unidentified_contracts = [{"id": item["id"], "name": item["name"]} for item, reference in zip(contracts, actual_contracts) if not reference]
+    actual_contracts = [reference for item in contracts
+                        for reference in ([source["reference"] for source in item["source_contracts"]]
+                                          if item.get("source_contracts") else [str(item.get("reference") or "").strip()])]
+    unidentified_contracts = [{"id": item["id"], "name": item["name"]} for item in contracts
+                              if not item.get("source_contracts") and not str(item.get("reference") or "").strip()]
     actual_contract_set = {item for item in actual_contracts if item}
     duplicate_contracts = sorted(item for item, count in Counter(actual_contracts).items() if item and count > 1)
     actual_billing_rows = [(contract, activity) for contract in state["contracts"] for activity in contract["activities"]
@@ -52,7 +55,7 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
         if isinstance(identity, list) and len(identity) == 2 and identity[0] == "source_id":
             return str(identity[1]).strip()
         return ""
-    actual_billings = [(str(contract.get("reference") or "").strip(), billing_reference(activity))
+    actual_billings = [(str(activity.get("source_contract_reference") or contract.get("reference") or "").strip(), billing_reference(activity))
                        for contract, activity in actual_billing_rows]
     unidentified_billings = [{"contract_id": contract["id"], "activity_id": activity["id"]} for (contract, activity), key in zip(actual_billing_rows, actual_billings) if not all(key)]
     actual_billing_set = {key for key in actual_billings if all(key)}
@@ -60,7 +63,7 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
     actual_usage_rows = [(contract, activity) for contract in state["contracts"]
                          if len(contract["consideration"]) == 1 and contract["consideration"][0].get("metered_value_mode") == "invoice_value"
                          for activity in contract["activities"] if activity["type"] == "usage" and activity["effective_date"][:7] == period]
-    actual_usage = [(str(contract.get("reference") or "").strip(), str(activity.get("reference") or "").strip())
+    actual_usage = [(str(activity.get("source_contract_reference") or contract.get("reference") or "").strip(), str(activity.get("reference") or "").strip())
                     for contract, activity in actual_usage_rows]
     unidentified_usage = [{"contract_id": contract["id"], "activity_id": activity["id"]}
                           for (contract, activity), key in zip(actual_usage_rows, actual_usage) if not all(key)]
@@ -101,7 +104,7 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
         usage_value_rows.append(row)
     return {
         "source_name": manifest["source_name"] if manifest else "",
-        "expected_contract_count": len(expected_contracts), "actual_contract_count": len(contracts),
+        "expected_contract_count": len(expected_contracts), "actual_contract_count": len(actual_contracts),
         "expected_billing_count": len(expected_billings), "actual_billing_count": len(actual_billing_rows),
         "expected_usage_count": len(expected_usage), "actual_usage_count": len(actual_usage_rows),
         "missing_contracts": sorted(expected_contracts - actual_contract_set),

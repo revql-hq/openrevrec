@@ -869,6 +869,8 @@ export function ContractView(props: ViewProps) {
                     </button>
                   </dd>
                 </div>
+                {contract.source_contracts && <div><dt>Combined source agreements</dt><dd>{contract.source_contracts.map((source) => `${source.reference} (${dateLabel(source.agreement_date)})`).join(" · ")}</dd></div>}
+                {contract.combination_basis && <div><dt>Combination basis</dt><dd>{contract.combination_basis === "package" ? "Single commercial objective" : contract.combination_basis === "interdependent_price" ? "Interdependent price or performance" : "One performance obligation"}</dd></div>}
                 <div>
                   <dt>{isMetered ? "Earned invoice value to date" : "Transaction price"}</dt>
                   <dd>{report ? money(report.transaction_price, currency) : "Outside reported period"}</dd>
@@ -901,6 +903,7 @@ export function ContractView(props: ViewProps) {
               {contract.rationale && (
                 <p className="rationale">{contract.rationale}</p>
               )}
+              {contract.combination_rationale && <p className="rationale">{contract.combination_rationale}</p>}
             </Section>
             <Section title={`Performance obligations · effective at ${props.period} end`}>
               <div className="obligation-list">
