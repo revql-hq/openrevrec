@@ -106,12 +106,12 @@ type ReportView = (typeof views)[number];
 
 export function ReportsWorkspace(props: ViewProps) {
   const { state, period } = props;
-  const [view, setView] = useState<ReportView>(props.tab === "External controls" || props.tab === "Source population" ? props.tab : "Close readiness"),
+  const [view, setView] = useState<ReportView>(views.some((name) => name === props.tab) ? props.tab as ReportView : "Close readiness"),
     [review, setReview] = useState<Review | null>(null),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true);
   useEffect(() => {
-    if (props.tab === "External controls" || props.tab === "Source population") setView(props.tab);
+    if (views.some((name) => name === props.tab)) setView(props.tab as ReportView);
   }, [props.tab]);
   useEffect(() => {
     let canceled = false;
@@ -158,7 +158,7 @@ export function ReportsWorkspace(props: ViewProps) {
             role="tab"
             aria-selected={view === name}
             className={view === name ? "active" : ""}
-            onClick={() => setView(name)}
+            onClick={() => { setView(name); props.navigate("Reports", undefined, name); }}
           >
             {name}
           </button>
