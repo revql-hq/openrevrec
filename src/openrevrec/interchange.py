@@ -282,7 +282,11 @@ def export_bytes(state, review=None):
            [[change["payload"].get("period", ""), change["id"], check_id, item.get("disposition", ""), item.get("reason", "")]
             for change in state["change_sets"] if change["command"] == "close_period"
             for check_id, item in change["payload"].get("review_dispositions", {}).items()])
-    _sheet(book, "Warnings", ["Accounting review"], [[w] for w in report["warnings"]])
+    warning_details = report.get("warning_details", [])
+    if len(warning_details) != len(report["warnings"]) or any(item["message"] != warning for item, warning in zip(warning_details, report["warnings"])):
+        warning_details = [{"message": warning} for warning in report["warnings"]]
+    _sheet(book, "Warnings", ["Contract ID", "Obligation ID", "Related contract ID", "Accounting review"],
+           [[item.get("contract_id", ""), item.get("obligation_id", ""), item.get("related_contract_id", ""), item["message"]] for item in warning_details])
     output = io.BytesIO()
     book.save(output)
     return output.getvalue()

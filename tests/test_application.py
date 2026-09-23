@@ -15,6 +15,7 @@ from openrevrec.__main__ import main
 from openrevrec.demo import load_demo
 from openrevrec.interchange import export_bytes, import_bytes, preview_import_bytes, template_bytes
 from openrevrec.posting import compare_journals
+from openrevrec.reporting import build_review
 
 
 def app(tmp_path):
@@ -244,9 +245,14 @@ def test_warning_target_keeps_source_ids_when_contracts_have_the_same_name(tmp_p
         "obligations": [{"id": "other_delivery", "name": "Delivery", "kind": "service", "ssp": "100.00",
                          "method": "point_in_time", "start_date": "2026-09-01", "end_date": "2026-09-30"}],
     }, period="2026-09")
-    duplicate_message = application.reports(period="2026-09")["exceptions"]["warnings"]
-    assert len(duplicate_message) == 1
-    assert duplicate_message[0]["contract_id"] is None
+    review = application.reports(period="2026-09")
+    duplicate_message = review["exceptions"]["warnings"]
+    assert len(duplicate_message) == 2
+    assert {item["contract_id"] for item in duplicate_message} == {"con_2", "con_3"}
+    assert next(check for check in review["checks"] if check["id"] == "warnings")["count"] == 2
+    book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-09"))), read_only=True)
+    assert [row[0] for row in list(book["Warnings"].values)[1:]] == ["con_2", "con_3"]
+    book.close()
 
 
 def test_closed_warning_target_uses_accepted_snapshot_after_contract_rename(tmp_path):
@@ -265,6 +271,12 @@ def test_closed_warning_target_uses_accepted_snapshot_after_contract_rename(tmp_
     assert closed["warnings"][0].startswith("Delivery service / Delivery:")
     assert closed["warning_details"][0]["contract_id"] == "con_1"
     assert application.reports(period="2026-09")["exceptions"]["warnings"][0]["obligation_id"] == "delivery"
+    older = application.state(period="2026-09")
+    older["report"].pop("warning_details")  # An older accepted checkpoint contains message text only.
+    assert build_review(older)["exceptions"]["warnings"][0]["contract_id"] is None
+    book = load_workbook(io.BytesIO(export_bytes(older)), read_only=True)
+    assert book["Warnings"]["D2"].value == closed["warnings"][0]
+    book.close()
 
 
 def test_separate_contract_amendment_link_imports_from_reviewed_workbook(tmp_path):

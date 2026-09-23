@@ -1467,13 +1467,13 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
                 record_warning(f"{names[original['id']]} / {names[added['id']]}: separately accounted contracts have offsetting asset and deferred balances; review their presentation before posting.", original["id"], related_contract_id=added["id"])
         report["summary"] = {key: amount(sum((decimal(item[key]) for item in report["contracts"]), ZERO)) for key in REPORT_AMOUNTS}
     report["schedule"].sort(key=lambda item: (item["period"], item["contract_id"], item["obligation_id"]))
-    unique_warnings = {}
+    unique_warnings = []
+    seen_warnings = set()
     for detail in report["warning_details"]:
-        message = detail["message"]
-        if message in unique_warnings and unique_warnings[message] != detail:
-            unique_warnings[message] = {"message": message, "contract_id": None, "obligation_id": None, "related_contract_id": None}
-        else:
-            unique_warnings.setdefault(message, detail)
-    report["warnings"] = list(unique_warnings)
-    report["warning_details"] = list(unique_warnings.values())
+        identity = (detail["message"], detail["contract_id"], detail["obligation_id"], detail["related_contract_id"])
+        if identity not in seen_warnings:
+            seen_warnings.add(identity)
+            unique_warnings.append(detail)
+    report["warnings"] = [detail["message"] for detail in unique_warnings]
+    report["warning_details"] = unique_warnings
     return report

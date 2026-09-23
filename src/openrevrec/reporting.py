@@ -208,9 +208,11 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
         and row.get("recorded_at", "")[:10] > cutoff_date
         and row["command"] not in {"create_customer", "edit_details", "add_note", "edit_note", "attach_evidence", "record_judgment_review", "record_control_totals", "record_export_posting", "close_period", "create_scenario", "apply_scenario", "rebase_scenario", "archive_scenario", "restore_scenario"}
     ]
-    details_by_message = {item["message"]: item for item in report.get("warning_details", [])}
+    details = report.get("warning_details", [])
+    if len(details) != len(report["warnings"]) or any(item["message"] != warning for item, warning in zip(details, report["warnings"])):
+        details = []  # Older close checkpoints have message text but no source IDs.
     warning_targets = [{"message": warning, "contract_id": None, "obligation_id": None, "related_contract_id": None,
-                        **details_by_message.get(warning, {})} for warning in report["warnings"]]
+                        **(details[index] if details else {})} for index, warning in enumerate(report["warnings"])]
 
     checks = [
         _check("journal", "Journal balances", debit == credit,
