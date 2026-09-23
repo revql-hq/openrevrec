@@ -197,6 +197,20 @@ def _split_period_allocations(components: list[dict], obligations: list[dict]) -
     return base, periods
 
 
+def _specific_specs(components: list[dict], obligations: list[dict]) -> dict[tuple[str, str], tuple[dict, Decimal]]:
+    """Keep nonperiod targeted consideration attributable to its source component."""
+    by_id = {item["id"]: item for item in obligations}
+    specs = {}
+    for component in components:
+        if component.get("allocation_scope") != "specific" or component.get("target_period"):
+            continue
+        targets = component["target_obligation_ids"]
+        allocated = allocate(_price([component]), {identifier: by_id[identifier]["ssp"] for identifier in targets})
+        for identifier, value in allocated.items():
+            specs[(component["id"], identifier)] = (by_id[identifier], value)
+    return specs
+
+
 def _identifier(item: dict, label: str) -> str:
     if not isinstance(item, dict):
         raise ValueError(f"{label} must be an object")
@@ -366,6 +380,9 @@ def validate_contract(contract: dict) -> None:
             raise ValueError("Opening terms already represent the cutover judgment; record later term changes after the cutover day")
     exercised_rights: dict[str, dict] = {}
     delivered_rights: set[str] = set()
+    satisfaction_measures: dict[str, Decimal] = {}
+    adjusted_obligations: set[str] = set()
+    pre_mod_targeted_variable_ids: set[str] = set()
     for activity in _ordered_activities(contract):
         kind = activity.get("type")
         if kind not in ACTIVITY_TYPES:
@@ -428,7 +445,15 @@ def validate_contract(contract: dict) -> None:
                 review_effective = _date(activity["effective_date"]) if term_assessment.get("term_review_date") != prior_review_date else None
                 _validate_term_assessment(term_assessment, review_effective)
             previous_components = components
+            prior_obligations = obligations
             components = deepcopy(activity.get("consideration", components))
+            revised_components_by_id = {item["id"]: item for item in components}
+            for old in previous_components:
+                if old["id"] not in pre_mod_targeted_variable_ids:
+                    continue
+                revised = revised_components_by_id.get(old["id"])
+                if revised is None or _price([revised]) != _price([old]) or revised.get("allocation_scope") != old.get("allocation_scope") or revised.get("target_obligation_ids") != old.get("target_obligation_ids") or revised.get("target_period") != old.get("target_period"):
+                    raise ValueError("A later change to pre-modification targeted variable consideration needs the original promise's allocation")
             revised_obligations = deepcopy(activity.get("obligations", obligations))
             for identifier in exercised_rights:
                 prior_right = next((item for item in obligations if item["id"] == identifier), None)
@@ -437,10 +462,42 @@ def validate_contract(contract: dict) -> None:
                     raise ValueError("An exercised material right needs a separate reviewed treatment before changing or removing its terms")
             obligations = revised_obligations
             _validate_terms(components, obligations, allow_empty=True)
-            if activity["treatment"] == "prospective" and any(item.get("allocation_scope") == "specific" for item in previous_components + components):
-                raise ValueError("Prospective modifications with specifically allocated components need a separate reviewed allocation treatment")
+            if activity["treatment"] == "prospective":
+                previous_by_id = {item["id"]: item for item in previous_components}
+                revised_by_id = {item["id"]: item for item in components}
+                previous_obligations = {item["id"]: item for item in prior_obligations}
+                amendment_day = _date(activity["effective_date"])
+                for old in previous_components:
+                    if old.get("allocation_scope") != "specific":
+                        continue
+                    revised = revised_by_id.get(old["id"])
+                    changed_amount_or_target = revised is None or _price([revised]) != _price([old]) or revised.get("target_period") != old.get("target_period") or revised.get("target_obligation_ids") != old.get("target_obligation_ids")
+                    if not changed_amount_or_target:
+                        continue
+                    past_month = old.get("target_period") and period_end(old["target_period"]) < amendment_day
+                    def satisfied(identifier: str) -> bool:
+                        obligation = previous_obligations[identifier]
+                        exercise = exercised_rights.get(identifier)
+                        if exercise:
+                            obligation = {**obligation, **{field: exercise[field] for field in ("delivery_method", "delivery_start", "delivery_end")}}
+                        return _fraction(obligation, amendment_day - timedelta(days=1), satisfaction_measures) >= ONE
+                    satisfied_targets = all(satisfied(identifier) for identifier in old["target_obligation_ids"])
+                    if past_month or satisfied_targets:
+                        raise ValueError("A prospective modification cannot revise specifically allocated consideration for already satisfied services; use catch_up")
+                for item in components:
+                    old = previous_by_id.get(item["id"])
+                    if old and (old.get("allocation_scope", "relative_ssp") != item.get("allocation_scope", "relative_ssp") or bool(old.get("target_period")) != bool(item.get("target_period"))):
+                        raise ValueError("A prospective modification cannot change a retained component's allocation scope or service-month granularity; use a new component ID and review the treatment")
+                if any(item.get("allocation_scope") == "specific" for item in previous_components + components) and any(item["type"] == "opening_position" for item in contract.get("activities", [])):
+                    raise ValueError("A prospective targeted allocation needs component-level recognized amounts that this opening position does not provide")
+                targeted_ids = {identifier for item in previous_components + components if item.get("allocation_scope") == "specific" for identifier in item["target_obligation_ids"]}
+                if targeted_ids & adjusted_obligations:
+                    raise ValueError("A prospective targeted allocation needs component attribution for prior obligation adjustments")
+                pre_mod_targeted_variable_ids.update(item["id"] for item in previous_components if item.get("allocation_scope") == "specific" and item["kind"] in {"variable", "usage"})
             continue
         if kind == "reassessment":
+            if activity.get("component_id") in pre_mod_targeted_variable_ids:
+                raise ValueError("A later change to pre-modification targeted variable consideration needs the original promise's allocation treatment")
             component = next((item for item in components if item["id"] == activity.get("component_id")), None)
             if component is None or component["kind"] not in {"variable", "usage"}:
                 raise ValueError("Reassessment must identify a current variable or usage component")
@@ -485,6 +542,7 @@ def validate_contract(contract: dict) -> None:
             continue
         if kind == "adjustment":
             decimal(activity.get("amount"), "adjustment amount")
+            adjusted_obligations.add(obligation["id"])
             continue
         if activity["effective_date"] < obligation["start_date"]:
             raise ValueError("Satisfaction activity cannot precede the obligation start_date")
@@ -494,6 +552,7 @@ def validate_contract(contract: dict) -> None:
         if kind == "usage":
             if decimal(activity.get("quantity"), "quantity") < ZERO:
                 raise ValueError("Usage quantity must be nonnegative; use an adjustment for corrections")
+            satisfaction_measures[obligation["id"]] = satisfaction_measures.get(obligation["id"], ZERO) + decimal(activity["quantity"])
         else:
             percentage = decimal(activity.get("percentage", "100" if kind == "milestone" else None), "percentage")
             if not ZERO <= percentage <= 100:
@@ -512,6 +571,7 @@ def validate_contract(contract: dict) -> None:
                         raise ValueError("Material-right delivery must fall within the exercise window")
                 if percentage == Decimal(100):
                     delivered_rights.add(obligation["id"])
+            satisfaction_measures[obligation["id"]] = percentage
 
 
 def _fraction(obligation: dict, day: date, measures: dict[str, Decimal]) -> Decimal:
@@ -579,10 +639,12 @@ def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict
     obligations = deepcopy(contract["obligations"])
     base_allocations, period_specs = _split_period_allocations(components, obligations)
     curves = {item["id"]: _Curve(item, base_allocations[item["id"]]) for item in obligations}
+    specific_curves = {key: _Curve(obligation, value) for key, (obligation, value) in _specific_specs(components, obligations).items()}
     period_curves = {(component_id, parent_id): _Curve(target, value) for component_id, (parent_id, target, value) in period_specs.items()}
     period_parents = {key: key[1] for key in period_curves}
     measures: dict[str, Decimal] = {}
     recognized: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    specific_recognized: dict[tuple[str, str], Decimal] = defaultdict(lambda: ZERO)
     period_recognized: dict[str, Decimal] = defaultdict(lambda: ZERO)
     schedule: dict[tuple[str, str], Decimal] = defaultdict(lambda: ZERO)
     activities: dict[date, list[dict]] = defaultdict(list)
@@ -643,6 +705,8 @@ def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict
             required = curve.value(day, measures)
             schedule[(month, identifier)] += required - recognized[identifier]
             recognized[identifier] = required
+        for key, curve in specific_curves.items():
+            specific_recognized[key] = curve.value(day, measures)
         for component_id, curve in period_curves.items():
             required = curve.value(day, measures)
             schedule[(month, period_parents[component_id])] += required - period_recognized[component_id]
@@ -661,10 +725,14 @@ def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict
                 if kind not in {"modification", "reassessment"}:
                     continue
                 prior = dict(recognized)
+                prior_specific = dict(specific_recognized)
                 prior_period = dict(period_recognized)
                 old_curves = curves
+                old_specific_curves = specific_curves
                 old_period_curves = period_curves
                 old_period_parents = period_parents
+                old_components = components
+                old_obligations = obligations
                 if kind == "modification":
                     components = deepcopy(activity.get("consideration", components))
                     obligations = deepcopy(activity.get("obligations", obligations))
@@ -679,13 +747,64 @@ def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict
                         for field in ("delivery_method", "delivery_start", "delivery_end"):
                             item[field] = old.obligation[field]
                 current_price = _price(components)
+                if kind == "modification" and treatment == "prospective" and components == old_components and obligations == old_obligations:
+                    continue
                 if treatment == "prospective":
-                    remaining = current_price - sum(prior.values(), ZERO) - sum(prior_period.values(), ZERO)
+                    revised_by_id = {item["id"]: item for item in components}
+                    for old in old_components:
+                        if old.get("allocation_scope") != "specific":
+                            continue
+                        earned = sum((value for (component_id, _), value in prior_specific.items() if component_id == old["id"]), ZERO)
+                        earned += sum((value for (component_id, _), value in prior_period.items() if component_id == old["id"]), ZERO)
+                        revised = revised_by_id.get(old["id"])
+                        revised_amount = _price([revised]) if revised else ZERO
+                        if earned and (not revised or revised_amount * earned < ZERO or abs(revised_amount) < abs(earned)):
+                            raise ValueError("A prospective modification cannot reverse already recognized targeted consideration; use catch_up or preserve the earned amount")
                     fractions = {item["id"]: _fraction(item, day - timedelta(days=1), measures) for item in obligations}
                     weights = {item["id"]: decimal(item["ssp"]) * (ONE - fractions[item["id"]]) for item in obligations}
-                    allocated = allocate(remaining, weights)
+                    specific_remaining = defaultdict(lambda: ZERO)
+                    specific_curves = {}
+                    specifically_remaining_total = ZERO
+                    by_id = {item["id"]: item for item in obligations}
+                    for component in components:
+                        if component.get("allocation_scope") != "specific" or component.get("target_period"):
+                            continue
+                        component_prior = sum((value for (component_id, _), value in prior_specific.items() if component_id == component["id"]), ZERO)
+                        remainder = _price([component]) - component_prior
+                        allocated = allocate(remainder, {identifier: weights[identifier] for identifier in component["target_obligation_ids"]})
+                        specifically_remaining_total += remainder
+                        for identifier, value in allocated.items():
+                            key = (component["id"], identifier)
+                            prior_value = prior_specific.get(key, ZERO)
+                            specific_remaining[identifier] += value
+                            specific_curves[key] = _Curve(by_id[identifier], prior_value + value, fractions[identifier], prior_value)
+                    for key, old in old_specific_curves.items():
+                        if key not in specific_curves:
+                            specific_curves[key] = _Curve(old.obligation, prior_specific[key], recognized=prior_specific[key], frozen=True)
+                    revised_period_specs = _split_period_allocations(components, obligations)[1] if any(item.get("target_period") for item in components) else {}
+                    period_curves = {}
+                    period_parents = {}
+                    period_remaining_total = ZERO
+                    for component_id, (parent_id, target, value) in revised_period_specs.items():
+                        component_prior = sum((recognized_value for (old_id, _), recognized_value in prior_period.items() if old_id == component_id), ZERO)
+                        remainder = value - component_prior
+                        fraction = _fraction(target, day - timedelta(days=1), measures)
+                        if fraction >= ONE and remainder != ZERO:
+                            raise ValueError("A prospective modification cannot put remaining consideration in an already satisfied service month; use catch_up or revise the allocation")
+                        key = (component_id, parent_id)
+                        prior_value = prior_period.get(key, ZERO)
+                        period_curves[key] = _Curve(target, prior_value + remainder, fraction, prior_value)
+                        period_parents[key] = parent_id
+                        period_remaining_total += remainder
+                    for key, old in old_period_curves.items():
+                        if key not in period_curves:
+                            period_curves[key] = _Curve(old.obligation, prior_period[key], recognized=prior_period[key], frozen=True)
+                            period_parents[key] = old_period_parents[key]
+                    remaining = current_price - sum(prior.values(), ZERO) - sum(prior_period.values(), ZERO)
+                    pool_remaining = remaining - specifically_remaining_total - period_remaining_total
+                    pooled = allocate(pool_remaining, weights)
                     curves = {
-                        item["id"]: _Curve(item, prior.get(item["id"], ZERO) + allocated[item["id"]],
+                        item["id"]: _Curve(item, prior.get(item["id"], ZERO) + pooled[item["id"]] + specific_remaining[item["id"]],
                                            fractions[item["id"]], prior.get(item["id"], ZERO))
                         for item in obligations
                     }
@@ -697,6 +816,8 @@ def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict
                 else:
                     allocated, revised_period_specs = _split_period_allocations(components, obligations)
                     curves = {item["id"]: _Curve(item, allocated[item["id"]]) for item in obligations}
+                    specific_curves = {key: _Curve(obligation, value) for key, (obligation, value) in _specific_specs(components, obligations).items()}
+                    specific_recognized = defaultdict(lambda: ZERO)
                     period_curves = {(component_id, parent_id): _Curve(target, value) for component_id, (parent_id, target, value) in revised_period_specs.items()}
                     period_parents = {key: key[1] for key in period_curves}
                     for component_id, old in old_period_curves.items():
@@ -734,6 +855,8 @@ def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict
                     required = curve.value(day - timedelta(days=1), measures)
                     schedule[(day.strftime("%Y-%m"), identifier)] += required - recognized[identifier]
                     recognized[identifier] = required
+                for key, curve in specific_curves.items():
+                    specific_recognized[key] = curve.value(day - timedelta(days=1), measures)
                 for component_id, curve in period_curves.items():
                     required = curve.value(day - timedelta(days=1), measures)
                     schedule[(day.strftime("%Y-%m"), period_parents[component_id])] += required - period_recognized[component_id]
@@ -746,6 +869,9 @@ def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict
                     for field in ("delivery_method", "delivery_start", "delivery_end"):
                         obligation[field] = activity[field]
                         curves[identifier].obligation[field] = activity[field]
+                        for (_, parent_id), specific_curve in specific_curves.items():
+                            if parent_id == identifier:
+                                specific_curve.obligation[field] = activity[field]
                 elif kind in {"progress", "milestone"}:
                     measures[identifier] = decimal(activity.get("percentage", "100"))
                 elif kind == "usage":
@@ -769,6 +895,8 @@ def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict
         if day == previous_end:
             prior_recognized = sum(recognized.values(), ZERO) + sum(period_recognized.values(), ZERO)
         if day == selected_end:
+            if sum((curve.target for curve in curves.values()), ZERO) + sum((curve.target for curve in period_curves.values()), ZERO) != current_price:
+                raise ValueError("Allocated obligation and service-month targets do not reconcile to transaction price")
             period_targets = defaultdict(lambda: ZERO)
             for component_id, curve in period_curves.items():
                 period_targets[period_parents[component_id]] += curve.target
@@ -781,6 +909,8 @@ def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict
                                for identifier, curve in curves.items()],
                 "allocation_components": [{"component_id": item["id"], "label": item.get("label", item["id"]), "kind": item["kind"],
                                            "included_amount": amount(_price([item])),
+                                           "recognized_to_date": amount(sum((value for (component_id, _), value in specific_recognized.items() if component_id == item["id"]), ZERO) +
+                                                                        sum((value for (component_id, _), value in period_recognized.items() if component_id == item["id"]), ZERO)) if item.get("allocation_scope") == "specific" else None,
                                            "scope": item.get("allocation_scope", "relative_ssp"),
                                            "target_obligation_ids": item.get("target_obligation_ids", []),
                                            "target_period": item.get("target_period", ""),

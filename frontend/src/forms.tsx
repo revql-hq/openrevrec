@@ -730,7 +730,6 @@ export function ContractForm(
       },
     ],
   );
-  const unsupportedProspectiveTargeting = Boolean(contract && treatment === "prospective" && [...(initialTerms?.consideration || []), ...components].some((item) => item.allocation_scope === "specific"));
   const termAssessment = {
     term_basis: termBasis,
     term_assessment_rationale: termBasis === "fixed" ? "" : termRationale,
@@ -773,7 +772,7 @@ export function ContractForm(
   return (
     <CommandDialog
       {...props}
-      canSubmit={(!contract || effective === loadedEffective) && !unsupportedProspectiveTargeting}
+      canSubmit={!contract || effective === loadedEffective}
       title={contract ? `Modify ${contract.name}` : "New contract"}
       subtitle={
         contract
@@ -888,7 +887,7 @@ export function ContractForm(
                 }}
               />
             </Field>
-            <Field label="Accounting treatment">
+            <Field label="Accounting treatment" hint="Use prospective treatment when the remaining goods or services are distinct from those already transferred. Otherwise assess a cumulative catch-up or mixed treatment outside this form.">
               <select
                 required
                 value={treatment}
@@ -909,7 +908,7 @@ export function ContractForm(
               : "Revenue is recalculated under the revised terms and the difference is recognized on the effective date."}{" "}
             A separate-contract conclusion must be recorded as a new contract. This form does not link that contract to its amendment or represent mixed treatments; retain the connection in supporting evidence before using this path.
           </p>
-          {unsupportedProspectiveTargeting && <p className="warning">Prospective changes that retain specifically allocated components require a separate reviewed allocation treatment. This form cannot calculate that combination.</p>}
+          {treatment === "prospective" && components.some((item) => item.allocation_scope === "specific") && <p className="fine-print">Targeted consideration stays with its named obligation or service month. A price change attributable to already satisfied service needs a catch-up treatment; preview checks that boundary.</p>}
         </>
       )}
       <Field label="Term basis" hint="Use the assessed enforceable term for recognition. Reassess it when the stated trigger occurs.">
@@ -945,6 +944,7 @@ export function ContractForm(
             ? "Reason for modification"
             : "Contract accounting conclusion"
         }
+        hint={contract && treatment === "prospective" ? "Explain why the remaining promises are distinct and how the revised consideration relates to them." : undefined}
       >
         <textarea
           rows={3}
@@ -1033,6 +1033,17 @@ export function ActivityForm(
   const component = variableComponents.some((c) => c.id === selectedComponent)
     ? selectedComponent
     : variableComponents[0]?.id || "";
+  const preModificationVariableIds = new Set<string>();
+  let componentsBeforeAmendment = contract.consideration;
+  for (const change of [...contract.activities].filter((item) => item.type === "modification" && item.effective_date <= effective).sort((a, b) => a.effective_date.localeCompare(b.effective_date) || (a.version || 0) - (b.version || 0))) {
+    if (change.treatment === "prospective") {
+      for (const item of componentsBeforeAmendment) {
+        if (item.allocation_scope === "specific" && ["variable", "usage"].includes(item.kind)) preModificationVariableIds.add(item.id);
+      }
+    }
+    componentsBeforeAmendment = (change.consideration as Component[] | undefined) || componentsBeforeAmendment;
+  }
+  const reassessmentNeedsOriginalPromise = activity === "reassessment" && preModificationVariableIds.has(component);
   const names: Record<string, string> = {
     billing: "Record billing",
     progress: "Update progress",
@@ -1062,6 +1073,7 @@ export function ActivityForm(
       {...props}
       title={correctionTarget ? `Correct ${activity}` : names[activity]}
       subtitle={correctionTarget ? `${contract.name} · replaces the selected source activity while retaining its history` : contract.name}
+      canSubmit={!reassessmentNeedsOriginalPromise}
       command={() => {
         const payload = {
           contract_id: contract.id,
@@ -1090,6 +1102,7 @@ export function ActivityForm(
       successMessage={correctionTarget ? `${humanize(activity)} source fact corrected.` : `${humanize(activity)} recorded.`}
     >
       <p className="notice">{correctionTarget ? "Replace the original source facts. The original entry stays in change history; this correction recalculates all affected periods." : descriptions[activity]}</p>
+      {reassessmentNeedsOriginalPromise && <p className="warning">This targeted variable amount was promised before a prospective amendment. Its later change needs an original-promise allocation treatment that this form cannot calculate.</p>}
       {activity === "milestone" && selectedTerms?.kind === "material_right" && <p className="fine-print">{selectedRightExercise ? `This exercised right requires a 100% delivery milestone on ${dateLabel(String(selectedRightExercise.delivery_start))}.` : "A milestone for an unexercised right represents delivery within its exercise window, not an election with later delivery."}</p>}
       <div className="form-grid">
         <Field label="Effective date">

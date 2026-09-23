@@ -242,6 +242,21 @@ def test_midmonth_prospective_change_preserves_service_delivered_before_effectiv
     assert_balanced(report(item))
 
 
+@pytest.mark.parametrize("effective_date", ["2026-03-01", "2026-05-15", "2026-09-20"])
+def test_unchanged_prospective_terms_do_not_shift_targeted_revenue_pennies(effective_date):
+    item = contract(price="1000.01", obligations=[obligation("a", method="exact_days", ssp="700"),
+                                                   obligation("b", method="exact_days", ssp="900")])
+    item["consideration"].append({"id": "bonus", "kind": "variable", "amount": "55.55", "included_amount": "55.55",
+                                   "allocation_scope": "specific", "target_obligation_ids": ["a"], "allocation_rationale": "A bonus"})
+    baseline = report(item, "2026-12")
+    modified = deepcopy(item)
+    modified["activities"] = [event("modification", effective_date, treatment="prospective", rationale="Term review only",
+                                     consideration=deepcopy(item["consideration"]))]
+    revised = report(modified, "2026-12")
+    assert revised["schedule"] == baseline["schedule"]
+    assert revised["summary"] == baseline["summary"]
+
+
 def test_prospective_termination_preserves_earned_revenue():
     item = contract(activities=[event("modification", "2026-07-01", treatment="prospective", rationale="Termination, six months earned",
                                      consideration=[{"id": "fixed", "kind": "fixed", "amount": "600"}], obligations=[])])

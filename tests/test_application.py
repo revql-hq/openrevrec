@@ -425,8 +425,12 @@ def test_specific_variable_and_credit_allocation_reconcile_and_reassessment_stay
     exported = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-02"))))
     assert exported["Component allocation"]["F3"].value == "specific"
     exported.close()
-    with pytest.raises(ValueError, match="Prospective modifications"):
-        application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-03-01", "treatment": "prospective", "rationale": "Test unsupported split", "consideration": base["consideration"]}, period="2026-03")
+    application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-03-01", "treatment": "prospective", "rationale": "Revised price for remaining distinct service", "consideration": base["consideration"]}, period="2026-03")
+    march = application.state(period="2026-03")["report"]
+    assert march["contracts"][0]["transaction_price"] == "1100.00"
+    assert not [row for row in march["catch_ups"] if row["period"] == "2026-03"]
+    assert application.state(period="2026-02")["report"]["summary"]["revenue"] == february["summary"]["revenue"]
+    assert sum(Decimal(row["amount"]) for row in march["contracts"][0]["allocation"]) == Decimal("1100.00")
 
 
 def test_specific_allocation_import_uses_structured_target_ids(tmp_path):
@@ -445,6 +449,117 @@ def test_specific_allocation_import_uses_structured_target_ids(tmp_path):
     allocation = preview["state"]["report"]["contracts"][0]["allocation"]
     assert {item["obligation_id"]: item["amount"] for item in allocation} == {"pob_a": "700.00", "pob_b": "500.00"}
     assert preview["state"]["report"]["contracts"][0]["allocation_components"][1]["target_obligation_ids"] == ["pob_a"]
+
+
+def test_prospective_modification_preserves_earned_targeted_bonus_and_allocates_only_remaining_service(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    fixed = {"id": "fixed", "kind": "fixed", "amount": "1200.00"}
+    bonus = {"id": "bonus", "kind": "variable", "amount": "180.00", "included_amount": "120.00",
+             "allocation_scope": "specific", "target_obligation_ids": ["a"],
+             "allocation_rationale": "The bonus relates specifically to service A."}
+    obligations = [{"id": identifier, "name": identifier, "kind": "service", "ssp": "600.00", "method": "monthly",
+                    "start_date": "2026-01-01", "end_date": "2026-12-31"} for identifier in ("a", "b")]
+    application.execute("create_contract", {"id": "con_1", "name": "Two services", "customer_id": "cus_1",
+        "start_date": "2026-01-01", "end_date": "2026-12-31", "consideration": [fixed, bonus], "obligations": obligations}, period="2026-01")
+    june = application.state(period="2026-06")["report"]
+    assert june["summary"]["recognized_to_date"] == "660.00"
+    application.execute("close_period", {"period": "2026-06", "review_dispositions": accept_review_items(application, "2026-06")}, period="2026-06")
+    application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-07-01",
+        "treatment": "prospective", "rationale": "Distinct remaining months with a revised base and bonus",
+        "consideration": [{**fixed, "amount": "1500.00"}, {**bonus, "included_amount": "180.00"}]}, period="2026-07")
+    july = application.state(period="2026-07")["report"]
+    assert july["summary"]["revenue"] == "170.00"
+    assert july["catch_ups"] == []
+    assert {row["obligation_id"]: row["amount"] for row in july["contracts"][0]["allocation"]} == {"a": "930.00", "b": "750.00"}
+    assert next(row for row in july["contracts"][0]["allocation_components"] if row["component_id"] == "bonus")["recognized_to_date"] == "80.00"
+    exported = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-07"))))
+    assert exported["Component allocation"]["J3"].value == 80
+    exported.close()
+    assert application.state(period="2026-06")["report"]["summary"]["revenue"] == june["summary"]["revenue"]
+    december = application.state(period="2026-12")["report"]
+    assert december["summary"]["recognized_to_date"] == december["summary"]["transaction_price"] == "1680.00"
+    assert sum(Decimal(row["revenue"]) for row in december["schedule"]) == Decimal("1680.00")
+    assert sum(row["debit_minor"] for row in december["journals"]) == sum(row["credit_minor"] for row in december["journals"])
+    with pytest.raises(ValueError, match="pre-modification targeted variable"):
+        application.execute("reassess_variable_consideration", {"contract_id": "con_1", "component_id": "bonus",
+            "effective_date": "2026-08-01", "included_amount": "170.00", "rationale": "Later estimate changed"}, period="2026-08")
+    with pytest.raises(ValueError, match="pre-modification targeted variable"):
+        application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-08-01",
+            "treatment": "catch_up", "rationale": "Later estimate changed",
+            "consideration": [{**fixed, "amount": "1500.00"}, {**bonus, "included_amount": "170.00"}]}, period="2026-08")
+    september = application.state(period="2026-09")["report"]["summary"]["recognized_to_date"]
+    application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-10-01",
+        "treatment": "prospective", "rationale": "A further price change for distinct remaining months",
+        "consideration": [{**fixed, "amount": "1600.00"}, {**bonus, "included_amount": "180.00"}]}, period="2026-10")
+    assert application.state(period="2026-09")["report"]["summary"]["recognized_to_date"] == september
+    revised = application.state(period="2026-12")["report"]
+    assert revised["summary"]["recognized_to_date"] == revised["summary"]["transaction_price"] == "1780.00"
+    assert sum(Decimal(row["revenue"]) for row in revised["schedule"]) == Decimal("1780.00")
+
+
+def test_prospective_targeted_allocation_rejects_unattributed_prior_adjustment(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    bonus = {"id": "bonus", "kind": "variable", "amount": "120.00", "included_amount": "120.00",
+             "allocation_scope": "specific", "target_obligation_ids": ["service"],
+             "allocation_rationale": "Bonus relates to service."}
+    application.execute("create_contract", {"id": "con_1", "name": "Service", "customer_id": "cus_1",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "fixed", "kind": "fixed", "amount": "1200.00"}, bonus],
+        "obligations": [{"id": "service", "name": "Service", "kind": "service", "ssp": "1200.00", "method": "monthly",
+                         "start_date": "2026-01-01", "end_date": "2026-12-31"}]}, period="2026-01")
+    application.execute("record_adjustment", {"contract_id": "con_1", "obligation_id": "service",
+        "effective_date": "2026-02-01", "amount": "10.00", "rationale": "Manual correction"}, period="2026-02")
+    with pytest.raises(ValueError, match="component attribution"):
+        application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-03-01",
+            "treatment": "prospective", "rationale": "Remaining distinct services", "consideration": [{"id": "fixed", "kind": "fixed", "amount": "1300.00"}, bonus]}, period="2026-03")
+
+
+def test_prospective_modification_carries_a_targeted_credit_without_reversing_earned_discount(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    credit = {"id": "credit", "kind": "credit", "amount": "-120.00", "allocation_scope": "specific",
+              "target_obligation_ids": ["a"], "allocation_rationale": "The concession applies to service A."}
+    obligations = [{"id": identifier, "name": identifier, "kind": "service", "ssp": "600.00", "method": "monthly",
+                    "start_date": "2026-01-01", "end_date": "2026-12-31"} for identifier in ("a", "b")]
+    application.execute("create_contract", {"id": "con_1", "name": "Two services", "customer_id": "cus_1",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "fixed", "kind": "fixed", "amount": "1200.00"}, credit],
+        "obligations": obligations}, period="2026-01")
+    assert application.state(period="2026-06")["report"]["summary"]["recognized_to_date"] == "540.00"
+    application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-07-01",
+        "treatment": "prospective", "rationale": "Higher base price for distinct remaining months",
+        "consideration": [{"id": "fixed", "kind": "fixed", "amount": "1500.00"}, credit]}, period="2026-07")
+    july = application.state(period="2026-07")["report"]
+    assert july["summary"]["revenue"] == "140.00"
+    assert next(row for row in july["contracts"][0]["allocation_components"] if row["component_id"] == "credit")["recognized_to_date"] == "-70.00"
+    assert {row["obligation_id"]: row["amount"] for row in july["contracts"][0]["allocation"]} == {"a": "630.00", "b": "750.00"}
+    december = application.state(period="2026-12")["report"]
+    assert december["summary"]["recognized_to_date"] == december["summary"]["transaction_price"] == "1380.00"
+
+
+def test_prospective_targeted_component_uses_remaining_ssp_when_one_target_is_complete(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    bonus = {"id": "bonus", "kind": "variable", "amount": "120.00", "included_amount": "120.00",
+             "allocation_scope": "specific", "target_obligation_ids": ["a", "b"],
+             "allocation_rationale": "Bonus relates to both services."}
+    application.execute("create_contract", {"id": "con_1", "name": "Two services", "customer_id": "cus_1",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "fixed", "kind": "fixed", "amount": "1200.00"}, bonus],
+        "obligations": [
+            {"id": "a", "name": "A", "kind": "service", "ssp": "600.00", "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-06-30"},
+            {"id": "b", "name": "B", "kind": "service", "ssp": "600.00", "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-12-31"},
+        ]}, period="2026-01")
+    assert application.state(period="2026-06")["report"]["summary"]["recognized_to_date"] == "990.00"
+    application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-07-01",
+        "treatment": "prospective", "rationale": "Repriced distinct remaining service B",
+        "consideration": [{"id": "fixed", "kind": "fixed", "amount": "1500.00"}, bonus]}, period="2026-07")
+    july = application.state(period="2026-07")["report"]
+    assert july["summary"]["revenue"] == "105.00"
+    assert {row["obligation_id"]: row["amount"] for row in july["contracts"][0]["allocation"]} == {"a": "660.00", "b": "960.00"}
+    assert july["contracts"][0]["allocation_components"][1]["recognized_to_date"] == "95.00"
 
 
 def test_variable_bonus_targets_one_service_month_and_later_reassessment_catches_up(tmp_path):
@@ -485,7 +600,7 @@ def test_variable_bonus_targets_one_service_month_and_later_reassessment_catches
     assert [(row["obligation_id"], row["catch_up"]) for row in july["catch_ups"]] == [("service", "30.00")]
     assert application.state(period="2026-06")["report"]["summary"]["revenue"] == "220.00"
     assert sum(row["debit_minor"] for row in july["journals"]) == sum(row["credit_minor"] for row in july["journals"])
-    with pytest.raises(ValueError, match="Prospective modifications"):
+    with pytest.raises(ValueError, match="already satisfied services"):
         application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-08-01", "treatment": "prospective", "rationale": "Remove bonus", "consideration": [contract["consideration"][0]]}, period="2026-08")
     application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-08-01", "treatment": "catch_up", "rationale": "Bonus reversed after final contract review", "consideration": [contract["consideration"][0]]}, period="2026-08")
     august = application.state(period="2026-08")["report"]
@@ -496,6 +611,32 @@ def test_variable_bonus_targets_one_service_month_and_later_reassessment_catches
     december = application.state(period="2026-12")["report"]
     assert december["summary"]["recognized_to_date"] == december["summary"]["transaction_price"] == "1200.00"
     assert sum(Decimal(row["revenue"]) for row in december["schedule"]) == Decimal("1200.00")
+
+
+def test_prospective_modification_keeps_earned_service_month_bonus_and_rejects_repricing_it(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    base = {"id": "fixed", "kind": "fixed", "amount": "1200.00"}
+    bonus = {"id": "bonus", "kind": "variable", "amount": "120.00", "included_amount": "120.00",
+             "allocation_scope": "specific", "target_obligation_ids": ["service"], "target_period": "2026-06",
+             "allocation_rationale": "The bonus belongs to the distinct June service."}
+    application.execute("create_contract", {"id": "con_1", "name": "Monthly service", "customer_id": "cus_1",
+        "start_date": "2026-01-01", "end_date": "2026-12-31", "consideration": [base, bonus],
+        "obligations": [{"id": "service", "name": "Service", "kind": "service", "ssp": "1200.00", "method": "monthly",
+                         "start_date": "2026-01-01", "end_date": "2026-12-31"}]}, period="2026-01")
+    assert application.state(period="2026-06")["report"]["summary"]["revenue"] == "220.00"
+    application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-07-01",
+        "treatment": "prospective", "rationale": "Higher base fee for distinct remaining months",
+        "consideration": [{**base, "amount": "1500.00"}, bonus]}, period="2026-07")
+    assert application.state(period="2026-07")["report"]["summary"]["revenue"] == "150.00"
+    assert next(row for row in application.state(period="2026-07")["report"]["contracts"][0]["allocation_components"] if row["component_id"] == "bonus")["recognized_to_date"] == "120.00"
+    assert application.state(period="2026-06")["report"]["summary"]["revenue"] == "220.00"
+    december = application.state(period="2026-12")["report"]
+    assert december["summary"]["recognized_to_date"] == december["summary"]["transaction_price"] == "1620.00"
+    with pytest.raises(ValueError, match="pre-modification targeted variable"):
+        application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-08-01",
+            "treatment": "prospective", "rationale": "Reduce the completed June bonus",
+            "consideration": [{**base, "amount": "1500.00"}, {**bonus, "included_amount": "90.00"}]}, period="2026-08")
 
 
 def test_period_target_import_and_cutover_boundary(tmp_path):

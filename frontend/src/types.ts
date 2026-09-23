@@ -92,6 +92,7 @@ export type ContractReport = Totals & {
     label: string;
     kind: string;
     included_amount: string;
+    recognized_to_date?: string | null;
     scope: "relative_ssp" | "specific";
     target_obligation_ids: string[];
     target_period?: string;
