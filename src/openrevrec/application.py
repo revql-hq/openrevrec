@@ -239,7 +239,7 @@ class Application:
 
     def _project(self, db, scenario_id="main", frontier=None):
         meta = self.workspace.metadata(db)
-        baseline_policy = {"version": 1, "effective_period": "0001-01", "currency": meta["currency"], "rounding": "ROUND_HALF_UP", "ruleset_version": "orr-0.1", "accounts": DEFAULT_ACCOUNTS.copy(), "account_changes": DEFAULT_ACCOUNTS.copy(), "account_overrides": {"contracts": {}, "obligations": {}}, "override_changes": {}, "account_profiles": {}, "profile_changes": {}, "profile_assignments": {}, "profile_assignment_changes": {}, "obligation_profile_assignments": {}, "obligation_profile_assignment_changes": {}, "account_dimension_rules": [], "account_dimension_source": ""}
+        baseline_policy = {"version": 1, "effective_period": "0001-01", "currency": meta["currency"], "rounding": "ROUND_HALF_UP", "ruleset_version": "orr-0.1", "accounts": DEFAULT_ACCOUNTS.copy(), "account_changes": DEFAULT_ACCOUNTS.copy(), "account_overrides": {"contracts": {}, "obligations": {}}, "override_changes": {}, "account_profiles": {}, "profile_changes": {}, "profile_assignments": {}, "profile_assignment_changes": {}, "obligation_profile_assignments": {}, "obligation_profile_assignment_changes": {}, "account_dimension_rules": [], "account_dimension_source": "", "account_dimension_coverage": "listed"}
         state = {"workspace": meta, "scenario_id": scenario_id,
                  "policy": baseline_policy, "policy_versions": [baseline_policy],
                  "customers": [], "contracts": [], "renewal_links": [], "modification_links": [], "runoff_allocations": [], "notes": [], "evidence": [], "judgment_reviews": [], "term_reviews": [], "closes": [], "controls": [], "population_manifests": [], "postings": []}
@@ -283,6 +283,7 @@ class Application:
                           "profile_assignment_changes": p.get("profile_assignment_changes", {}), "profile_assignments": {},
                           "obligation_profile_assignment_changes": p.get("obligation_profile_assignment_changes", {}), "obligation_profile_assignments": {},
                           "account_dimension_rule_change": p.get("account_dimension_rules"), "account_dimension_source_change": p.get("account_dimension_source"),
+                          "account_dimension_coverage_change": p.get("account_dimension_coverage"),
                           "account_transition": p.get("account_transition"),
                           "change_set_id": row["id"], "recorded_at": row["recorded_at"]}
                 state["policy_versions"].append(policy)
@@ -326,6 +327,7 @@ class Application:
         obligation_assignments = {}
         account_dimension_rules = []
         account_dimension_source = ""
+        account_dimension_coverage = "listed"
         transitions_by_period = {}
         for policy in sorted(state["policy_versions"], key=lambda item: (item["effective_period"], item["version"])):
             mapping.update(policy["account_changes"])
@@ -381,8 +383,11 @@ class Application:
             if policy.get("account_dimension_rule_change") is not None:
                 account_dimension_rules = copy.deepcopy(policy["account_dimension_rule_change"])
                 account_dimension_source = policy.get("account_dimension_source_change") or ""
+            if policy.get("account_dimension_coverage_change") is not None:
+                account_dimension_coverage = policy["account_dimension_coverage_change"]
             policy["account_dimension_rules"] = copy.deepcopy(account_dimension_rules)
             policy["account_dimension_source"] = account_dimension_source
+            policy["account_dimension_coverage"] = account_dimension_coverage
             effective_period = policy["effective_period"]
             policy["account_transition"] = policy.get("account_transition") or transitions_by_period.get(effective_period, "external")
             transitions_by_period[effective_period] = policy["account_transition"]
@@ -915,6 +920,14 @@ class Application:
                     p.pop("account_dimension_source")
             elif "account_dimension_source" in p:
                 raise ValueError("The account-dimension source must accompany its approved combinations.")
+            if "account_dimension_coverage" in p:
+                if not isinstance(p["account_dimension_coverage"], str) or p["account_dimension_coverage"] not in {"listed", "complete"}:
+                    raise ValueError("Choose listed-account review or complete-chart coverage.")
+                if p["account_dimension_coverage"] == current_policy.get("account_dimension_coverage", "listed"):
+                    p.pop("account_dimension_coverage")
+            coverage = p.get("account_dimension_coverage", current_policy.get("account_dimension_coverage", "listed"))
+            if coverage == "complete" and not p.get("account_dimension_rules", current_policy.get("account_dimension_rules", [])):
+                raise ValueError("Complete-chart coverage requires approved account and dimension combinations.")
             if p.get("account_transition") not in (None, "transfer", "external", "runoff"):
                 raise ValueError("Choose transfer, external reconciliation, or reviewed runoff for existing balance-sheet positions.")
             effective_year, effective_month = (int(part) for part in p["effective_period"].split("-"))
@@ -954,7 +967,7 @@ class Application:
             if not p.get("account_transition"):
                 p.pop("account_transition", None)
             latest_closed = max((c["period"] for c in state["closes"] if c["status"] == "closed"), default=None)
-            if latest_closed and p["effective_period"] <= latest_closed and (candidate_accounts != current_policy["accounts"] or any(p["override_changes"].values()) or p["profile_changes"] or p["profile_assignment_changes"] or p["obligation_profile_assignment_changes"] or ("account_dimension_rules" in p and (p["account_dimension_rules"] != current_policy.get("account_dimension_rules", []) or p["account_dimension_source"] != current_policy.get("account_dimension_source", "")))):
+            if latest_closed and p["effective_period"] <= latest_closed and (candidate_accounts != current_policy["accounts"] or any(p["override_changes"].values()) or p["profile_changes"] or p["profile_assignment_changes"] or p["obligation_profile_assignment_changes"] or "account_dimension_coverage" in p or ("account_dimension_rules" in p and (p["account_dimension_rules"] != current_policy.get("account_dimension_rules", []) or p["account_dimension_source"] != current_policy.get("account_dimension_source", "")))):
                 raise ValueError(f"Account mappings effective {p['effective_period']} would affect closed period {latest_closed}; reopen it before changing policy.")
         elif command == "add_note":
             p["id"] = p.get("id") or identifier("note")

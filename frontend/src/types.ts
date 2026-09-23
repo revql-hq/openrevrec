@@ -189,6 +189,7 @@ export type Report = {
   account_dimension_exceptions?: { journal_id: string; contract_id: string; account: string; role: string; dimensions: Record<string, string> }[];
   account_dimension_unvalidated_accounts?: string[];
   policy_account_dimension_rules?: AccountDimensionRule[];
+  policy_account_dimension_coverage?: "listed" | "complete";
   policy_account_dimension_source?: string;
   warnings: string[];
   catch_ups?: CatchUp[];
@@ -347,6 +348,7 @@ export type State = {
     account_transition?: "transfer" | "external" | "runoff";
     account_dimension_rules?: AccountDimensionRule[];
     account_dimension_source?: string;
+    account_dimension_coverage?: "listed" | "complete";
   };
   policy_versions: {
     version: number;
@@ -361,6 +363,7 @@ export type State = {
     obligation_profile_assignments?: Record<string, Record<string, string>>;
     account_dimension_rules?: AccountDimensionRule[];
     account_dimension_source?: string;
+    account_dimension_coverage?: "listed" | "complete";
     change_set_id?: string;
   }[];
   customers: Customer[];

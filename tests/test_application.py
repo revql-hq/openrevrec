@@ -3083,6 +3083,8 @@ def test_supplied_account_dimension_combinations_block_invalid_lines_and_expose_
         "effective_period": "2026-09", "account_profiles": profile,
         "obligation_profile_assignments": {"con_1": {"pob_1": "recurring"}},
     }, period="2026-09")
+    with pytest.raises(ValueError, match="requires approved"):
+        application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_coverage": "complete"}, period="2026-09")
     wrong = [{"account": "4000", "dimensions": {"Department": "Other"}}]
     with pytest.raises(ValueError, match="Name the reviewed chart"):
         application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_rules": wrong}, period="2026-09")
@@ -3112,18 +3114,37 @@ def test_supplied_account_dimension_combinations_block_invalid_lines_and_expose_
     application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_rules": partial,
                                        "account_dimension_source": "Approved chart"}, period="2026-09")
     assert next(row for row in application.reports(period="2026-09")["checks"] if row["id"] == "account_dimensions")["status"] == "review"
+    with pytest.raises(ValueError, match="coverage"):
+        application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_coverage": "partial"}, period="2026-09")
+    application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_coverage": "complete"}, period="2026-09")
+    assert application.state(period="2026-09")["policy"]["account_dimension_coverage"] == "complete"
+    assert next(row for row in application.reports(period="2026-09")["checks"] if row["id"] == "account_dimensions")["status"] == "block"
+    book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-09"))), read_only=True)
+    assert any(row[0] == "Unlisted account blocks close" and row[4] == "1100" for row in book["Combination preflight"].values)
+    book.close()
+    with pytest.raises(ValueError, match="Resolve close blockers"):
+        application.execute("close_period", {"period": "2026-09", "review_dispositions": accept_review_items(application, "2026-09")}, period="2026-09")
+    with pytest.raises(ValueError, match="requires approved"):
+        application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_rules": [],
+                                           "account_dimension_source": ""}, period="2026-09")
     complete = partial + [{"account": "1100", "dimensions": {}}, {"account": "2300", "dimensions": {}}]
     application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_rules": complete,
                                        "account_dimension_source": "Approved chart"}, period="2026-09")
     report = application.state(period="2026-09")["report"]
+    assert report["policy_account_dimension_coverage"] == "complete"
     assert not report["account_dimension_exceptions"]
     assert not report["account_dimension_unvalidated_accounts"]
     assert next(row for row in application.reports(period="2026-09")["checks"] if row["id"] == "account_dimensions")["status"] == "pass"
     assert application.state(period="2026-10")["policy"]["account_dimension_rules"] == complete
+    book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-09"))), read_only=True)
+    assert next(row[1] for row in book["Workspace"].values if row[0] == "Posting preflight coverage") == "complete"
+    book.close()
     application.execute("close_period", {"period": "2026-09", "review_dispositions": accept_review_items(application, "2026-09")}, period="2026-09")
     with pytest.raises(ValueError, match="reopen"):
         application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_rules": partial,
                                            "account_dimension_source": "Approved chart"}, period="2026-09")
+    with pytest.raises(ValueError, match="reopen"):
+        application.execute("set_policy", {"effective_period": "2026-09", "account_dimension_coverage": "listed"}, period="2026-09")
 
 
 def test_backdated_approved_combinations_flow_through_later_unrelated_policy(tmp_path):
@@ -3136,11 +3157,12 @@ def test_backdated_approved_combinations_flow_through_later_unrelated_policy(tmp
     rules = [{"account": "4000", "dimensions": {}}]
     application.execute("set_policy", {
         "effective_period": "2026-10", "account_dimension_rules": rules,
-        "account_dimension_source": "Approved chart v2",
+        "account_dimension_source": "Approved chart v2", "account_dimension_coverage": "complete",
     }, period="2026-10")
     november = application.state(period="2026-11")
     assert november["policy"]["account_dimension_rules"] == rules
     assert november["policy"]["account_dimension_source"] == "Approved chart v2"
+    assert november["policy"]["account_dimension_coverage"] == "complete"
     assert november["policy"]["accounts"]["billing_clearing"] == "1110"
 
 
@@ -3347,7 +3369,7 @@ def test_close_export_indexes_change_support_and_accepted_policy(tmp_path):
     application.execute("record_judgment_review", {"target_change_set_id": policy_change, "reviewer": "Accountant", "disposition": "supported", "conclusion": "4100 is the appropriate revenue account", "support_memo": "Reviewed mapping memo and GL chart"}, period="2026-09")
     bundle = application.report_bundle(period="2026-09")
     book = load_workbook(io.BytesIO(export_bytes(bundle["state"], bundle["review"])), read_only=True)
-    assert book["Workspace"]["B13"].value is True
+    assert next(row[1] for row in book["Workspace"].values if row[0] == "Accepted close") is True
     assert book["Account policy"]["B2"].value == "4100" or any(row[1] == "4100" for row in book["Account policy"].values)
     support = list(book["Judgment support"].values)
     assert any(row[0] == policy_change and row[6] == "supported" and row[7] == "Accountant" and "mapping.txt" in row[14] for row in support)

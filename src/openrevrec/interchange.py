@@ -116,7 +116,7 @@ def export_bytes(state, review=None):
     batch_id = journal_batch_id(state)
     book = Workbook()
     book.remove(book.active)
-    _sheet(book, "Workspace", ["Field", "Value"], [["Company", state["workspace"]["name"]], ["Workspace ID", state["workspace"]["id"]], ["Currency", state["policy"]["currency"]], ["Period", report["period"]], ["Scenario", state["scenario_id"]], ["Version", state["frontier"]], ["Policy version", report.get("policy_version", state["policy"]["version"])], ["Policy effective period", report.get("policy_effective_period", state["policy"]["effective_period"])], ["Ruleset", "orr-0.1"], ["Engine", "0.1.0"], ["Exported at", now()], ["Accepted close", bool(report.get("closed"))], ["Support metadata", "Evidence recorded after close is shown with its own recorded date; financial values use the accepted checkpoint." if report.get("closed") else "Current accepted workspace state."], ["Output status", "Hypothetical scenario support" if state["scenario_id"] != "main" else "Accepted Main close" if report.get("closed") else "Open Main support; subject to change"], ["Journal batch ID", batch_id]])
+    _sheet(book, "Workspace", ["Field", "Value"], [["Company", state["workspace"]["name"]], ["Workspace ID", state["workspace"]["id"]], ["Currency", state["policy"]["currency"]], ["Period", report["period"]], ["Scenario", state["scenario_id"]], ["Version", state["frontier"]], ["Policy version", report.get("policy_version", state["policy"]["version"])], ["Policy effective period", report.get("policy_effective_period", state["policy"]["effective_period"])], ["Posting preflight coverage", report.get("policy_account_dimension_coverage", "listed")], ["Ruleset", "orr-0.1"], ["Engine", "0.1.0"], ["Exported at", now()], ["Accepted close", bool(report.get("closed"))], ["Support metadata", "Evidence recorded after close is shown with its own recorded date; financial values use the accepted checkpoint." if report.get("closed") else "Current accepted workspace state."], ["Output status", "Hypothetical scenario support" if state["scenario_id"] != "main" else "Accepted Main close" if report.get("closed") else "Open Main support; subject to change"], ["Journal batch ID", batch_id]])
     _sheet(book, "Summary", ["Measure", "Amount"], [[k.replace("_", " ").capitalize(), Decimal(v)] for k, v in report["summary"].items() if isinstance(v, (str, int))])
     if review:
         _sheet(book, "Close readiness", ["Check", "Status", "Detail", "Exceptions"], [[row["label"], row["status"], row["detail"], row["count"]] for row in review["checks"]])
@@ -240,7 +240,8 @@ def export_bytes(state, review=None):
            [[chart_source, report.get("policy_effective_period", ""), item["account"], item["dimensions"]] for item in approved])
     preflight = [["Invalid combination", item["journal_id"], item["contract_id"], item["role"], item["account"], item["dimensions"]]
                  for item in report.get("account_dimension_exceptions", [])]
-    preflight += [["Account not covered", "", "", "", account, ""] for account in report.get("account_dimension_unvalidated_accounts", [])]
+    uncovered_status = "Unlisted account blocks close" if report.get("policy_account_dimension_coverage") == "complete" else "Account not covered; review"
+    preflight += [[uncovered_status, "", "", "", account, ""] for account in report.get("account_dimension_unvalidated_accounts", [])]
     if not approved:
         preflight.append(["No approved list configured", "", "", "", "", ""])
     _sheet(book, "Combination preflight", ["Status", "Journal ID", "Contract ID", "Role", "Account", "Dimensions"], preflight)

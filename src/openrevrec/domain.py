@@ -1639,7 +1639,8 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
                               "policy_version": policy.get("version", 1), "policy_effective_period": policy.get("effective_period", "0001-01"),
                               "policy_accounts": accounts, "policy_account_overrides": overrides,
                               "policy_account_profiles": profiles, "policy_profile_assignments": assignments, "policy_obligation_profile_assignments": obligation_assignments,
-                              "policy_account_dimension_rules": policy.get("account_dimension_rules", []), "policy_account_dimension_source": policy.get("account_dimension_source", "")}
+                              "policy_account_dimension_rules": policy.get("account_dimension_rules", []), "policy_account_dimension_source": policy.get("account_dimension_source", ""),
+                              "policy_account_dimension_coverage": policy.get("account_dimension_coverage", "listed")}
     def record_warning(message: str, contract_id: str | None = None, obligation_id: str | None = None, related_contract_id: str | None = None) -> None:
         report["warning_details"].append({"message": message, "contract_id": contract_id, "obligation_id": obligation_id, "related_contract_id": related_contract_id})
 

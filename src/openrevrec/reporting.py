@@ -344,7 +344,8 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
             (f"{len(invalid)} journal line(s) use a combination outside the supplied chart."
              if invalid else f"{len(uncovered)} journal account(s) are absent from the supplied chart."
              if uncovered else "Every journal line matches a supplied approved combination."),
-            "block" if invalid else "review", len(invalid) if invalid else len(uncovered),
+            "block" if invalid or (uncovered and report.get("policy_account_dimension_coverage") == "complete") else "review",
+            len(invalid) if invalid else len(uncovered),
         ))
     targets = {
         "journal": {"view": "Journal entries"},

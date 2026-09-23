@@ -1666,6 +1666,7 @@ export function PolicyForm(props: FormProps) {
     [overrides, setOverrides] = useState(props.state.policy.account_overrides || { contracts: {}, obligations: {} }),
     [profiles, setProfiles] = useState<Record<string, AccountProfile>>(props.state.policy.account_profiles || {}),
     [ruleSource, setRuleSource] = useState(props.state.policy.account_dimension_source || ""),
+    [coverageMode, setCoverageMode] = useState<"listed" | "complete">(props.state.policy.account_dimension_coverage || "listed"),
     [pastedRules, setPastedRules] = useState(""),
     [pasteError, setPasteError] = useState(""),
     [ruleRows, setRuleRows] = useState<{ id: string; account: string; dimensions: { id: string; key: string; value: string }[] }[]>(
@@ -1742,6 +1743,7 @@ export function PolicyForm(props: FormProps) {
       setOverrides(policy.account_overrides || { contracts: {}, obligations: {} });
       setProfiles(policy.account_profiles || {});
       setRuleSource(policy.account_dimension_source || "");
+      setCoverageMode(policy.account_dimension_coverage || "listed");
       setRuleRows((policy.account_dimension_rules || []).map((rule) => ({
         id: uid(), account: rule.account,
         dimensions: Object.entries(rule.dimensions).map(([key, value]) => ({ id: uid(), key, value })),
@@ -1762,7 +1764,8 @@ export function PolicyForm(props: FormProps) {
         command: "set_policy",
         payload: { name, accounts, account_overrides: overrides, account_profiles: profiles, profile_assignments: assignments, obligation_profile_assignments: obligationAssignments,
           account_dimension_rules: ruleRows.map((row) => ({ account: row.account.trim(), dimensions: Object.fromEntries(row.dimensions.map((dimension) => [dimension.key.trim(), dimension.value.trim()])) })),
-          account_dimension_source: ruleSource, account_transition: transition || undefined, effective_period: effectivePeriod, rationale },
+          account_dimension_source: ruleSource, account_dimension_coverage: coverageMode,
+          account_transition: transition || undefined, effective_period: effectivePeriod, rationale },
       })}
       confirmLabel="Save policy"
       successMessage="Company policy updated."
@@ -1825,8 +1828,10 @@ export function PolicyForm(props: FormProps) {
         </div>
         <Button type="button" disabled={!contractId || !accountCode.trim() || (scope === "obligation" && !obligationId)} onClick={addMapping}>Add mapping</Button>
       </Section>
-      <Section title="Approved posting combinations" subtitle="Optional local preflight against a reviewed list of exact GL account and dimension combinations. Only listed accounts are validated; the destination ledger remains authoritative.">
+      <Section title="Approved posting combinations" subtitle="Local preflight against a reviewed list of exact GL account and dimension combinations. Choose whether this list covers selected accounts or every journal account. The destination ledger remains authoritative.">
         <Field label="Chart or account-structure source" hint="Name the approved source and version used to build this list."><input required={ruleRows.length > 0} value={ruleSource} onChange={(event) => setRuleSource(event.target.value)} placeholder="e.g. September account structure export" /></Field>
+        <Field label="Preflight coverage" hint="Selected accounts leaves unlisted journal accounts for close review. Every journal account blocks close if any account lacks an approved combination; use this only when the list is complete for the period."><select value={coverageMode} onChange={(event) => setCoverageMode(event.target.value as "listed" | "complete")}><option value="listed">Selected accounts; review unlisted accounts</option><option value="complete">Every journal account; block gaps</option></select></Field>
+        {coverageMode === "complete" && ruleRows.length === 0 && <p className="notice">Add at least one approved combination before saving complete coverage.</p>}
         <details><summary>Paste combinations from a spreadsheet</summary><p className="fine-print">Paste tab-separated columns headed Account, then dimension names. Each row is one complete allowed combination; a blank cell means the dimension is absent, not a wildcard. This replaces the list below when you click Apply.</p><Field label="Approved combinations table"><textarea rows={5} value={pastedRules} onChange={(event) => { setPastedRules(event.target.value); setPasteError(""); }} placeholder={"Account\tDepartment\tProject\n4000\tRecurring\tP-17\n2300\tHead office\tP-17"} /></Field>{pasteError && <p className="error">{pasteError}</p>}<Button type="button" disabled={!pastedRules.trim()} onClick={replacePastedRules}>Apply pasted combinations</Button></details>
         {ruleRows.map((rule, index) => <div className="editor-row" key={rule.id}>
           <div className="form-grid">
