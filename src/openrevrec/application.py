@@ -79,6 +79,22 @@ def _independent_invoices(left: dict, right: dict, originals: dict[str, dict]) -
     return False
 
 
+def _independent_billing_corrections(left: dict, right: dict, originals: dict[str, dict]) -> bool:
+    """Rebase corrections to separate positive invoices only with distinct source identities."""
+    if left["command"] != "correct_activity" or right["command"] != "correct_activity":
+        return False
+    a, b = left["payload"], right["payload"]
+    if a.get("target_change_set_id") == b.get("target_change_set_id"):
+        return False
+    original_a, original_b = originals.get(a.get("target_change_set_id")), originals.get(b.get("target_change_set_id"))
+    replacement_a, replacement_b = a.get("replacement"), b.get("replacement")
+    if not all(isinstance(item, dict) and item.get("amount") and Decimal(item["amount"]) > 0
+               for item in (original_a, original_b, replacement_a, replacement_b)):
+        return False
+    return all(_distinct_billing_identity(first, second)
+               for first in (original_a, replacement_a) for second in (original_b, replacement_b))
+
+
 def valid_date(value, label="Effective date") -> str:
     _date(value, label)
     return value
@@ -1310,7 +1326,9 @@ class Application:
             if main["command"] in DESCRIPTIVE_COMMANDS:
                 continue
             if any(proposal["command"] == "set_policy" or main["command"] == "set_policy" or
-                   (proposal["entity_id"] == main["entity_id"] and not _independent_invoices(proposal, main, originals))
+                   (proposal["entity_id"] == main["entity_id"]
+                    and not (_independent_invoices(proposal, main, originals)
+                             or _independent_billing_corrections(proposal, main, originals)))
                    for proposal in own):
                 conflicts.append({key: main[key] for key in ("command", "entity_id", "version")})
         return conflicts

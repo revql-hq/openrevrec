@@ -1563,6 +1563,50 @@ def test_scenario_rebase_accepts_distinct_identified_invoices_on_one_contract(tm
         row["credit_minor"] for row in accepted["report"]["journals"])
 
 
+def test_scenario_rebase_accepts_corrections_to_distinct_identified_invoices(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    original_a = application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-10-01",
+        "amount": "100.00", "reference": "INV-101"}, period="2026-10")["result"]["change_set_id"]
+    original_b = application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-10-02",
+        "amount": "200.00", "reference": "INV-102"}, period="2026-10")["result"]["change_set_id"]
+    scenario = application.execute("create_scenario", {"name": "Correct first invoice"})["result"]["id"]
+    application.execute("correct_activity", {"target_change_set_id": original_a, "rationale": "Source invoice amount corrected",
+        "replacement": {"contract_id": "con_1", "effective_date": "2026-10-01", "amount": "90.00", "reference": "INV-101"}},
+        scenario_id=scenario, period="2026-10")
+    application.execute("correct_activity", {"target_change_set_id": original_b, "rationale": "Second source invoice amount corrected",
+        "replacement": {"contract_id": "con_1", "effective_date": "2026-10-02", "amount": "190.00", "reference": "INV-102"}},
+        period="2026-10")
+    assert application.compare(scenario, "2026-10")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-10")
+    application.execute("apply_scenario", {"scenario_id": scenario}, period="2026-10")
+    accepted = application.state(period="2026-10")
+    assert accepted["report"]["summary"]["billings"] == "280.00"
+    assert {activity["corrects"] for activity in accepted["contracts"][0]["activities"] if activity.get("corrects")} == {original_a, original_b}
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in accepted["report"]["journals"]) == 0
+
+
+@pytest.mark.parametrize("same_target,duplicate_replacement", [(True, False), (False, True)])
+def test_scenario_rebase_reviews_overlapping_invoice_corrections(tmp_path, same_target, duplicate_replacement):
+    application = app(tmp_path)
+    seed(application)
+    original_a = application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-10-01",
+        "amount": "100.00", "reference": "INV-101"}, period="2026-10")["result"]["change_set_id"]
+    original_b = application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-10-02",
+        "amount": "200.00", "reference": "INV-102"}, period="2026-10")["result"]["change_set_id"]
+    scenario = application.execute("create_scenario", {"name": "Correct invoice"})["result"]["id"]
+    application.execute("correct_activity", {"target_change_set_id": original_a, "rationale": "Scenario correction",
+        "replacement": {"contract_id": "con_1", "effective_date": "2026-10-01", "amount": "90.00",
+                        "reference": "SHARED" if duplicate_replacement else "INV-101"}},
+        scenario_id=scenario, period="2026-10")
+    application.execute("correct_activity", {"target_change_set_id": original_a if same_target else original_b,
+        "rationale": "Main correction", "replacement": {"contract_id": "con_1", "effective_date": "2026-10-02",
+        "amount": "190.00", "reference": "SHARED" if duplicate_replacement else "INV-101"}}, period="2026-10")
+    assert len(application.compare(scenario, "2026-10")["conflicts"]) == 1
+    with pytest.raises(ValueError, match="same accounting records"):
+        application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-10")
+
+
 @pytest.mark.parametrize("main_amount,main_reference", [("200.00", "INV-102"), ("-20.00", "")])
 def test_scenario_rebase_retains_invoice_collision_and_unidentified_credit_review(tmp_path, main_amount, main_reference):
     application = app(tmp_path)
