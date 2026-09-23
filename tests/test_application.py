@@ -1331,6 +1331,66 @@ def test_usage_source_correction_replaces_measure_without_erasing_history(tmp_pa
         application.execute("correct_activity", {"target_change_set_id": original, "rationale": "Duplicate correction", "replacement": {"contract_id": "con_1", "obligation_id": "units", "effective_date": "2026-01-10", "quantity": "40"}}, period="2026-02")
 
 
+def test_metered_usage_correction_reprices_open_period_and_closed_period_is_protected(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "con_1", "name": "Metered service", "customer_id": "cus_1",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "meter", "kind": "metered", "amount": "0", "unit_rate": "2.50",
+                           "pricing_basis": "right_to_invoice", "rounding_period": "calendar_month",
+                           "rationale": "Each measured unit has the same customer value."}],
+        "obligations": [{"id": "units", "name": "Units", "kind": "service", "ssp": "1", "method": "metered",
+                         "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+    }, period="2026-01")
+    original = application.execute("record_usage", {
+        "contract_id": "con_1", "obligation_id": "units", "effective_date": "2026-01-10", "quantity": "100",
+    }, period="2026-01")["result"]["change_set_id"]
+    application.execute("record_usage", {
+        "contract_id": "con_1", "obligation_id": "units", "effective_date": "2026-02-10", "quantity": "200",
+    }, period="2026-02")
+    assert application.state(period="2026-02")["report"]["summary"]["recognized_to_date"] == "750.00"
+    correction = application.execute("correct_activity", {
+        "target_change_set_id": original, "rationale": "Meter source overstated January by ten units",
+        "replacement": {"contract_id": "con_1", "obligation_id": "units", "effective_date": "2026-01-10", "quantity": "90"},
+    }, period="2026-02")
+    assert correction["state"]["report"]["summary"]["recognized_to_date"] == "725.00"
+    assert correction["state"]["report"]["summary"]["revenue"] == "500.00"
+    application.execute("close_period", {
+        "period": "2026-01", "review_dispositions": accept_review_items(application, "2026-01"),
+    }, period="2026-01")
+    with pytest.raises(ValueError, match="closed period"):
+        application.execute("record_usage", {
+            "contract_id": "con_1", "obligation_id": "units", "effective_date": "2026-01-20", "quantity": "1",
+        }, period="2026-02")
+
+
+def test_metered_rate_and_units_import_from_structured_workbook(tmp_path):
+    application = app(tmp_path)
+    book = load_workbook(io.BytesIO(template_bytes()))
+    book["Customers"].append(["cus_1", "Customer"])
+    book["Contracts"].append(["con_1", "cus_1", "Metered service", "2026-01-01", "2026-12-31"])
+    sheet = book["Consideration"]
+    headers = [cell.value for cell in sheet[1]]
+    component = {"contract_id": "con_1", "id": "meter", "label": "Service units", "kind": "metered",
+                 "amount": "0", "unit_rate": "1.25", "pricing_basis": "right_to_invoice", "rounding_period": "calendar_month",
+                 "rationale": "Each measured unit has the same customer value."}
+    sheet.append([component.get(key) for key in headers])
+    book["Obligations"].append(["con_1", "units", "Units", "service", "1", "metered", "2026-01-01", "2026-12-31"])
+    book["Usage"].append(["con_1", "units", "2026-01-10", "100", "MTR-1", "", "meter:jan-1"])
+    data = io.BytesIO()
+    book.save(data)
+    book.close()
+    preview = preview_import_bytes(application, data.getvalue(), period="2026-01")
+    assert preview["state"]["report"]["summary"]["revenue"] == "125.00"
+    committed = import_bytes(application, data.getvalue(), period="2026-01")
+    assert committed["state"]["report"]["summary"]["revenue"] == "125.00"
+    support = load_workbook(io.BytesIO(export_bytes(committed["state"])), read_only=True)
+    allocation = list(support["Component allocation"].values)
+    assert allocation[1][-3:] == ("1.25", "right_to_invoice", "calendar_month")
+    support.close()
+
+
 def test_customer_external_reference_is_unique_within_its_source_system(tmp_path):
     application = app(tmp_path)
     application.execute("create_customer", {"id": "first", "name": "Legal entity A", "reference": "42", "source_system": "CRM"})

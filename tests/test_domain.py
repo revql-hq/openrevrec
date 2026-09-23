@@ -80,6 +80,78 @@ def test_prepaid_saas_recognition_deferred_and_balanced_journal():
     assert summary(item, "2026-12")["remaining_revenue"] == "0.00"
 
 
+def test_uncapped_invoice_value_rate_uses_actual_units_and_balances_each_month():
+    item = contract(obligations=[obligation(method="metered", ssp="1")], activities=[
+        event("billing", day="2026-01-01", amount="50.00"),
+        event("usage", day="2026-01-10", obligation_id="service", quantity="10"),
+        event("usage", day="2026-01-11", obligation_id="service", quantity="1000"),
+        event("usage", day="2026-02-10", obligation_id="service", quantity="1"),
+    ])
+    item["consideration"] = [{"id": "meter", "label": "API calls", "kind": "metered", "amount": "0.00",
+                              "unit_rate": "0.015", "pricing_basis": "right_to_invoice", "rounding_period": "calendar_month",
+                              "rationale": "The invoiced amount corresponds directly to each call's service value."}]
+    january = report(item, "2026-01")
+    assert january["summary"] == {
+        "transaction_price": "15.15", "revenue": "15.15", "recognized_to_date": "15.15",
+        "billings": "50.00", "billed_to_date": "50.00", "deferred_revenue": "34.85",
+        "contract_asset": "0.00", "remaining_revenue": "0.00"}
+    assert january["contracts"][0]["allocation"][0]["amount"] == "15.15"
+    assert_balanced(january)
+    february = report(item, "2026-02")
+    assert february["summary"]["revenue"] == "0.02"
+    assert february["summary"]["transaction_price"] == "15.17"
+    assert february["summary"]["deferred_revenue"] == "34.83"
+    assert_balanced(february)
+
+
+def test_metered_rate_requires_explicit_eligibility_and_rejects_unsupported_terms():
+    item = contract(obligations=[obligation(method="metered", ssp="1")])
+    item["consideration"] = [{"id": "meter", "kind": "metered", "amount": "0", "unit_rate": "2",
+                              "pricing_basis": "right_to_invoice", "rounding_period": "calendar_month",
+                              "rationale": "Unit rate tracks value delivered."}]
+    validate_contract(item)
+    for changed in (
+        {"unit_rate": "0"}, {"pricing_basis": "estimate"}, {"rounding_period": "contract"}, {"rationale": ""},
+        {"amount": "1"}, {"included_amount": "1"},
+    ):
+        invalid = deepcopy(item)
+        invalid["consideration"][0].update(changed)
+        with pytest.raises(ValueError):
+            validate_contract(invalid)
+    invalid = deepcopy(item)
+    invalid["consideration"].append({"id": "base", "kind": "fixed", "amount": "1"})
+    with pytest.raises(ValueError, match="one service obligation"):
+        validate_contract(invalid)
+    invalid = deepcopy(item)
+    invalid["activities"] = [event("usage", day="2027-01-01", obligation_id="service", quantity="1")]
+    with pytest.raises(ValueError, match="service term"):
+        validate_contract(invalid)
+    invalid = deepcopy(item)
+    invalid["activities"] = [event("modification", treatment="prospective", rationale="Rate changed")]
+    with pytest.raises(ValueError, match="billing and usage only"):
+        validate_contract(invalid)
+
+
+def test_metered_subcent_rate_rounds_monthly_total_independent_of_source_splits():
+    item = contract(obligations=[obligation(method="metered", ssp="0")])
+    item["consideration"] = [{
+        "id": "meter", "kind": "metered", "amount": "0", "unit_rate": "0.004",
+        "pricing_basis": "right_to_invoice", "rounding_period": "calendar_month",
+        "rationale": "The invoiced unit rate directly reflects service value.",
+    }]
+    item["activities"] = [
+        event("usage", day="2026-01-10", obligation_id="service", quantity="1"),
+        event("usage", day="2026-01-20", obligation_id="service", quantity="1"),
+        event("usage", day="2026-02-10", obligation_id="service", quantity="2"),
+    ]
+    assert summary(item, "2026-01")["revenue"] == "0.01"
+    assert summary(item, "2026-02")["revenue"] == "0.01"
+    assert summary(item, "2026-02")["recognized_to_date"] == "0.02"
+    item["activities"][0]["quantity"] = "2"
+    del item["activities"][1]
+    assert summary(item, "2026-01")["revenue"] == "0.01"
+
+
 def test_exact_days_include_both_endpoints_and_leap_day():
     item = contract(price="600", start_date="2024-01-31", end_date="2024-03-30", obligations=[
         obligation(method="exact_days", start_date="2024-01-31", end_date="2024-03-30")])

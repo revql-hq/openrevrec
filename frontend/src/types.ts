@@ -15,6 +15,9 @@ export type Component = {
   potential_amount?: string;
   estimated_amount?: string;
   estimation_method?: string;
+  unit_rate?: string;
+  pricing_basis?: "right_to_invoice";
+  rounding_period?: "calendar_month";
   allocation_scope?: "relative_ssp" | "specific";
   target_obligation_ids?: string[];
   target_period?: string;
@@ -97,6 +100,9 @@ export type ContractReport = Totals & {
     target_obligation_ids: string[];
     target_period?: string;
     rationale: string;
+    unit_rate?: string;
+    pricing_basis?: string;
+    rounding_period?: string;
   }[];
   original_promise_changes?: {
     activity_id?: string | null;

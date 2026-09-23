@@ -66,6 +66,11 @@ export function termReviewStatus(state: State, contract: Contract, effectiveDate
 
 export function changeComponentKind(item: Component, kind: string): Component {
   const next = { ...item, kind };
+  if (kind !== "metered") {
+    delete next.unit_rate;
+    delete next.pricing_basis;
+    delete next.rounding_period;
+  }
   if (kind === "variable" || kind === "usage") {
     next.included_amount ??= item.amount;
   } else {
@@ -81,5 +86,16 @@ export function changeComponentKind(item: Component, kind: string): Component {
     delete next.allocation_rationale;
   }
   if (kind === "credit") delete next.target_period;
+  if (kind === "metered") {
+    next.amount = "0.00";
+    next.unit_rate = "";
+    next.pricing_basis = "right_to_invoice";
+    next.rounding_period = "calendar_month";
+    next.rationale = "";
+    delete next.allocation_scope;
+    delete next.target_obligation_ids;
+    delete next.target_period;
+    delete next.allocation_rationale;
+  }
   return next;
 }

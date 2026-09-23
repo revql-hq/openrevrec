@@ -310,6 +310,7 @@ export const methods: Record<string, string> = {
   point_in_time: "Point in time",
   progress: "Cumulative progress",
   usage: "Finite units / contracted quantity",
+  metered: "Metered units · invoice-value rate",
   milestone: "Milestone completion",
 };
 function ComponentEditor({
@@ -372,14 +373,14 @@ function ComponentEditor({
                   )
                 }
               >
-                {["fixed", "variable", "usage", "credit"].map((kind) => (
+                {["fixed", "variable", "usage", "metered", "credit"].map((kind) => (
                   <option key={kind} value={kind}>
                     {humanize(kind)}
                   </option>
                 ))}
               </select>
             </Field>
-            <Field
+            {item.kind !== "metered" && <Field
               label={item.kind === "variable" ? "Potential amount" : "Amount"}
             >
               <input
@@ -396,7 +397,7 @@ function ComponentEditor({
                   })
                 }
               />
-            </Field>
+            </Field>}
             <button
               className="icon-button remove"
               type="button"
@@ -461,6 +462,13 @@ function ComponentEditor({
               changes. Uncapped metered rates, tiers, and overages are not calculated from units in this workflow.
             </p>
           )}
+          {item.kind === "metered" && <>
+            <p className="fine-print">Use only for one service obligation set to Metered units, with no minimum, tiers, overages, or other consideration. Units are aggregated by calendar month, then multiplied by the rate and rounded to cents. Future units are not forecast.</p>
+            <div className="form-grid">
+              <Field label="Price per unit"><input type="number" min="0" step="any" required value={item.unit_rate || ""} onChange={(event) => update(i, { unit_rate: event.target.value })} /></Field>
+              <Field label="Invoice-value conclusion" hint="Explain why the amount invoiced per unit corresponds directly to the value of service delivered to the customer."><textarea required rows={3} value={item.rationale || ""} onChange={(event) => update(i, { rationale: event.target.value })} /></Field>
+            </div>
+          </>}
           {["variable", "usage", "credit"].includes(item.kind) && <>
             <Field label="Allocation treatment"><select value={item.allocation_scope || "relative_ssp"} onChange={(event) => {
               if (event.target.value === "specific") update(i, { allocation_scope: "specific", target_obligation_ids: [], allocation_rationale: "" });
@@ -596,7 +604,7 @@ function ObligationEditor({
             </button>
           </div>
           <div className="form-grid">
-            <Field label="Standalone selling price">
+            {item.method !== "metered" && <Field label="Standalone selling price">
               <input
                 type="number"
                 required
@@ -605,11 +613,11 @@ function ObligationEditor({
                 value={item.ssp}
                 onChange={(e) => update(i, { ssp: e.target.value })}
               />
-            </Field>
+            </Field>}
             <Field label="Recognition method">
               <select
                 value={item.method}
-                onChange={(e) => update(i, { method: e.target.value })}
+                onChange={(e) => update(i, { method: e.target.value, ...(e.target.value === "metered" ? { ssp: "0" } : {}) })}
               >
                 {Object.entries(methods).map(([value, label]) => (
                   <option key={value} value={value}>
@@ -619,6 +627,7 @@ function ObligationEditor({
               </select>
             </Field>
           </div>
+          {item.method === "metered" && <p className="fine-print">Standalone selling price is not needed when this is the contract's only service obligation.</p>}
           <div className="form-grid">
             <Field label="Start date">
               <input
@@ -989,7 +998,7 @@ export function ActivityForm(
   const [effective, setEffective] = useState(correctionTarget?.effective_date || `${props.period}-01`);
   const { obligations, consideration } = contractTerms(contract, effective);
   const eligibleObligations = obligations.filter((item) => {
-    if (activity === "usage") return item.method === "usage";
+    if (activity === "usage") return ["usage", "metered"].includes(item.method);
     if (activity === "progress") return item.method === "progress";
     if (activity === "right_exercise") return item.kind === "material_right" && !contract.activities.some((event) => event.type === "right_exercise" && event.obligation_id === item.id);
     if (activity === "milestone") {
@@ -1069,7 +1078,7 @@ export function ActivityForm(
       "Billing changes the simplified revenue-less-billing contract balance. Revenue follows satisfaction. This entry does not classify unconditional receivables or cash receipts.",
     progress: "Enter cumulative completion, from 0 to 100 percent.",
     usage:
-      "Record incremental units delivered against the total contracted units.",
+      selectedTerms?.method === "metered" ? "Record incremental units delivered. The reviewed rate recognizes revenue from actual units; no quantity cap or forecast is assumed." : "Record incremental units delivered against the total contracted units.",
     milestone:
       "Record cumulative satisfaction. Use 100% for a completed point-in-time obligation.",
     right_exercise:

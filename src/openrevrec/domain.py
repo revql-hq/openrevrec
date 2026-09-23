@@ -6,9 +6,10 @@ IDs as the stable tie breaker, so every allocation reconciles exactly.
 
 Accounting judgments are inputs: the engine does not decide whether an obligation
 is distinct, a variable amount meets the constraint, or a modification should be
-prospective. Usage measures satisfaction only; changing transaction price requires
-a separate consideration reassessment. This is a single-currency workbench, not a
-general ledger or an automated ASC 606 conclusion.
+prospective. Finite usage measures satisfaction without changing price; an
+explicitly reviewed single-service invoice-value rate instead recognizes actual
+uncapped units. This is a single-currency workbench, not a general ledger or an
+automated ASC 606 conclusion.
 """
 
 from __future__ import annotations
@@ -25,9 +26,9 @@ from typing import Any
 CENT = Decimal("0.01")
 ZERO = Decimal("0")
 ONE = Decimal("1")
-METHODS = {"exact_days", "monthly", "prorated_monthly", "point_in_time", "progress", "usage", "milestone"}
+METHODS = {"exact_days", "monthly", "prorated_monthly", "point_in_time", "progress", "usage", "metered", "milestone"}
 KINDS = {"service", "implementation", "license", "support", "product", "material_right", "other"}
-CONSIDERATION_KINDS = {"fixed", "variable", "usage", "credit"}
+CONSIDERATION_KINDS = {"fixed", "variable", "usage", "metered", "credit"}
 ACTIVITY_TYPES = {"billing", "progress", "usage", "milestone", "adjustment", "modification", "reassessment", "opening_position", "right_exercise"}
 REPORT_AMOUNTS = (
     "transaction_price", "revenue", "recognized_to_date", "billings", "billed_to_date",
@@ -283,6 +284,15 @@ def _validate_terms(components: Any, obligations: Any, *, allow_empty: bool = Fa
                 raise ValueError(f"{key} cannot be negative")
         if kind not in {"variable", "usage"} and "included_amount" in component:
             raise ValueError("Only variable or usage consideration may specify included_amount")
+        if kind == "metered":
+            if number != ZERO or any(key in component for key in ("included_amount", "estimated_amount", "potential_amount", "target_period", "target_obligation_ids")):
+                raise ValueError("Metered consideration starts at zero and cannot carry an estimate or allocation target")
+            if decimal(component.get("unit_rate"), "unit_rate") <= ZERO:
+                raise ValueError("Metered unit_rate must be positive")
+            if component.get("pricing_basis") != "right_to_invoice" or not str(component.get("rationale", "")).strip():
+                raise ValueError("Metered pricing requires a documented right-to-invoice conclusion")
+            if component.get("rounding_period") != "calendar_month":
+                raise ValueError("Metered pricing requires calendar-month aggregation and rounding")
         scope = component.get("allocation_scope", "relative_ssp")
         if not isinstance(scope, str) or scope not in {"relative_ssp", "specific"}:
             raise ValueError("Allocation scope must be relative_ssp or specific")
@@ -337,6 +347,11 @@ def _validate_terms(components: Any, obligations: Any, *, allow_empty: bool = Fa
     if obligations and not any(decimal(item["ssp"]) > ZERO for item in obligations) and _price(components) != ZERO:
         raise ValueError("A nonzero transaction price requires positive SSP")
     obligation_weights = {item["id"]: decimal(item["ssp"]) for item in obligations}
+    if any(item["kind"] == "metered" for item in components) or any(item["method"] == "metered" for item in obligations):
+        if len(components) != 1 or len(obligations) != 1 or components[0]["kind"] != "metered" or obligations[0]["method"] != "metered" or obligations[0]["kind"] != "service":
+            raise ValueError("Metered right-to-invoice pricing currently requires one service obligation and one metered component")
+        if components[0].get("allocation_scope", "relative_ssp") != "relative_ssp":
+            raise ValueError("Metered right-to-invoice pricing does not use an allocation override")
     for component in components:
         if component.get("allocation_scope") == "specific":
             targets = component["target_obligation_ids"]
@@ -392,6 +407,8 @@ def validate_contract(contract: dict) -> None:
     activities = contract.get("activities", [])
     if not isinstance(activities, list):
         raise ValueError("activities must be a list")
+    if components[0]["kind"] == "metered" and (declared_cutover or any(item.get("type") not in {"billing", "usage"} for item in activities)):
+        raise ValueError("Metered right-to-invoice contracts support billing and usage only; opening balances, amendments, and adjustments need separate review")
     seen = set()
     for activity in activities:
         if not isinstance(activity, dict):
@@ -610,10 +627,12 @@ def validate_contract(contract: dict) -> None:
             continue
         if activity["effective_date"] < obligation["start_date"]:
             raise ValueError("Satisfaction activity cannot precede the obligation start_date")
-        expected = {"progress": {"progress"}, "usage": {"usage"}, "milestone": {"milestone", "point_in_time"}}[kind]
+        expected = {"progress": {"progress"}, "usage": {"usage", "metered"}, "milestone": {"milestone", "point_in_time"}}[kind]
         if obligation["method"] not in expected:
             raise ValueError(f"{kind} activity does not match the obligation satisfaction method")
         if kind == "usage":
+            if obligation["method"] == "metered" and activity["effective_date"] > obligation["end_date"]:
+                raise ValueError("Metered usage must be delivered within the service term")
             if decimal(activity.get("quantity"), "quantity") < ZERO:
                 raise ValueError("Usage quantity must be nonnegative; use an adjustment for corrections")
             satisfaction_measures[obligation["id"]] = satisfaction_measures.get(obligation["id"], ZERO) + decimal(activity["quantity"])
@@ -671,6 +690,8 @@ def _fraction(obligation: dict, day: date, measures: dict[str, Decimal]) -> Deci
             elapsed = (Decimal((day - start).days + 1) / Decimal(_month_end(start).day) if months_before == 0 else
                        first_weight + Decimal(months_before - 1) + Decimal(day.day) / Decimal(_month_end(day).day))
         return min(ONE, elapsed / total_weight)
+    if method == "metered":
+        return ZERO  # The separate invoice-value path recognizes actual units, not a finite allocation.
     if obligation["kind"] == "material_right":
         if obligation.get("delivery_method"):
             delivered = {**obligation, "kind": "service", "method": obligation["delivery_method"],
@@ -709,7 +730,58 @@ class _VariableChangeCurve:
     recognized: Decimal = ZERO
 
 
+def _project_metered(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict], list[str]]:
+    """Recognize an explicitly eligible invoice-value rate from actual usage only."""
+    component, obligation = contract["consideration"][0], contract["obligations"][0]
+    rate = decimal(component["unit_rate"], "unit_rate")
+    selected_end = period_end(selected)
+    previous_end = selected_end.replace(day=1) - timedelta(days=1)
+    units_by_month: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    billings: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    billed = prior_billed = ZERO
+    for activity in _ordered_activities(contract):
+        day = _date(activity["effective_date"])
+        month = day.strftime("%Y-%m")
+        if activity["type"] == "billing":
+            value = money(decimal(activity["amount"]))
+            billings[month] += value
+            if day <= selected_end:
+                billed += value
+            if day <= previous_end:
+                prior_billed += value
+        else:
+            units_by_month[month] += decimal(activity["quantity"], "quantity")
+    schedule = {month: money(units * rate) for month, units in units_by_month.items()}
+    selected_earned = sum((value for month, value in schedule.items() if month <= selected), ZERO)
+    prior_earned = sum((value for month, value in schedule.items() if month < selected), ZERO)
+    ending_deferred, ending_asset = max(ZERO, billed - selected_earned), max(ZERO, selected_earned - billed)
+    beginning_deferred, beginning_asset = max(ZERO, prior_billed - prior_earned), max(ZERO, prior_earned - prior_billed)
+    report = {
+        "id": contract["id"], "name": contract["name"], "customer_id": contract["customer_id"],
+        "transaction_price": amount(selected_earned), "revenue": amount(schedule.get(selected, ZERO)),
+        "recognized_to_date": amount(selected_earned), "billings": amount(billings[selected]),
+        "billed_to_date": amount(billed), "deferred_revenue": amount(ending_deferred), "contract_asset": amount(ending_asset),
+        "remaining_revenue": amount(ZERO),
+        "allocation": [{"obligation_id": obligation["id"], "name": obligation["name"],
+                        "ssp": amount(decimal(obligation["ssp"])), "amount": amount(selected_earned), "retired": False}],
+        "allocation_components": [{"component_id": component["id"], "label": component.get("label", component["id"]),
+                                   "kind": "metered", "included_amount": amount(selected_earned),
+                                   "recognized_to_date": amount(selected_earned), "scope": "relative_ssp",
+                                   "target_obligation_ids": [], "target_period": "", "rationale": component["rationale"],
+                                   "unit_rate": str(rate), "pricing_basis": component["pricing_basis"],
+                                   "rounding_period": component["rounding_period"]}],
+        "original_promise_changes": [], "cutover_period": None,
+        "beginning_deferred_revenue": amount(beginning_deferred), "beginning_contract_asset": amount(beginning_asset),
+        "catch_ups": [],
+    }
+    rows = [{"period": month, "contract_id": contract["id"], "obligation_id": obligation["id"], "revenue": amount(value)}
+            for month, value in sorted(schedule.items()) if value]
+    return report, rows, [], []
+
+
 def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict], list[str]]:
+    if contract["consideration"][0]["kind"] == "metered":
+        return _project_metered(contract, selected)
     components = deepcopy(contract["consideration"])
     obligations = deepcopy(contract["obligations"])
     base_allocations, period_specs = _split_period_allocations(components, obligations)

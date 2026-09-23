@@ -734,6 +734,8 @@ export function ContractView(props: ViewProps) {
   const currency = state.workspace.currency;
   const customer = state.customers.find((c) => c.id === contract.customer_id);
   const effectiveTerms = contractTerms(contract, `${props.period}-31`);
+  const isMetered = effectiveTerms.consideration.some((item) => item.kind === "metered");
+  const availableAction = isMetered && !["billing", "usage"].includes(action) ? "billing" : action;
   const termReview = termReviewStatus(state, contract, `${props.period}-31`);
   const shownTerms = termsView === "effective" ? effectiveTerms : contract;
   const serviceDates = effectiveTerms.obligations.flatMap((obligation) => [obligation.start_date, obligation.end_date]).sort();
@@ -755,25 +757,25 @@ export function ContractView(props: ViewProps) {
         </Button>
         {unlinkedExercises.length > 0 && <Button disabled={pendingOpening} onClick={() => dialog({ type: "renewal_link", contractId: contract.id })}>Link renewal</Button>}
         <Button
-          disabled={pendingOpening}
+          disabled={pendingOpening || isMetered}
           onClick={() => dialog({ type: "contract", contractId: contract.id })}
         >
           Record accounting change
         </Button>
-        {!contract.activities.length && (contract.cutover_date || contract.start_date < `${props.period}-01`) && <Button onClick={() => dialog({ type: "opening_position", contractId: contract.id })}>Record opening position</Button>}
+        {!isMetered && !contract.activities.length && (contract.cutover_date || contract.start_date < `${props.period}-01`) && <Button onClick={() => dialog({ type: "opening_position", contractId: contract.id })}>Record opening position</Button>}
         <div className="split-action">
           <select
             aria-label="Activity type"
-            value={action}
+            value={availableAction}
             onChange={(e) => setAction(e.target.value)}
           >
             <option value="billing">Billing</option>
-            <option value="progress">Progress</option>
+            {!isMetered && <option value="progress">Progress</option>}
             <option value="usage">Units delivered</option>
-            <option value="milestone">Satisfaction milestone</option>
+            {!isMetered && <option value="milestone">Satisfaction milestone</option>}
             {effectiveTerms.obligations.some((item) => item.kind === "material_right") && <option value="right_exercise">Exercise material right</option>}
-            <option value="reassessment">Consideration reassessment</option>
-            <option value="adjustment">Revenue adjustment</option>
+            {!isMetered && <option value="reassessment">Consideration reassessment</option>}
+            {!isMetered && <option value="adjustment">Revenue adjustment</option>}
           </select>
           <Button
             primary
@@ -782,7 +784,7 @@ export function ContractView(props: ViewProps) {
               dialog({
                 type: "activity",
                 contractId: contract.id,
-                activity: action,
+                activity: availableAction,
               })
             }
           >
@@ -819,6 +821,7 @@ export function ContractView(props: ViewProps) {
       </div>
       {tab === "Overview" && (
         <>
+          {isMetered && <p className="notice">Invoice-value rate: {effectiveTerms.consideration[0].unit_rate} {currency}/unit. Revenue includes delivered units only; future volume is unknown.</p>}
           <div className="detail-columns">
             <Section title="Contract details">
               <dl className="definition-list">
@@ -836,7 +839,7 @@ export function ContractView(props: ViewProps) {
                   </dd>
                 </div>
                 <div>
-                  <dt>Transaction price</dt>
+                  <dt>{isMetered ? "Earned invoice value to date" : "Transaction price"}</dt>
                   <dd>{report ? money(report.transaction_price, currency) : "Outside reported period"}</dd>
                 </div>
                 <div>
@@ -917,8 +920,8 @@ export function ContractView(props: ViewProps) {
                 <tr>
                   <th>Component</th>
                   <th>Type</th>
-                  <th className="number">Amount</th>
-                  <th className="number">Included amount</th>
+                  <th className="number">{isMetered ? "Rate" : "Amount"}</th>
+                  <th className="number">{isMetered ? "Earned to date" : "Included amount"}</th>
                   <th>Rationale</th>
                 </tr>
               </thead>
@@ -927,9 +930,9 @@ export function ContractView(props: ViewProps) {
                   <tr key={c.id}>
                     <td className="strong">{c.label}</td>
                     <td>{humanize(c.kind)}</td>
-                    <td className="number">{money(c.amount, currency)}</td>
+                    <td className="number">{c.kind === "metered" ? `${c.unit_rate} ${currency}/unit` : money(c.amount, currency)}</td>
                     <td className="number">
-                      {money(c.included_amount || c.amount, currency)}
+                      {c.kind === "metered" ? report ? money(report.transaction_price, currency) : "—" : money(c.included_amount || c.amount, currency)}
                     </td>
                     <td className="muted">{c.rationale || "—"}</td>
                   </tr>
@@ -937,6 +940,7 @@ export function ContractView(props: ViewProps) {
               </tbody>
             </table>
           </div>
+          {isMetered && <p className="fine-print">Units are aggregated by calendar month before the rate is applied and rounded to cents.</p>}
         </Section>
       )}
       {tab === "Obligations" && (
@@ -973,7 +977,7 @@ export function ContractView(props: ViewProps) {
                         </small>
                       )}
                     </td>
-                    <td className="number">{money(o.ssp, currency)}</td>
+                    <td className="number">{o.method === "metered" ? "Not used" : money(o.ssp, currency)}</td>
                     <td className="nowrap">
                       {dateLabel(o.start_date)}
                       <small className="cell-subtitle">
@@ -998,7 +1002,7 @@ export function ContractView(props: ViewProps) {
       {tab === "Allocation" && (
         <Section
           title="Transaction price allocation"
-          subtitle="The included transaction price is allocated at posting precision. Relative SSP is the default; eligible components can target specified obligations."
+          subtitle={isMetered ? "The single service obligation receives the earned amount from actual units at the reviewed invoice-value rate. Future units are not forecast." : "The included transaction price is allocated at posting precision. Relative SSP is the default; eligible components can target specified obligations."}
         >
           {!report ? <p className="notice">This contract is outside the selected period's reported population.</p> : <div className="table-wrap">
             <table>
