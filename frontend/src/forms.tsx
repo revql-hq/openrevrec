@@ -1093,8 +1093,9 @@ export function ActivityForm(
   const positiveBillings = contract.activities.filter((item) => item.type === "billing" && Number(item.amount || 0) > 0 && item.effective_date <= effective);
   const obligation = eligibleObligations.some((o) => o.id === selectedObligation)
     ? selectedObligation
-    : eligibleObligations[0]?.id || "";
+    : "";
   const selectedTerms = eligibleObligations.find((item) => item.id === obligation);
+  const requiresObligation = !["billing", "reassessment", "rate_change"].includes(activity);
   const minimumEffectiveDate = activity === "billing" ? undefined : activityEarliestDate(contract, activity, selectedTerms);
   const invoiceValueMode = selectedTerms?.method === "metered" && consideration[0]?.metered_value_mode === "invoice_value";
   const selectedRightExercise = contract.activities.find((item) => item.type === "right_exercise" && item.obligation_id === obligation && item.effective_date <= effective);
@@ -1161,7 +1162,7 @@ export function ActivityForm(
       {...props}
       title={correctionTarget ? `Correct ${activity}` : names[activity]}
       subtitle={correctionTarget ? `${contract.name} · replaces the selected source activity while retaining its history` : contract.name}
-      canSubmit={!changedOriginalPromise}
+      canSubmit={!changedOriginalPromise && (!requiresObligation || Boolean(selectedTerms))}
       command={() => {
         const payload = {
           contract_id: contract.id,
@@ -1223,7 +1224,7 @@ export function ActivityForm(
                 if (effective < first) setEffective(first);
               }}
             >
-              {!eligibleObligations.length && <option value="">No compatible obligation</option>}
+              <option value="">{eligibleObligations.length ? "Choose an eligible obligation" : "No eligible obligation on this date"}</option>
               {eligibleObligations.map((o) => (
                 <option key={o.id} value={o.id}>
                   {o.name} · {methods[o.method]}
