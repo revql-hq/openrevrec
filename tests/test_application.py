@@ -1279,6 +1279,17 @@ def test_scenario_rebase_reviews_credit_with_only_external_original_reference(tm
         application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-10")
 
 
+def test_scenario_rebase_keeps_incomparable_invoice_identifiers_for_review(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    scenario = application.execute("create_scenario", {"name": "Second invoice"})["result"]["id"]
+    application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-10-02",
+                                           "amount": "100.00", "reference": "INV-102"}, scenario_id=scenario, period="2026-10")
+    application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-10-01",
+                                           "amount": "200.00", "import_source_identity": ["Billing", "source:101"]}, period="2026-10")
+    assert len(application.compare(scenario, "2026-10")["conflicts"]) == 1
+
+
 def test_scenario_invoice_rebase_still_reviews_global_account_change(tmp_path):
     application = app(tmp_path)
     seed(application)

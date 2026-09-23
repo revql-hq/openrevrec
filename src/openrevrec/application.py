@@ -36,9 +36,10 @@ def _independent_invoices(left: dict, right: dict) -> bool:
     if left["command"] != "record_billing" or right["command"] != "record_billing":
         return False
     a, b = left["payload"], right["payload"]
-    left_ids = [a[field] for field in ("reference", "import_source_identity") if a.get(field)]
-    right_ids = [b[field] for field in ("reference", "import_source_identity") if b.get(field)]
-    if not left_ids or not right_ids or any(first == second for first in left_ids for second in right_ids):
+    for field in ("reference", "import_source_identity"):
+        if a.get(field) and b.get(field) and a[field] == b[field]:
+            return False
+    if not any(a.get(field) and b.get(field) for field in ("reference", "import_source_identity")):
         return False
     left_amount, right_amount = Decimal(a["amount"]), Decimal(b["amount"])
     if left_amount > 0 and right_amount > 0:
