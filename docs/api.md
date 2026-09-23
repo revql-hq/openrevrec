@@ -30,13 +30,15 @@ Command names include:
 
 - `create_customer`, `create_contract`, `edit_details`
 - `record_opening_position`, `record_billing`, `record_usage`, `record_progress`, `record_milestone`, `record_right_exercise`, `record_adjustment`
-- `modify_contract`, `reassess_variable_consideration`, `set_policy`, `record_control_totals`, `record_population_manifest`
+- `modify_contract`, `reassess_variable_consideration`, `set_policy`, `record_account_runoff`, `record_control_totals`, `record_population_manifest`
 - `create_scenario`, `apply_scenario`, `rebase_scenario`, `archive_scenario`, `restore_scenario`
 - `close_period`, `reopen_period`, `add_note`, `attach_evidence`, `record_judgment_review`
 
 `record_judgment_review` accepts `target_change_set_id`, `reviewer`, `conclusion`, `support_memo`, and `disposition` (`supported` or `exception`). An exception also requires `exception_reason`. It can target an initial contract or another judgment change visible in the scenario. A later review supersedes the earlier disposition without deleting history. Its support memo can refer to an internal analysis, with file attachments linked separately.
 
 `POST /api/preview` accepts the same command envelope and returns `{ "before": ..., "state": ..., "comparison": ... }` without persisting the change. `before` is the report being changed. Applying a scenario previews Main before and after acceptance, even when the request originates inside the scenario. Rebasing previews the target scenario. Use the returned `before` report for the financial comparison rather than the report currently displayed by the caller.
+
+Scenario rebase can combine two additive billing facts on the same contract when both have distinct invoice or credit identities. Two credits must refer to different earlier invoices by the same original-identity type; workspace originals must also have distinct source invoice identities. A credit against an earlier workspace or external invoice can combine with a new positive invoice only when their invoice identities differ. Duplicate identities, a credit against the newly added invoice, and unlike original-identity types remain conflicts for manual review. Rebase never treats a billing correction or a contract or policy change as an independent invoice.
 
 `set_policy` accepts `effective_period` in `YYYY-MM` form with an `accounts` mapping. A mapping effective in October changes October and later journals while an earlier period retains its prior mapping. A change affecting an accepted closed period requires that period to be reopened first.
 

@@ -31,23 +31,43 @@ DEFAULT_ACCOUNTS = {"revenue": "4000", "deferred_revenue": "2300", "contract_ass
 DESCRIPTIVE_COMMANDS = {"edit_details", "add_note", "edit_note", "attach_evidence", "record_judgment_review"}
 
 
-def _independent_invoices(left: dict, right: dict) -> bool:
-    """Identified invoices can combine with a credit to an older workspace invoice."""
+def _distinct_billing_identity(left: dict, right: dict) -> bool:
+    shared_identity = False
+    for field in ("reference", "import_source_identity"):
+        if left.get(field) and right.get(field):
+            shared_identity = True
+            if left[field] == right[field]:
+                return False
+    return shared_identity
+
+
+def _independent_invoices(left: dict, right: dict, originals: dict[str, dict]) -> bool:
+    """Combine additive billing facts only when credit identities and targets differ."""
     if left["command"] != "record_billing" or right["command"] != "record_billing":
         return False
     a, b = left["payload"], right["payload"]
-    for field in ("reference", "import_source_identity"):
-        if a.get(field) and b.get(field) and a[field] == b[field]:
-            return False
-    if not any(a.get(field) and b.get(field) for field in ("reference", "import_source_identity")):
+    if not _distinct_billing_identity(a, b):
         return False
     left_amount, right_amount = Decimal(a["amount"]), Decimal(b["amount"])
     if left_amount > 0 and right_amount > 0:
         return True
-    if left_amount < 0 < right_amount:
-        return bool(a.get("applies_to_change_set_id"))
-    if right_amount < 0 < left_amount:
-        return bool(b.get("applies_to_change_set_id"))
+    if left_amount < 0 and right_amount < 0:
+        if a.get("applies_to_change_set_id") and b.get("applies_to_change_set_id"):
+            first = originals.get(a["applies_to_change_set_id"])
+            second = originals.get(b["applies_to_change_set_id"])
+            return bool(first and second and _distinct_billing_identity(first, second))
+        if a.get("applies_to_reference") and b.get("applies_to_reference"):
+            return a["applies_to_reference"] != b["applies_to_reference"]
+        return False
+    if left_amount < 0 < right_amount or right_amount < 0 < left_amount:
+        credit, invoice = (a, b) if left_amount < 0 else (b, a)
+        if credit.get("applies_to_change_set_id"):
+            original = originals.get(credit["applies_to_change_set_id"])
+            return bool(original and _distinct_billing_identity(original, invoice))
+        # An external-original credit is independent only if the newly added
+        # invoice has its own reference and is not the named original.
+        return bool(credit.get("applies_to_reference") and invoice.get("reference")
+                    and credit["applies_to_reference"] != invoice["reference"])
     return False
 
 
@@ -1208,13 +1228,15 @@ class Application:
         own = [row for row in self._rows(db, scenario_id) if row["scenario_id"] == scenario_id
                and row["command"] not in SCENARIO_COMMANDS | DESCRIPTIVE_COMMANDS]
         main_rows = db.execute("SELECT command, entity_id, version, payload FROM change_sets WHERE scenario_id='main' AND version>? ORDER BY version", (base_version,))
+        originals = {row["id"]: json.loads(row["payload"])
+                     for row in db.execute("SELECT id, payload FROM change_sets WHERE command='record_billing'")}
         conflicts = []
         for raw in main_rows:
             main = {**dict(raw), "payload": json.loads(raw["payload"])}
             if main["command"] in DESCRIPTIVE_COMMANDS:
                 continue
             if any(proposal["command"] == "set_policy" or main["command"] == "set_policy" or
-                   (proposal["entity_id"] == main["entity_id"] and not _independent_invoices(proposal, main))
+                   (proposal["entity_id"] == main["entity_id"] and not _independent_invoices(proposal, main, originals))
                    for proposal in own):
                 conflicts.append({key: main[key] for key in ("command", "entity_id", "version")})
         return conflicts
