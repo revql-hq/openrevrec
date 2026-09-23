@@ -728,7 +728,7 @@ export function ContractForm(
     [rationale, setRationale] = useState(""),
     [effective, setEffective] = useState(`${props.period}-01`),
     [treatment, setTreatment] = useState(""),
-    [mixedAllocations, setMixedAllocations] = useState<Record<string, { treatment: string; amount: string }>>({}),
+    [mixedAllocations, setMixedAllocations] = useState<Record<string, { treatment: string; amount: string; revised_progress?: string }>>({}),
     [loadedEffective, setLoadedEffective] = useState(`${props.period}-01`),
     [termsDirty, setTermsDirty] = useState(false),
     [termBasis, setTermBasis] = useState<"fixed" | "cancellable" | "evergreen">(initialTerms?.termAssessment.basis || "fixed"),
@@ -779,6 +779,9 @@ export function ContractForm(
               obligation_id: item.id,
               treatment: mixedAllocations[item.id]?.treatment || "",
               amount: mixedAllocations[item.id]?.amount || "",
+              ...(mixedAllocations[item.id]?.treatment === "catch_up" && mixedAllocations[item.id]?.revised_progress
+                ? { revised_progress: mixedAllocations[item.id].revised_progress }
+                : {}),
             })) } : {}),
             ...(termAssessmentChanged ? termAssessment : {}),
           },
@@ -971,10 +974,11 @@ export function ContractForm(
         end={end}
       />
       {contract && treatment === "mixed" && <Section title="Mixed-treatment allocation" subtitle="Record the reviewed lifetime price for every obligation; these amounts must add to revised lifetime consideration.">
-        <p className="fine-print">Use catch-up for an existing partially satisfied, non-distinct service; prospective for distinct remaining service; retained for an already satisfied original promise. This path requires fixed consideration and no earlier opening position or accounting change.</p>
+        <p className="fine-print">Use catch-up for an existing partially satisfied, non-distinct service; prospective for distinct remaining service; retained for an already satisfied original promise. If an amendment changes a progress-based service's completion measure, enter its revised percentage for the catch-up. This path requires fixed consideration and no earlier opening position or accounting change.</p>
         {obligations.map((item) => <div className="form-grid" key={item.id}>
-          <Field label={`${item.name || "Obligation"} treatment`}><select required value={mixedAllocations[item.id]?.treatment || ""} onChange={(event) => setMixedAllocations((current) => ({ ...current, [item.id]: { treatment: event.target.value, amount: current[item.id]?.amount || "" } }))}><option value="">Choose effect</option><option value="catch_up">Cumulative catch-up</option><option value="prospective">Prospective</option><option value="retained">Already satisfied; retain earned revenue</option></select></Field>
-          <Field label="Revised lifetime allocation"><input required type="number" min="0" step="0.01" value={mixedAllocations[item.id]?.amount || ""} onChange={(event) => setMixedAllocations((current) => ({ ...current, [item.id]: { treatment: current[item.id]?.treatment || "", amount: event.target.value } }))} /></Field>
+          <Field label={`${item.name || "Obligation"} treatment`}><select required value={mixedAllocations[item.id]?.treatment || ""} onChange={(event) => setMixedAllocations((current) => ({ ...current, [item.id]: { treatment: event.target.value, amount: current[item.id]?.amount || "", revised_progress: event.target.value === "catch_up" ? current[item.id]?.revised_progress || "" : "" } }))}><option value="">Choose effect</option><option value="catch_up">Cumulative catch-up</option><option value="prospective">Prospective</option><option value="retained">Already satisfied; retain earned revenue</option></select></Field>
+          <Field label="Revised lifetime allocation"><input required type="number" min="0" step="0.01" value={mixedAllocations[item.id]?.amount || ""} onChange={(event) => setMixedAllocations((current) => ({ ...current, [item.id]: { ...current[item.id], treatment: current[item.id]?.treatment || "", amount: event.target.value } }))} /></Field>
+          {item.method === "progress" && mixedAllocations[item.id]?.treatment === "catch_up" && <Field label="Revised completion at amendment (%)" hint="Leave blank if the previous completion measure is still valid. Enter the newly reviewed cumulative percentage if the amended scope changes progress."><input type="number" min="0.000001" max="99.999999" step="any" value={mixedAllocations[item.id]?.revised_progress || ""} onChange={(event) => setMixedAllocations((current) => ({ ...current, [item.id]: { ...current[item.id], treatment: "catch_up", amount: current[item.id]?.amount || "", revised_progress: event.target.value } }))} /></Field>}
         </div>)}
       </Section>}
       <Field

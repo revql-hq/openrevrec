@@ -280,7 +280,7 @@ def test_mixed_modification_catches_up_partial_service_and_preserves_distinct_fu
         "consideration": [{"id": "price", "kind": "fixed", "amount": "1200"}],
         "obligations": obligations,
         "mixed_allocation": [
-            {"obligation_id": "integrated", "treatment": "catch_up", "amount": "900.00"},
+            {"obligation_id": "integrated", "treatment": "catch_up", "amount": "900.00", "revised_progress": "40"},
             {"obligation_id": "support", "treatment": "prospective", "amount": "300.00"},
         ],
     }
@@ -298,6 +298,14 @@ def test_mixed_modification_catches_up_partial_service_and_preserves_distinct_fu
         application.execute("modify_contract", {**amendment, "consideration": [
             {"id": "price", "kind": "variable", "amount": "1200", "included_amount": "1200", "rationale": "Constrained estimate"},
         ]}, period="2026-07")
+    with pytest.raises(ValueError, match="Revised progress requires a catch-up obligation"):
+        application.execute("modify_contract", {**amendment, "mixed_allocation": [
+            {**amendment["mixed_allocation"][0], "revised_progress": "100"}, amendment["mixed_allocation"][1],
+        ]}, period="2026-07")
+    with pytest.raises(ValueError, match="recognition method needs a reviewed satisfaction model"):
+        application.execute("modify_contract", {**amendment, "obligations": [
+            {**obligations[0], "method": "monthly"}, obligations[1],
+        ], "mixed_allocation": [{key: value for key, value in amendment["mixed_allocation"][0].items() if key != "revised_progress"}, amendment["mixed_allocation"][1]]}, period="2026-07")
     template = load_workbook(io.BytesIO(template_bytes()))
     import_rows = {
         "Amendments": {"source_id": "amend:mixed", "contract_id": "mixed", "effective_date": "2026-07-01",
@@ -313,22 +321,23 @@ def test_mixed_modification_catches_up_partial_service_and_preserves_distinct_fu
     template.save(data)
     template.close()
     imported_preview = preview_import_bytes(application, data.getvalue(), period="2026-07")
-    assert imported_preview["state"]["report"]["summary"]["revenue"] == "50.00"
+    assert imported_preview["state"]["report"]["summary"]["revenue"] == "-40.00"
     application.execute("modify_contract", amendment, period="2026-07")
     application.execute("record_progress", {"contract_id": "mixed", "obligation_id": "integrated",
-                                            "effective_date": "2026-07-31", "percentage": "60"}, period="2026-07")
+                                            "effective_date": "2026-07-31", "percentage": "50"}, period="2026-07")
     june = application.state(period="2026-06")["report"]
     july = application.state(period="2026-07")["report"]
     assert june["summary"]["recognized_to_date"] == "400.00"
     assert july["summary"]["transaction_price"] == "1200.00"
-    assert july["summary"]["revenue"] == "140.00"
-    assert july["summary"]["recognized_to_date"] == "540.00"
-    assert july["contracts"][0]["catch_ups"][0]["catch_up"] == "50.00"
+    assert july["summary"]["revenue"] == "50.00"
+    assert july["summary"]["recognized_to_date"] == "450.00"
+    assert july["contracts"][0]["catch_ups"][0]["catch_up"] == "-40.00"
     assert {(row["obligation_id"], row["amount"]) for row in july["contracts"][0]["allocation"]} == {
         ("integrated", "900.00"), ("support", "300.00")}
     support = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-07"))), read_only=True)
     assert [(row[2], row[3], row[4]) for row in list(support["Mixed modifications"].values)[1:]] == [
         ("integrated", "catch_up", 900), ("support", "prospective", 300)]
+    assert support["Mixed modifications"]["F2"].value == 40
     support.close()
     assert application.state(period="2026-09")["report"]["summary"]["revenue"] == "75.00"
     with pytest.raises(ValueError, match="reviewed follow-on treatment"):
@@ -368,6 +377,10 @@ def test_mixed_modification_retains_completed_original_obligation(tmp_path):
     with pytest.raises(ValueError, match="Retained mixed allocation must equal"):
         application.execute("modify_contract", {**amendment, "consideration": [{"id": "price", "kind": "fixed", "amount": "1310"}],
             "mixed_allocation": [{**row, "amount": "110.00"} if row["obligation_id"] == "setup" else row for row in amendment["mixed_allocation"]]}, period="2026-07")
+    with pytest.raises(ValueError, match="keep its original satisfaction terms"):
+        application.execute("modify_contract", {**amendment, "obligations": [
+            {**obligations[0], "method": "milestone"}, *obligations[1:],
+        ]}, period="2026-07")
     application.execute("modify_contract", amendment, period="2026-07")
     july = application.state(period="2026-07")["report"]
     assert july["summary"]["revenue"] == "50.00"

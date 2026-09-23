@@ -220,7 +220,7 @@ def _mixed_allocations(activity: dict, components: list[dict], obligations: list
     expected = {item["id"] for item in obligations}
     result: dict[str, tuple[str, Decimal]] = {}
     for row in rows:
-        if not isinstance(row, dict) or set(row) != {"obligation_id", "treatment", "amount"}:
+        if not isinstance(row, dict) or not {"obligation_id", "treatment", "amount"} <= set(row) or set(row) - {"obligation_id", "treatment", "amount", "revised_progress"}:
             raise ValueError("Each mixed allocation needs an obligation, treatment, and revised lifetime amount")
         identifier = row["obligation_id"]
         treatment = row["treatment"]
@@ -228,6 +228,10 @@ def _mixed_allocations(activity: dict, components: list[dict], obligations: list
             raise ValueError("Mixed allocations must identify each revised obligation exactly once")
         if treatment not in {"catch_up", "prospective", "retained"}:
             raise ValueError("Mixed allocation treatment must be catch_up, prospective, or retained")
+        if "revised_progress" in row:
+            progress = decimal(row["revised_progress"], "revised progress")
+            if treatment != "catch_up" or not ZERO < progress < Decimal(100):
+                raise ValueError("Revised progress requires a catch-up obligation and a completion percentage between 0 and 100")
         value = decimal(row["amount"], "mixed allocation amount")
         if value < ZERO or value != money(value):
             raise ValueError("Mixed allocation amounts must be nonnegative and stated in cents")
@@ -574,15 +578,31 @@ def validate_contract(contract: dict) -> None:
                 if not {item["id"] for item in prior_obligations} <= {item["id"] for item in obligations}:
                     raise ValueError("Mixed treatment must retain every original obligation, including satisfied promises")
                 allocations = _mixed_allocations(activity, components, obligations)
-                original_ids = {item["id"] for item in prior_obligations}
+                originals = {item["id"]: item for item in prior_obligations}
+                progress_by_id = {row["obligation_id"]: decimal(row["revised_progress"])
+                                  for row in activity["mixed_allocation"] if "revised_progress" in row}
                 for item in obligations:
                     treatment = allocations[item["id"]][0]
+                    original = originals.get(item["id"])
+                    old_fraction = (_fraction(original, amendment_day - timedelta(days=1), satisfaction_measures)
+                                    if original else ZERO)
+                    if item["id"] in progress_by_id:
+                        if original is None or original["method"] != "progress" or item["method"] != "progress":
+                            raise ValueError("Revised progress requires an existing progress-method obligation")
+                        satisfaction_measures[item["id"]] = progress_by_id[item["id"]]
                     fraction = _fraction(item, amendment_day - timedelta(days=1), satisfaction_measures)
-                    if treatment == "catch_up" and (item["id"] not in original_ids or not ZERO < fraction < ONE):
+                    if treatment == "catch_up" and (original is None or original["method"] != item["method"]):
+                        raise ValueError("Changing a catch-up obligation's recognition method needs a reviewed satisfaction model")
+                    if treatment == "catch_up" and (not ZERO < old_fraction < ONE or not ZERO < fraction < ONE):
                         raise ValueError("Catch-up in a mixed modification needs an existing partially satisfied obligation")
                     if treatment == "prospective" and fraction >= ONE:
                         raise ValueError("A fully satisfied obligation cannot receive prospective mixed allocation")
-                    if treatment == "retained" and (item["id"] not in original_ids or fraction < ONE):
+                    if treatment == "retained" and original is not None and any(
+                        original.get(field) != item.get(field)
+                        for field in ("kind", "method", "start_date", "end_date", "total_units")
+                    ):
+                        raise ValueError("A retained satisfied obligation must keep its original satisfaction terms")
+                    if treatment == "retained" and (original is None or old_fraction < ONE or fraction < ONE):
                         raise ValueError("Retained mixed allocation needs an already satisfied original obligation")
                 mixed_recorded = True
             for identifier, (original, original_obligations, eligible) in list(original_variable_bases.items()):
@@ -1125,6 +1145,9 @@ def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict
                         warnings.append({"message": f"{contract['name']}: prospective remaining consideration is negative; future revenue includes reversals.", "contract_id": contract["id"]})
                 elif treatment == "mixed":
                     allocations = _mixed_allocations(activity, accounting_components, obligations)
+                    for row in activity["mixed_allocation"]:
+                        if "revised_progress" in row:
+                            measures[row["obligation_id"]] = decimal(row["revised_progress"])
                     curves = {}
                     for item in obligations:
                         identifier = item["id"]
