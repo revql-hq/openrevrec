@@ -208,12 +208,9 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
         and row.get("recorded_at", "")[:10] > cutoff_date
         and row["command"] not in {"create_customer", "edit_details", "add_note", "edit_note", "attach_evidence", "record_judgment_review", "record_control_totals", "record_export_posting", "close_period", "create_scenario", "apply_scenario", "rebase_scenario", "archive_scenario", "restore_scenario"}
     ]
-    warning_targets = []
-    for warning in report["warnings"]:
-        match = next((c for c in state["contracts"] if warning.startswith(c["name"] + ":") or warning.startswith(c["name"] + " / ")), None)
-        obligation = next((o for o in match["obligations"] if f" / {o['name']}:" in warning), None) if match else None
-        warning_targets.append({"message": warning, "contract_id": match["id"] if match else None,
-                                "obligation_id": obligation["id"] if obligation else None})
+    details_by_message = {item["message"]: item for item in report.get("warning_details", [])}
+    warning_targets = [{"message": warning, "contract_id": None, "obligation_id": None, "related_contract_id": None,
+                        **details_by_message.get(warning, {})} for warning in report["warnings"]]
 
     checks = [
         _check("journal", "Journal balances", debit == credit,

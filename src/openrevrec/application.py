@@ -334,6 +334,7 @@ class Application:
                 report["catch_ups"] = [r for r in report["catch_ups"] if r["period"] != row["period"]] + [r for r in snapshot["catch_ups"] if r["period"] == row["period"]]
                 if period == row["period"]:
                     report.update({k: snapshot[k] for k in ("summary", "contracts", "journals", "warnings")})
+                    report["warning_details"] = snapshot.get("warning_details", [])
                     report["account_transitions"] = snapshot.get("account_transitions", [])
                     report["segment_imbalances"] = snapshot.get("segment_imbalances", [])
                     report["account_dimension_exceptions"] = snapshot.get("account_dimension_exceptions", [])

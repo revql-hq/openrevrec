@@ -203,6 +203,16 @@ def test_separate_contract_amendment_link_preserves_two_revenue_schedules(tmp_pa
     assert {(row["contract_id"], row["revenue"]) for row in july["report"]["schedule"] if row["period"] == "2026-07"} == {
         ("original", "100.00"), ("added", "100.00")}
     assert sum(row["debit_minor"] - row["credit_minor"] for row in july["report"]["journals"]) == 0
+    assert not any("offsetting asset and deferred balances" in warning for warning in july["report"]["warnings"])
+    application.execute("record_billing", {"contract_id": "added", "effective_date": "2026-07-01",
+                                           "amount": "300.00", "reference": "INV-ADDED"}, period="2026-07")
+    july = application.state(period="2026-07")
+    assert (july["report"]["modification_links"][0]["original_contract_asset"],
+            july["report"]["modification_links"][0]["added_deferred_revenue"]) == ("700.00", "200.00")
+    assert any("separately accounted contracts have offsetting asset and deferred balances" in warning for warning in july["report"]["warnings"])
+    assert any(item["contract_id"] == "original" and item["related_contract_id"] == "added"
+               for item in application.reports(period="2026-07")["exceptions"]["warnings"])
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in july["report"]["journals"]) == 0
     with pytest.raises(ValueError, match="mixed-treatment review"):
         application.execute("modify_contract", {"contract_id": "original", "effective_date": "2026-06-15",
             "treatment": "prospective", "consideration": [{"id": "original_price", "kind": "fixed", "amount": "1080"}],
@@ -211,6 +221,50 @@ def test_separate_contract_amendment_link_preserves_two_revenue_schedules(tmp_pa
     assert book["Modification links"]["D2"].value == "2026-06-15"
     assert book["Modification links"]["L2"].value == 200
     book.close()
+
+
+def test_warning_target_keeps_source_ids_when_contracts_have_the_same_name(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    application.execute("create_contract", {
+        "id": "con_2", "name": "Annual service", "customer_id": "cus_1",
+        "start_date": "2026-09-01", "end_date": "2026-09-30",
+        "consideration": [{"id": "delivery_price", "kind": "fixed", "amount": "100.00"}],
+        "obligations": [{"id": "delivery", "name": "Delivery", "kind": "service", "ssp": "100.00",
+                         "method": "point_in_time", "start_date": "2026-09-01", "end_date": "2026-09-30"}],
+    }, period="2026-09")
+    warnings = application.reports(period="2026-09")["exceptions"]["warnings"]
+    assert any("satisfaction has not been recorded" in warning["message"] for warning in warnings)
+    assert warnings[0]["contract_id"] == "con_2"
+    assert warnings[0]["obligation_id"] == "delivery"
+    application.execute("create_contract", {
+        "id": "con_3", "name": "Annual service", "customer_id": "cus_1",
+        "start_date": "2026-09-01", "end_date": "2026-09-30",
+        "consideration": [{"id": "other_price", "kind": "fixed", "amount": "100.00"}],
+        "obligations": [{"id": "other_delivery", "name": "Delivery", "kind": "service", "ssp": "100.00",
+                         "method": "point_in_time", "start_date": "2026-09-01", "end_date": "2026-09-30"}],
+    }, period="2026-09")
+    duplicate_message = application.reports(period="2026-09")["exceptions"]["warnings"]
+    assert len(duplicate_message) == 1
+    assert duplicate_message[0]["contract_id"] is None
+
+
+def test_closed_warning_target_uses_accepted_snapshot_after_contract_rename(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "con_1", "name": "Delivery service", "customer_id": "cus_1",
+        "start_date": "2026-09-01", "end_date": "2026-09-30",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "100.00"}],
+        "obligations": [{"id": "delivery", "name": "Delivery", "kind": "service", "ssp": "100.00",
+                         "method": "point_in_time", "start_date": "2026-09-01", "end_date": "2026-09-30"}],
+    }, period="2026-09")
+    application.execute("close_period", {"period": "2026-09", "review_dispositions": accept_review_items(application, "2026-09")}, period="2026-09")
+    application.execute("edit_details", {"entity_id": "con_1", "name": "Renamed delivery service"}, period="2026-10")
+    closed = application.state(period="2026-09")["report"]
+    assert closed["warnings"][0].startswith("Delivery service / Delivery:")
+    assert closed["warning_details"][0]["contract_id"] == "con_1"
+    assert application.reports(period="2026-09")["exceptions"]["warnings"][0]["obligation_id"] == "delivery"
 
 
 def test_separate_contract_amendment_link_imports_from_reviewed_workbook(tmp_path):

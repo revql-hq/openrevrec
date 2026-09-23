@@ -748,7 +748,7 @@ class _VariableChangeCurve:
     recognized: Decimal = ZERO
 
 
-def _project_metered(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict], list[str]]:
+def _project_metered(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict], list[dict]]:
     """Recognize an explicitly eligible invoice-value rate from actual usage only."""
     component, obligation = contract["consideration"][0], contract["obligations"][0]
     rate = decimal(component["unit_rate"], "unit_rate")
@@ -816,7 +816,7 @@ def _project_metered(contract: dict, selected: str) -> tuple[dict, list[dict], l
     return report, rows, [], []
 
 
-def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict], list[str]]:
+def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict], list[dict]]:
     if contract["consideration"][0]["kind"] == "metered":
         return _project_metered(contract, selected)
     components = deepcopy(contract["consideration"])
@@ -880,7 +880,7 @@ def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict
         boundaries.add(previous_end)
     billings: dict[str, Decimal] = defaultdict(lambda: ZERO)
     catch_ups: list[dict] = []
-    warnings: list[str] = []
+    warnings: list[dict] = []
     selected_snapshot: dict = {}
     prior_recognized = sum(recognized.values(), ZERO) + sum(period_recognized.values(), ZERO)
     current_price = _price(components)
@@ -1045,7 +1045,7 @@ def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict
                         if identifier not in curves:
                             curves[identifier] = _Curve(old.obligation, prior[identifier], recognized=prior[identifier], frozen=True)
                     if remaining < ZERO:
-                        warnings.append(f"{contract['name']}: prospective remaining consideration is negative; future revenue includes reversals.")
+                        warnings.append({"message": f"{contract['name']}: prospective remaining consideration is negative; future revenue includes reversals.", "contract_id": contract["id"]})
                 else:
                     allocated, revised_period_specs = _split_period_allocations(accounting_components, obligations)
                     curves = {item["id"]: _Curve(item, allocated[item["id"]]) for item in obligations}
@@ -1125,7 +1125,7 @@ def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict
                 recognized[identifier] = current
                 schedule[(day.strftime("%Y-%m"), identifier)] += change
                 if curve.anchor >= ONE and current != curve.target:
-                    warnings.append(f"{contract['name']} / {curve.obligation['name']}: adjustment after full satisfaction leaves remaining revenue; revise consideration or record a correcting adjustment.")
+                    warnings.append({"message": f"{contract['name']} / {curve.obligation['name']}: adjustment after full satisfaction leaves remaining revenue; revise consideration or record a correcting adjustment.", "contract_id": contract["id"], "obligation_id": identifier})
         else:
             accrue(day)
         if day == previous_end:
@@ -1188,9 +1188,9 @@ def _project(contract: dict, selected: str) -> tuple[dict, list[dict], list[dict
             continue
         obligation = curve.obligation
         if obligation["method"] in {"milestone", "point_in_time"} and curve.value(last, measures) != curve.target:
-            warnings.append(f"{contract['name']} / {obligation['name']}: satisfaction has not been recorded; confirm whether delivery occurred.")
+            warnings.append({"message": f"{contract['name']} / {obligation['name']}: satisfaction has not been recorded; confirm whether delivery occurred.", "contract_id": contract["id"], "obligation_id": identifier})
         if obligation["method"] == "usage" and measures.get(identifier, ZERO) > decimal(obligation["total_units"]):
-            warnings.append(f"{contract['name']} / {obligation['name']}: recorded usage exceeds total_units; recognition is capped at the allocation.")
+            warnings.append({"message": f"{contract['name']} / {obligation['name']}: recorded usage exceeds total_units; recognition is capped at the allocation.", "contract_id": contract["id"], "obligation_id": identifier})
     return report, rows, catch_ups, warnings
 
 
@@ -1216,6 +1216,11 @@ def _resolved_account(accounts: dict, overrides: dict, contract_id: str, role: s
         if profile.get("accounts", {}).get(role):
             return str(profile["accounts"][role])
     return str(overrides.get("contracts", {}).get(contract_id, {}).get(role) or _assigned_profile(profiles, assignments, contract_id).get("accounts", {}).get(role) or accounts[role])
+
+
+def _linked_balances_offset(first: dict, second: dict) -> bool:
+    return (decimal(first["contract_asset"]) > ZERO and decimal(second["deferred_revenue"]) > ZERO
+            or decimal(first["deferred_revenue"]) > ZERO and decimal(second["contract_asset"]) > ZERO)
 
 
 def _journals(report: dict, period: str, accounts: dict[str, str], overrides: dict, profiles: dict, assignments: dict, obligation_assignments: dict, schedule: list[dict], previous_accounts: dict, previous_overrides: dict, previous_profiles: dict, previous_assignments: dict, transition: str) -> tuple[list[dict], list[dict], list[str], list[dict]]:
@@ -1350,11 +1355,14 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
     previous_assignments = (previous_policy or policy).get("profile_assignments", {})
     if any(not str(accounts[role]).strip() for role in DEFAULT_ACCOUNTS):
         raise ValueError("All four journal account roles require an account code")
-    report: dict[str, Any] = {"period": period, "summary": {}, "contracts": [], "schedule": [], "journals": [], "account_transitions": [], "segment_imbalances": [], "account_dimension_exceptions": [], "account_dimension_unvalidated_accounts": [], "warnings": [], "catch_ups": [], "renewal_links": [], "modification_links": [],
+    report: dict[str, Any] = {"period": period, "summary": {}, "contracts": [], "schedule": [], "journals": [], "account_transitions": [], "segment_imbalances": [], "account_dimension_exceptions": [], "account_dimension_unvalidated_accounts": [], "warnings": [], "warning_details": [], "catch_ups": [], "renewal_links": [], "modification_links": [],
                               "policy_version": policy.get("version", 1), "policy_effective_period": policy.get("effective_period", "0001-01"),
                               "policy_accounts": accounts, "policy_account_overrides": overrides,
                               "policy_account_profiles": profiles, "policy_profile_assignments": assignments, "policy_obligation_profile_assignments": obligation_assignments,
                               "policy_account_dimension_rules": policy.get("account_dimension_rules", []), "policy_account_dimension_source": policy.get("account_dimension_source", "")}
+    def record_warning(message: str, contract_id: str | None = None, obligation_id: str | None = None, related_contract_id: str | None = None) -> None:
+        report["warning_details"].append({"message": message, "contract_id": contract_id, "obligation_id": obligation_id, "related_contract_id": related_contract_id})
+
     identifiers = set()
     with localcontext() as context:
         context.prec = 48
@@ -1366,7 +1374,7 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
             opening = next((item for item in contract.get("activities", []) if item["type"] == "opening_position"), None)
             if contract.get("cutover_date") and not opening:
                 if period >= contract["cutover_date"][:7]:
-                    report["warnings"].append(f"{contract['name']}: the declared cutover has no accepted opening position; reporting excludes this contract until it is recorded.")
+                    record_warning(f"{contract['name']}: the declared cutover has no accepted opening position; reporting excludes this contract until it is recorded.", contract["id"])
                 continue
             if opening and period < opening["effective_date"][:7]:
                 # The legacy periods are outside this workspace's accepted
@@ -1376,11 +1384,13 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
             report["contracts"].append(projection)
             report["schedule"].extend(schedule)
             report["catch_ups"].extend(catch_ups)
-            report["warnings"].extend(warnings)
+            for warning in warnings:
+                record_warning(warning["message"], warning.get("contract_id"), warning.get("obligation_id"))
             journals, transitions, transition_warnings, segment_imbalances = _journals(projection, period, accounts, overrides, profiles, assignments, obligation_assignments, schedule, previous_accounts, previous_overrides, previous_profiles, previous_assignments, policy.get("account_transition", "external"))
             report["journals"].extend(journals)
             report["account_transitions"].extend(transitions)
-            report["warnings"].extend(transition_warnings)
+            for warning in transition_warnings:
+                record_warning(warning, contract["id"])
             report["segment_imbalances"].extend(segment_imbalances)
         allowed_combinations: dict[str, set[tuple[tuple[str, str], ...]]] = defaultdict(set)
         for rule in policy.get("account_dimension_rules", []):
@@ -1426,9 +1436,8 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
                 "combined_revenue": amount(right_revenue + renewal_revenue),
                 "rationale": link["rationale"],
             })
-            if (decimal(source["contract_asset"]) > ZERO and decimal(renewal["deferred_revenue"]) > ZERO
-                or decimal(source["deferred_revenue"]) > ZERO and decimal(renewal["contract_asset"]) > ZERO):
-                report["warnings"].append(f"{names[source['id']]} / {names[renewal['id']]}: linked contracts have offsetting asset and deferred balances; review their presentation before posting.")
+            if _linked_balances_offset(source, renewal):
+                record_warning(f"{names[source['id']]} / {names[renewal['id']]}: linked contracts have offsetting asset and deferred balances; review their presentation before posting.", source["id"], related_contract_id=renewal["id"])
         for link in state.get("modification_links", []):
             if link["effective_date"][:7] > period:
                 continue
@@ -1454,7 +1463,17 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
                 "added_deferred_revenue": added["deferred_revenue"],
                 "rationale": link["rationale"],
             })
+            if _linked_balances_offset(original, added):
+                record_warning(f"{names[original['id']]} / {names[added['id']]}: separately accounted contracts have offsetting asset and deferred balances; review their presentation before posting.", original["id"], related_contract_id=added["id"])
         report["summary"] = {key: amount(sum((decimal(item[key]) for item in report["contracts"]), ZERO)) for key in REPORT_AMOUNTS}
     report["schedule"].sort(key=lambda item: (item["period"], item["contract_id"], item["obligation_id"]))
-    report["warnings"] = list(dict.fromkeys(report["warnings"]))
+    unique_warnings = {}
+    for detail in report["warning_details"]:
+        message = detail["message"]
+        if message in unique_warnings and unique_warnings[message] != detail:
+            unique_warnings[message] = {"message": message, "contract_id": None, "obligation_id": None, "related_contract_id": None}
+        else:
+            unique_warnings.setdefault(message, detail)
+    report["warnings"] = list(unique_warnings)
+    report["warning_details"] = list(unique_warnings.values())
     return report

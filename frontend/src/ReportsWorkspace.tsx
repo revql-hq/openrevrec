@@ -80,7 +80,7 @@ export type Review = {
     missing_billings: [string, string][]; unexpected_billings: [string, string][]; duplicate_billings: [string, string][];
     unidentified_billings: { contract_id: string; activity_id: string }[];
   };
-  exceptions: { evidence: { change_set_id: string; entity_name: string; command: string; review_status: string; linked_file_count: number }[] };
+  exceptions: { evidence: { change_set_id: string; entity_name: string; command: string; review_status: string; linked_file_count: number }[]; warnings: { message: string; contract_id: string | null; obligation_id: string | null; related_contract_id: string | null }[] };
   counts: {
     contracts: number;
     open_tasks: number;
@@ -287,11 +287,8 @@ function ReportContent({
   if (view === "Accounting warnings")
     return <Section title="Accounting warnings" subtitle={`${review.warnings.length} warning${review.warnings.length === 1 ? "" : "s"} for ${monthLabel(review.period)}.`} action={<Button onClick={() => props.navigate("Reports", undefined, "Close readiness")}>Review close checks</Button>}>
       {review.warnings.length > 0 ? <div className="report-list">{review.warnings.map((warning, index) => {
-        const matches = props.state.contracts.filter((contract) => warning.startsWith(`${contract.name}:`) || warning.startsWith(`${contract.name} /`));
-        const longest = Math.max(0, ...matches.map((contract) => contract.name.length));
-        const targets = matches.filter((contract) => contract.name.length === longest);
-        const target = targets.length === 1 ? targets[0] : undefined;
-        return <div key={`${index}:${warning}`}><span className="warning-message">{warning}</span>{target && <Button onClick={() => props.navigate("Contracts", target.id, "Overview")}>Open contract</Button>}</div>;
+        const target = review.exceptions.warnings[index];
+        return <div key={`${index}:${warning}`}><span className="warning-message">{warning}</span>{target?.contract_id && <Button onClick={() => props.navigate("Contracts", target.contract_id || undefined, target.obligation_id ? "Recognition" : "Overview", target.obligation_id || undefined)}>Open contract</Button>}{target?.related_contract_id && <Button onClick={() => props.navigate("Contracts", target.related_contract_id || undefined, "Allocation")}>Open related</Button>}</div>;
       })}</div> : <Empty title="No accounting warnings">This period has no accounting warnings.</Empty>}
     </Section>;
   if (view === "Close readiness")
