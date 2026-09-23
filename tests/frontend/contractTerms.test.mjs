@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { changeComponentKind, contractTerms } from '../../frontend/src/contractTerms.ts';
+import { changeComponentKind, contractTerms, termReviewStatus } from '../../frontend/src/contractTerms.ts';
 
 const price = { id: 'price', label: 'Fee', kind: 'variable', amount: '100', included_amount: '25' };
 const contract = {
@@ -40,6 +40,17 @@ test('term assessment follows dated amendments and clears when the term becomes 
   assert.equal(contractTerms(assessed, '2026-09-30').termAssessment.basis, 'cancellable');
   assert.equal(contractTerms(assessed, '2026-11-30').termAssessment.trigger, 'Next notice window');
   assert.deepEqual(contractTerms(assessed, '2026-12-31').termAssessment, { basis: 'fixed', rationale: '', trigger: '', reviewDate: '' });
+});
+
+test('unchanged term review reschedules only until a newer assessment supersedes it', () => {
+  const assessed = { ...contract, id: 'con_1', start_date: '2026-01-01', version: 1,
+    term_basis: 'cancellable', term_review_date: '2026-05-01',
+    activities: [{ type: 'modification', effective_date: '2026-06-01', version: 3, term_review_date: '2026-07-01' }] };
+  const state = { term_reviews: [{ contract_id: 'con_1', effective_date: '2026-05-05', version: 2,
+    next_review_date: '2026-08-01', reviewer: 'Accountant' }] };
+  assert.equal(termReviewStatus(state, assessed, '2026-05-31').reviewDate, '2026-08-01');
+  assert.equal(termReviewStatus(state, assessed, '2026-06-30').reviewDate, '2026-07-01');
+  assert.equal(termReviewStatus(state, assessed, '2026-06-30').latestReview, undefined);
 });
 
 test('same-day term changes preserve command order and empty obligation replacements', () => {

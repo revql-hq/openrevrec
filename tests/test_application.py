@@ -69,6 +69,46 @@ def test_cancellable_term_records_assessment_and_review_trigger_through_amendmen
     assert next(check for check in application.reports(period="2026-11")["checks"] if check["id"] == "term_reviews")["status"] == "pass"
 
 
+def test_unchanged_term_review_is_auditable_and_reschedules_without_changing_revenue(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    contract = {
+        "id": "con_1", "name": "Cancellable service", "customer_id": "cus_1",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "1200.00"}],
+        "obligations": [{"id": "service", "name": "Service", "kind": "service", "ssp": "1200.00", "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+        "term_basis": "cancellable", "term_assessment_rationale": "The notice clause makes this year enforceable.",
+        "term_reassessment_trigger": "Review each notice window.", "term_review_date": "2026-05-01",
+    }
+    application.execute("create_contract", contract, period="2026-01")
+    may_revenue = application.state(period="2026-05")["report"]["summary"]["revenue"]
+    assert next(check for check in application.reports(period="2026-05")["checks"] if check["id"] == "term_reviews")["status"] == "review"
+    review = {"contract_id": "con_1", "effective_date": "2026-05-05", "reviewer": "A. Accountant",
+              "conclusion": "No cancellation notice; the assessed term is unchanged.",
+              "support_memo": "Reviewed the executed agreement and notice register.", "next_review_date": "2026-08-01"}
+    with pytest.raises(ValueError, match="next review date"):
+        application.execute("record_term_review", {**review, "next_review_date": ""}, period="2026-05")
+    with pytest.raises(ValueError, match="must follow"):
+        application.execute("record_term_review", {**review, "next_review_date": "2026-05-05"}, period="2026-05")
+    result = application.execute("record_term_review", review, period="2026-05")
+    state = application.state(period="2026-05")
+    assert state["report"]["summary"]["revenue"] == may_revenue
+    assert state["term_reviews"][0]["change_set_id"] == result["result"]["change_set_id"]
+    assert next(check for check in application.reports(period="2026-05")["checks"] if check["id"] == "term_reviews")["status"] == "pass"
+    assert next(check for check in application.reports(period="2026-08")["checks"] if check["id"] == "term_reviews")["status"] == "review"
+    book = load_workbook(io.BytesIO(export_bytes(state)))
+    assert book["Term reviews"]["C2"].value == "A. Accountant"
+    assert book["Term reviews"]["F2"].value == "2026-08-01"
+    book.close()
+    application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-06-01", "treatment": "catch_up",
+        "rationale": "The notice process changed", "obligations": contract["obligations"],
+        "term_reassessment_trigger": "Review the revised notice window.", "term_review_date": "2026-07-01"}, period="2026-06")
+    assert next(check for check in application.reports(period="2026-07")["checks"] if check["id"] == "term_reviews")["status"] == "review"
+    application.execute("close_period", {"period": "2026-05", "review_dispositions": accept_review_items(application, "2026-05")}, period="2026-05")
+    with pytest.raises(ValueError, match="Reopen the closed period"):
+        application.execute("record_term_review", {**review, "effective_date": "2026-05-10"}, period="2026-05")
+
+
 def test_evergreen_term_assessment_imports_with_structured_columns(tmp_path):
     application = app(tmp_path)
     book = load_workbook(io.BytesIO(template_bytes()))

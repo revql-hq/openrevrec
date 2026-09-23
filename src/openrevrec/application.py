@@ -25,7 +25,7 @@ ACTIVITY_TYPES = {
 SCENARIO_COMMANDS = {"create_scenario", "apply_scenario", "rebase_scenario", "archive_scenario", "restore_scenario"}
 CORRECTABLE_COMMANDS = {"record_billing", "record_progress", "record_usage", "record_milestone"}
 JUDGMENT_COMMANDS = {"create_contract", "record_opening_position", "record_right_exercise", "modify_contract", "reassess_variable_consideration", "record_adjustment", "set_policy", "reopen_period"}
-COMMANDS = {"create_customer", "create_contract", "set_policy", "record_control_totals", "record_population_manifest", "record_export_posting", "close_period", "reopen_period", "add_note", "edit_note", "edit_details", "attach_evidence", "record_judgment_review", "correct_activity"} | set(ACTIVITY_TYPES) | SCENARIO_COMMANDS
+COMMANDS = {"create_customer", "create_contract", "set_policy", "record_control_totals", "record_population_manifest", "record_export_posting", "record_term_review", "close_period", "reopen_period", "add_note", "edit_note", "edit_details", "attach_evidence", "record_judgment_review", "correct_activity"} | set(ACTIVITY_TYPES) | SCENARIO_COMMANDS
 DEFAULT_ACCOUNTS = {"revenue": "4000", "deferred_revenue": "2300", "contract_asset": "1200", "billing_clearing": "1100"}
 
 
@@ -75,6 +75,30 @@ def policy_for_period(versions: list[dict], period: str) -> dict:
     if not applicable:
         raise ValueError(f"No accounting policy is effective for {period}.")
     return max(applicable, key=lambda row: (row["effective_period"], row["version"]))
+
+
+def term_assessment_at(state: dict, contract: dict, effective_date: str) -> dict:
+    """Resolve the dated term assessment and any later documented unchanged review."""
+    fields = ("term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date")
+    assessment = {field: contract.get(field, "") for field in fields}
+    assessment["term_basis"] = assessment["term_basis"] or "fixed"
+    assessment_version = contract.get("version", 0)
+    assessment_date = contract["start_date"]
+    changes = sorted((activity for activity in contract["activities"] if activity["type"] == "modification" and activity["effective_date"] <= effective_date), key=lambda item: (item["effective_date"], item.get("version", 0)))
+    for activity in changes:
+        if not any(field in activity for field in fields):
+            continue
+        if activity.get("term_basis") == "fixed":
+            assessment = {field: "" for field in fields}
+            assessment["term_basis"] = "fixed"
+        assessment.update({field: activity[field] for field in fields if field in activity})
+        assessment_version = activity.get("version", 0)
+        assessment_date = activity["effective_date"]
+    reviews = [review for review in state.get("term_reviews", []) if review["contract_id"] == contract["id"] and assessment_date <= review["effective_date"] <= effective_date and review["version"] > assessment_version]
+    latest_review = max(reviews, key=lambda item: (item["effective_date"], item["version"]), default=None)
+    if latest_review:
+        assessment["term_review_date"] = latest_review["next_review_date"]
+    return {**assessment, "assessment_version": assessment_version, "latest_review": latest_review}
 
 
 def _financial_signature(report):
@@ -129,7 +153,7 @@ class Application:
         baseline_policy = {"version": 1, "effective_period": "0001-01", "currency": meta["currency"], "rounding": "ROUND_HALF_UP", "ruleset_version": "orr-0.1", "accounts": DEFAULT_ACCOUNTS.copy(), "account_changes": DEFAULT_ACCOUNTS.copy(), "account_overrides": {"contracts": {}, "obligations": {}}, "override_changes": {}, "account_profiles": {}, "profile_changes": {}, "profile_assignments": {}, "profile_assignment_changes": {}}
         state = {"workspace": meta, "scenario_id": scenario_id,
                  "policy": baseline_policy, "policy_versions": [baseline_policy],
-                 "customers": [], "contracts": [], "notes": [], "evidence": [], "judgment_reviews": [], "closes": [], "controls": [], "population_manifests": [], "postings": []}
+                 "customers": [], "contracts": [], "notes": [], "evidence": [], "judgment_reviews": [], "term_reviews": [], "closes": [], "controls": [], "population_manifests": [], "postings": []}
         rows = self._rows(db, scenario_id, frontier)
         customers, contracts, notes, closes = {}, {}, {}, {}
         for row in rows:
@@ -139,12 +163,13 @@ class Application:
             elif command == "create_contract":
                 p["activities"] = []
                 p["change_set_id"] = row["id"]
+                p["version"] = row["version"]
                 contracts[p["id"]] = p
             elif command in ACTIVITY_TYPES:
                 contract = contracts.get(p["contract_id"])
                 if contract is None:
                     raise ValueError("History references a missing contract.")
-                contract["activities"].append({**p, "id": row["id"], "change_set_id": row["id"], "type": ACTIVITY_TYPES[command], "recorded_at": row["recorded_at"], "effective_date": row["effective_date"]})
+                contract["activities"].append({**p, "id": row["id"], "change_set_id": row["id"], "version": row["version"], "type": ACTIVITY_TYPES[command], "recorded_at": row["recorded_at"], "effective_date": row["effective_date"]})
             elif command == "correct_activity":
                 contract = contracts.get(p["contract_id"])
                 if contract is None:
@@ -180,6 +205,8 @@ class Application:
                 state["evidence"].append({**p, "recorded_at": row["recorded_at"], "change_set_id": row["id"], "scenario_id": row["scenario_id"]})
             elif command == "record_judgment_review":
                 state["judgment_reviews"].append({**p, "recorded_at": row["recorded_at"], "change_set_id": row["id"], "scenario_id": row["scenario_id"]})
+            elif command == "record_term_review":
+                state["term_reviews"].append({**p, "version": row["version"], "recorded_at": row["recorded_at"], "change_set_id": row["id"], "scenario_id": row["scenario_id"]})
             elif command == "record_control_totals":
                 state["controls"] = [item for item in state["controls"] if item["period"] != p["period"]]
                 state["controls"].append({**p, "recorded_at": row["recorded_at"], "change_set_id": row["id"]})
@@ -652,6 +679,34 @@ class Application:
                 p.pop("exception_reason", None)
             p["entity_id"] = target["entity_id"]
             p["effective_date"] = target["effective_date"]
+        elif command == "record_term_review":
+            if set(p) - {"contract_id", "effective_date", "reviewer", "conclusion", "support_memo", "next_review_date"}:
+                raise ValueError("Term review has unsupported fields.")
+            contract = next((item for item in state["contracts"] if item["id"] == p.get("contract_id")), None)
+            if contract is None:
+                raise ValueError("Choose an existing contract for this term review.")
+            p["effective_date"] = valid_date(p.get("effective_date"), "Review date")
+            if p["effective_date"] > date.today().isoformat():
+                raise ValueError("A term review cannot be recorded before it occurs.")
+            if p["effective_date"] < contract["start_date"]:
+                raise ValueError("Review date cannot precede the contract start.")
+            if any(close["status"] == "closed" and close["period"] >= p["effective_date"][:7] for close in state["closes"]):
+                raise ValueError("Reopen the closed period before recording this term review.")
+            if any(review["contract_id"] == contract["id"] and review["effective_date"] > p["effective_date"] for review in state["term_reviews"]):
+                raise ValueError("Review date cannot precede a later recorded term review.")
+            assessment = term_assessment_at(state, contract, p["effective_date"])
+            if assessment["term_basis"] == "fixed":
+                raise ValueError("Only cancellable or evergreen terms need this review.")
+            p["reviewer"] = required_text(p, "reviewer")
+            p["conclusion"] = required_text(p, "conclusion")
+            p["support_memo"] = required_text(p, "support_memo")
+            p["next_review_date"] = p.get("next_review_date") or ""
+            if assessment["term_review_date"] and not p["next_review_date"]:
+                raise ValueError("Set a next review date to complete a scheduled term review.")
+            if p["next_review_date"]:
+                valid_date(p["next_review_date"], "Next review date")
+                if p["next_review_date"] <= p["effective_date"]:
+                    raise ValueError("Next review date must follow the completed review.")
         elif command == "record_control_totals":
             if scenario_id != "main":
                 raise ValueError("External control totals belong to Main, not a scenario.")

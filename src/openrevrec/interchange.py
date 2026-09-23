@@ -164,6 +164,8 @@ def export_bytes(state, review=None):
             assessment.update({field: activity[field] for field in term_fields if field in activity})
             term_rows.append([contract["id"], activity["effective_date"], assessment["term_basis"], assessed_end, assessment["term_assessment_rationale"], assessment["term_reassessment_trigger"], assessment["term_review_date"], activity["id"]])
     _sheet(book, "Term assessments", ["Contract ID", "Effective date", "Term basis", "Assessed service end", "Assessment rationale", "Reassessment trigger", "Planned review date", "Change set ID"], term_rows)
+    _sheet(book, "Term reviews", ["Contract ID", "Review date", "Reviewer", "Unchanged-term conclusion", "Supporting basis", "Next review date", "Change set ID"],
+           [[item["contract_id"], item["effective_date"], item["reviewer"], item["conclusion"], item["support_memo"], item["next_review_date"], item["change_set_id"]] for item in state.get("term_reviews", [])])
     openings = [change for change in state["change_sets"] if change["command"] == "record_opening_position"]
     _sheet(book, "Opening positions", ["Contract ID", "Cutover date", "Legacy billed to date", "Legacy contract asset", "Legacy deferred revenue", "Legacy source", "Reconciliation rationale", "Change set ID"],
            [[item["payload"].get(key, "") for key in ("contract_id", "effective_date", "billed_to_date", "contract_asset", "deferred_revenue", "source_name", "rationale")] + [item["id"]] for item in openings])

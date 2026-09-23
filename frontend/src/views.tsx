@@ -51,7 +51,7 @@ import type {
   Schedule,
 } from "./types";
 import { methods } from "./forms";
-import { contractTerms } from "./contractTerms";
+import { contractTerms, termReviewStatus } from "./contractTerms";
 import { EvidencePanel } from "./EvidencePanel";
 import { ChangeDetail } from "./ChangeDetail";
 import { ReportsWorkspace } from "./ReportsWorkspace";
@@ -734,6 +734,7 @@ export function ContractView(props: ViewProps) {
   const currency = state.workspace.currency;
   const customer = state.customers.find((c) => c.id === contract.customer_id);
   const effectiveTerms = contractTerms(contract, `${props.period}-31`);
+  const termReview = termReviewStatus(state, contract, `${props.period}-31`);
   const shownTerms = termsView === "effective" ? effectiveTerms : contract;
   const serviceDates = effectiveTerms.obligations.flatMap((obligation) => [obligation.start_date, obligation.end_date]).sort();
   const openingActivity = contract.activities.find((activity) => activity.type === "opening_position");
@@ -855,9 +856,11 @@ export function ContractView(props: ViewProps) {
                 {effectiveTerms.termAssessment.basis !== "fixed" && <>
                   <div><dt>Assessment basis</dt><dd>{effectiveTerms.termAssessment.rationale}</dd></div>
                   <div><dt>Reassess when</dt><dd>{effectiveTerms.termAssessment.trigger}</dd></div>
-                  {effectiveTerms.termAssessment.reviewDate && <div><dt>Planned review</dt><dd>{dateLabel(effectiveTerms.termAssessment.reviewDate)}</dd></div>}
+                  {termReview.reviewDate && <div><dt>Planned review</dt><dd>{dateLabel(termReview.reviewDate)}{termReview.reviewDate <= `${props.period}-31` ? " · due" : ""}</dd></div>}
+                  {termReview.latestReview && <div><dt>Last review</dt><dd>{dateLabel(termReview.latestReview.effective_date)} · {termReview.latestReview.reviewer}</dd></div>}
                 </>}
               </dl>
+              {termReview.basis !== "fixed" && <Button type="button" onClick={() => dialog({ type: "term_review", contractId: contract.id })}>Complete term review</Button>}
               {contract.rationale && (
                 <p className="rationale">{contract.rationale}</p>
               )}

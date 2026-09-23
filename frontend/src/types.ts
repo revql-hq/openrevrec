@@ -36,6 +36,7 @@ export type Obligation = {
 };
 export type Activity = {
   id: string;
+  version?: number;
   type: string;
   effective_date: string;
   recorded_at?: string;
@@ -49,6 +50,7 @@ export type Activity = {
 };
 export type Contract = {
   id: string;
+  version?: number;
   name: string;
   customer_id: string;
   start_date: string;
@@ -208,6 +210,16 @@ export type JudgmentReview = {
   recorded_at: string;
   change_set_id: string;
 };
+export type TermReview = {
+  contract_id: string;
+  effective_date: string;
+  reviewer: string;
+  conclusion: string;
+  support_memo: string;
+  next_review_date: string;
+  version: number;
+  change_set_id: string;
+};
 export type PostingComparison = {
   source_batch_id: string;
   target_batch_id: string;
@@ -264,6 +276,7 @@ export type State = {
   notes: Note[];
   evidence?: Evidence[];
   judgment_reviews?: JudgmentReview[];
+  term_reviews?: TermReview[];
   postings?: { period: string; batch_id: string; close_id?: string; external_journal_reference: string; posted_date: string; rationale: string; recorded_at: string }[];
   posting_comparisons?: PostingComparison[];
   report: Report;

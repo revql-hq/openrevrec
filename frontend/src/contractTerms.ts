@@ -1,4 +1,4 @@
-import type { Component, Contract, Obligation } from "./types";
+import type { Component, Contract, Obligation, State } from "./types";
 
 /** Replay dated terms in the same effective-date / command order as the engine. */
 export function contractTerms(contract: Contract, effectiveDate: string) {
@@ -45,6 +45,23 @@ export function contractTerms(contract: Contract, effectiveDate: string) {
     }
   }
   return { consideration, obligations, termAssessment };
+}
+
+/** A documented unchanged review replaces only the planned review date. */
+export function termReviewStatus(state: State, contract: Contract, effectiveDate: string) {
+  const terms = contractTerms(contract, effectiveDate).termAssessment;
+  const assessments = contract.activities
+    .filter((activity) => activity.type === "modification" && activity.effective_date <= effectiveDate &&
+      ["term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date"].some((field) => field in activity))
+    .sort((a, b) => a.effective_date.localeCompare(b.effective_date) || (a.version || 0) - (b.version || 0));
+  const latestAssessment = assessments.at(-1);
+  const assessmentVersion = latestAssessment?.version || contract.version || 0;
+  const assessmentDate = latestAssessment?.effective_date || contract.start_date;
+  const latestReview = (state.term_reviews || [])
+    .filter((review) => review.contract_id === contract.id && review.version > assessmentVersion &&
+      review.effective_date >= assessmentDate && review.effective_date <= effectiveDate)
+    .sort((a, b) => b.effective_date.localeCompare(a.effective_date) || b.version - a.version)[0];
+  return { ...terms, reviewDate: latestReview ? latestReview.next_review_date : terms.reviewDate, latestReview };
 }
 
 export function changeComponentKind(item: Component, kind: string): Component {

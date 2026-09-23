@@ -6,7 +6,7 @@ from collections import Counter
 from datetime import date, timedelta
 from decimal import Decimal
 
-from .application import JUDGMENT_COMMANDS, period_end
+from .application import JUDGMENT_COMMANDS, period_end, term_assessment_at
 
 
 ZERO = Decimal("0")
@@ -159,14 +159,7 @@ def build_review(state: dict, scenario_impacts: list[dict] | None = None) -> dic
     for contract in state["contracts"]:
         if contract["start_date"] > period_end(period):
             continue
-        assessment = {field: contract.get(field, "") for field in ("term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date")}
-        assessment["term_basis"] = assessment["term_basis"] or "fixed"
-        for activity in sorted(contract["activities"], key=lambda item: (item["effective_date"], item.get("recorded_at", ""))):
-            if activity["effective_date"] > period_end(period) or activity["type"] != "modification":
-                continue
-            if activity.get("term_basis") == "fixed":
-                assessment = {field: "" for field in assessment}
-            assessment.update({field: activity[field] for field in assessment if field in activity})
+        assessment = term_assessment_at(state, contract, period_end(period))
         if assessment["term_basis"] != "fixed" and assessment["term_review_date"] and assessment["term_review_date"] <= period_end(period):
             due_term_reviews.append({"id": contract["id"], "name": contract["name"], "review_date": assessment["term_review_date"], "trigger": assessment["term_reassessment_trigger"]})
     gaps = [row for row in coverage if _decimal(row["unscheduled"]) != ZERO]

@@ -29,6 +29,7 @@ import {
   ContractForm,
   ActivityForm,
   OpeningPositionForm,
+  TermReviewForm,
   ScenarioForm,
   LifecycleForm,
   CloseForm,
@@ -68,6 +69,7 @@ export type Dialog = {
     | "contract"
     | "activity"
     | "opening_position"
+    | "term_review"
     | "scenario"
     | "lifecycle"
     | "close"
@@ -502,6 +504,9 @@ export default function App() {
           )}{" "}
           {dialog.type === "opening_position" && contract && (
             <OpeningPositionForm {...formProps} contract={contract} />
+          )}{" "}
+          {dialog.type === "term_review" && contract && (
+            <TermReviewForm {...formProps} contract={contract} />
           )}{" "}
           {dialog.type === "scenario" && <ScenarioForm {...formProps} />}{" "}
           {dialog.type === "lifecycle" && (

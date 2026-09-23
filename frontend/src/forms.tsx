@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { changeComponentKind, contractTerms } from "./contractTerms";
+import { changeComponentKind, contractTerms, termReviewStatus } from "./contractTerms";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
-import { api, post, uid, money, humanize, dateLabel, total } from "./api";
+import { api, post, uid, money, humanize, dateLabel, total, today } from "./api";
 import type { Review } from "./ReportsWorkspace";
 import {
   Button,
@@ -687,7 +687,7 @@ export function ContractForm(
 ) {
   const { contract } = props;
   const initialTerms = contract
-    ? contractTerms(contract, `${props.period}-01`)
+    ? { ...contractTerms(contract, `${props.period}-01`), termAssessment: termReviewStatus(props.state, contract, `${props.period}-01`) }
     : undefined;
   const annualStart = `${props.period}-01`;
   const annualEnd = new Date(Date.UTC(Number(props.period.slice(0, 4)) + 1, Number(props.period.slice(5)) - 1, 0)).toISOString().slice(0, 10);
@@ -900,7 +900,7 @@ export function ContractForm(
               </select>
             </Field>
           </div>
-          {effective !== loadedEffective && <div className="notice"><p>The terms below were loaded for {dateLabel(loadedEffective)}. Choose how to use them at {dateLabel(effective)} before previewing.</p><div className="button-group"><Button type="button" onClick={() => { if (termsDirty && !window.confirm("Replace the term edits in this form with the terms effective on the new date?")) return; const terms = contractTerms(contract, effective); setComponents(terms.consideration); setObligations(terms.obligations); setTermBasis(terms.termAssessment.basis); setTermRationale(terms.termAssessment.rationale); setTermTrigger(terms.termAssessment.trigger); setTermReviewDate(terms.termAssessment.reviewDate); setLoadedTermAssessment(terms.termAssessment); setLoadedEffective(effective); setTermsDirty(false); }}>Load effective terms</Button><Button type="button" onClick={() => setLoadedEffective(effective)}>Keep edited terms</Button></div></div>}
+          {effective !== loadedEffective && <div className="notice"><p>The terms below were loaded for {dateLabel(loadedEffective)}. Choose how to use them at {dateLabel(effective)} before previewing.</p><div className="button-group"><Button type="button" onClick={() => { if (termsDirty && !window.confirm("Replace the term edits in this form with the terms effective on the new date?")) return; const terms = contractTerms(contract, effective); const assessment = termReviewStatus(props.state, contract, effective); setComponents(terms.consideration); setObligations(terms.obligations); setTermBasis(assessment.basis); setTermRationale(assessment.rationale); setTermTrigger(assessment.trigger); setTermReviewDate(assessment.reviewDate); setLoadedTermAssessment(assessment); setLoadedEffective(effective); setTermsDirty(false); }}>Load effective terms</Button><Button type="button" onClick={() => setLoadedEffective(effective)}>Keep edited terms</Button></div></div>}
           <p className="notice">
             Changing the effective date keeps your edits until you choose to load that date's terms or keep the edited terms. Enter revised lifetime consideration, including revenue
             already recognized.{" "}
@@ -957,6 +957,30 @@ export function ContractForm(
     </CommandDialog>
   );
 }
+export function TermReviewForm(props: FormProps & { contract: Contract }) {
+  const [effectiveDate, setEffectiveDate] = useState(today());
+  const [reviewer, setReviewer] = useState("");
+  const [conclusion, setConclusion] = useState("");
+  const [supportMemo, setSupportMemo] = useState("");
+  const [nextReviewDate, setNextReviewDate] = useState("");
+  const assessment = termReviewStatus(props.state, props.contract, effectiveDate);
+  return <CommandDialog {...props} title="Complete term review" subtitle={props.contract.name}
+    previewRequired={false} confirmLabel="Record review" successMessage="Term review recorded."
+    command={() => ({ command: "record_term_review", payload: {
+      contract_id: props.contract.id, effective_date: effectiveDate, reviewer, conclusion,
+      support_memo: supportMemo, next_review_date: nextReviewDate,
+    } })}>
+    <p className="fine-print">This records a conclusion that the assessed accounting term and service dates remain unchanged. If either changed, record a contract modification instead.</p>
+    <Field label="Review date"><input required type="date" max={today()} min={props.contract.start_date} value={effectiveDate} onChange={(event) => setEffectiveDate(event.target.value)} /></Field>
+    <Field label="Reviewer"><input required value={reviewer} onChange={(event) => setReviewer(event.target.value)} placeholder="Name of accountant or reviewer" /></Field>
+    <Field label="Conclusion"><textarea required rows={2} value={conclusion} onChange={(event) => setConclusion(event.target.value)} placeholder="Why the assessed term remains unchanged" /></Field>
+    <Field label="Supporting basis"><textarea required rows={2} value={supportMemo} onChange={(event) => setSupportMemo(event.target.value)} placeholder="Notice, contract clause, correspondence, or other evidence reviewed" /></Field>
+    <Field label="Next planned review" hint={assessment.reviewDate ? `Current planned review: ${dateLabel(assessment.reviewDate)}. Set the next date to complete this scheduled review.` : "Optional for an event-driven reassessment without a scheduled date."}>
+      <input type="date" required={Boolean(assessment.reviewDate)} min={effectiveDate} value={nextReviewDate} onChange={(event) => setNextReviewDate(event.target.value)} />
+    </Field>
+  </CommandDialog>;
+}
+
 export function ActivityForm(
   props: FormProps & { contract: Contract; activity: string; correctionTarget?: Activity },
 ) {
