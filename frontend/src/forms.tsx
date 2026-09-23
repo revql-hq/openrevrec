@@ -1082,12 +1082,12 @@ export function ActivityForm(
   const [effective, setEffective] = useState(() => suggestedActivityDate(contract, props.period, activity, correctionTarget?.effective_date));
   const { obligations, consideration } = contractTerms(contract, effective);
   const eligibleObligations = obligations.filter((item) => supportsActivityOnDate(contract, item, activity, effective));
+  const variableComponents = consideration.filter((item) => ["variable", "usage"].includes(item.kind));
   const [selectedObligation, setObligation] = useState(
-      correctionTarget?.obligation_id || eligibleObligations[0]?.id || "",
+      correctionTarget?.obligation_id || (eligibleObligations.length === 1 ? eligibleObligations[0].id : ""),
     ),
     [selectedComponent, setComponent] = useState(
-      consideration.find((c) => ["variable", "usage"].includes(c.kind))?.id ||
-        "",
+      correctionTarget?.component_id || (variableComponents.length === 1 ? variableComponents[0].id : ""),
     ),
     [amount, setAmount] = useState(correctionTarget?.amount || ""),
     [percentage, setPercentage] = useState(
@@ -1122,12 +1122,9 @@ export function ActivityForm(
   const openingMeasure = (opening?.opening_obligations as { obligation_id: string; measure?: string }[] | undefined)?.find((row) => row.obligation_id === obligation)?.measure || "0";
   const priorPercentage = [...priorActivities].filter((item) => item.type === activity).sort((a, b) => a.effective_date.localeCompare(b.effective_date) || String(a.recorded_at || "").localeCompare(String(b.recorded_at || ""))).at(-1)?.percentage || openingMeasure;
   const priorUnits = Number(openingMeasure) + priorActivities.filter((item) => item.type === "usage").reduce((sum, item) => sum + Number(item.quantity || 0), 0);
-  const variableComponents = consideration.filter((c) =>
-    ["variable", "usage"].includes(c.kind),
-  );
   const component = variableComponents.some((c) => c.id === selectedComponent)
     ? selectedComponent
-    : variableComponents[0]?.id || "";
+    : "";
   const preModificationVariableIds = new Set<string>();
   const changedOriginalPromiseIds = new Set<string>();
   let componentsBeforeAmendment = contract.consideration;
@@ -1180,7 +1177,7 @@ export function ActivityForm(
       {...props}
       title={correctionTarget ? `Correct ${activity}` : names[activity]}
       subtitle={correctionTarget ? `${contract.name} · replaces the selected source activity while retaining its history` : contract.name}
-      canSubmit={!changedOriginalPromise && (!requiresObligation || Boolean(selectedTerms)) && creditReady && sourceReady}
+      canSubmit={!changedOriginalPromise && (!requiresObligation || Boolean(selectedTerms)) && (activity !== "reassessment" || Boolean(component)) && creditReady && sourceReady}
       command={() => {
         const payload = {
           contract_id: contract.id,
@@ -1230,7 +1227,7 @@ export function ActivityForm(
           />
         </Field>
         {activity !== "billing" && activity !== "reassessment" && activity !== "rate_change" && (
-          <Field label="Performance obligation" hint={!eligibleObligations.length ? "No obligation is eligible for this activity on the selected date. Check its service or exercise dates." : undefined}>
+          <Field label="Performance obligation" hint={!eligibleObligations.length ? "No obligation is eligible for this activity on the selected date. Check its service or exercise dates." : eligibleObligations.length > 1 && !obligation ? "Choose the obligation this entry affects." : undefined}>
             <select
               required
               value={obligation}
@@ -1252,7 +1249,7 @@ export function ActivityForm(
           </Field>
         )}
         {activity === "reassessment" && (
-          <Field label="Consideration component">
+          <Field label="Consideration component" hint={variableComponents.length > 1 && !component ? "Choose which variable or usage amount is being reassessed." : undefined}>
             <select
               required
               value={component}
@@ -1352,7 +1349,7 @@ export function ActivityForm(
 export function RenewalLinkForm(props: FormProps & { contract: Contract }) {
   const { contract, state } = props;
   const available = contract.activities.filter((item) => item.type === "right_exercise" && item.obligation_id && !(state.renewal_links || []).some((link) => link.contract_id === contract.id && link.obligation_id === item.obligation_id));
-  const [obligationId, setObligationId] = useState(available[0]?.obligation_id || "");
+  const [obligationId, setObligationId] = useState(available.length === 1 ? available[0].obligation_id : "");
   const [renewalId, setRenewalId] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const [rationale, setRationale] = useState("");
@@ -1366,7 +1363,7 @@ export function RenewalLinkForm(props: FormProps & { contract: Contract }) {
   const rightAllocation = state.report.contracts.find((item) => item.id === contract.id)?.allocation.find((item) => item.obligation_id === obligationId)?.amount;
   return <CommandDialog {...props} title="Link renewal contract" subtitle="Pair an exercised material right with the contract for its new price." confirmLabel="Link renewal" successMessage="Renewal contract linked." canSubmit={Boolean(exercise && renewal && confirmed && rationale.trim())} command={() => ({ command: "link_renewal_contract", payload: { contract_id: contract.id, obligation_id: obligationId, renewal_contract_id: renewalId, additional_consideration: newPrice, price_basis: "new_consideration_only", effective_date: exercise?.effective_date, rationale } })}>
     <p className="fine-print">Create the renewal contract and record the right exercise first. The original right allocation remains on {contract.name}; the renewal contract records only its new consideration.</p>
-    <Field label="Exercised material right"><select required value={obligationId} onChange={(event) => { setObligationId(event.target.value); setRenewalId(""); setConfirmed(false); }}><option value="">Choose right</option>{available.map((item) => <option key={item.id} value={item.obligation_id}>{contract.obligations.find((obligation) => obligation.id === item.obligation_id)?.name || item.obligation_id} · exercised {dateLabel(item.effective_date)}</option>)}</select></Field>
+    <Field label="Exercised material right" hint={available.length > 1 && !obligationId ? "Choose which exercised right this renewal fulfills." : undefined}><select required value={obligationId} onChange={(event) => { setObligationId(event.target.value); setRenewalId(""); setConfirmed(false); }}><option value="">Choose right</option>{available.map((item) => <option key={item.id} value={item.obligation_id}>{contract.obligations.find((obligation) => obligation.id === item.obligation_id)?.name || item.obligation_id} · exercised {dateLabel(item.effective_date)}</option>)}</select></Field>
     {exercise && <p className="fine-print">Delivery: {dateLabel(String(exercise.delivery_start))} – {dateLabel(String(exercise.delivery_end))}</p>}
     <Field label="Renewal contract"><select required value={renewalId} onChange={(event) => { setRenewalId(event.target.value); setConfirmed(false); }}><option value="">Choose contract</option>{renewals.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
     {exercise && renewals.length === 0 && <p className="notice">No eligible renewal. Create one whose term covers this delivery window, with all obligations inside it and only new consideration.</p>}
