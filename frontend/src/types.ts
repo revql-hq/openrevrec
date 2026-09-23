@@ -399,7 +399,7 @@ export type Comparison = {
   summary: Partial<Totals>;
   [key: string]: unknown;
 };
-export type Preview = { before: Report; state: State; comparison?: Comparison; selected_period?: string; focus_period?: string };
+export type Preview = { before: Report; state: State; comparison?: Comparison; selected_period?: string; focus_period?: string; frontier: number; request_hash: string };
 export type View =
   | "Home"
   | "Customers"

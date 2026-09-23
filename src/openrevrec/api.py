@@ -64,7 +64,9 @@ def create_app(application: Application, token=None, static_dir=None):
         data = request.get_json()
         if not isinstance(data, dict) or not isinstance(data.get("command"), str) or not isinstance(data.get("payload", {}), dict):
             raise ValueError("Provide command and payload in a JSON object.")
-        return {"command": data["command"], "payload": data.get("payload", {}), "scenario_id": data.get("scenario_id", "main"), "period": data.get("period"), "idempotency_key": data.get("idempotency_key")}
+        return {"command": data["command"], "payload": data.get("payload", {}), "scenario_id": data.get("scenario_id", "main"),
+                "period": data.get("period"), "idempotency_key": data.get("idempotency_key"),
+                "expected_frontier": data.get("expected_frontier"), "expected_request_hash": data.get("expected_request_hash")}
 
     @app.post("/api/commands")
     def command():

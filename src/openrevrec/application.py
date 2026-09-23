@@ -1697,7 +1697,8 @@ class Application:
         result["scenario_id"] = sid
         return result
 
-    def execute(self, command, payload, scenario_id="main", idempotency_key=None, period=None, source="python"):
+    def execute(self, command, payload, scenario_id="main", idempotency_key=None, period=None, source="python",
+                expected_frontier=None, expected_request_hash=None):
         if not isinstance(command, str) or command not in COMMANDS:
             raise ValueError(f"Unknown command: {command}")
         if not isinstance(scenario_id, str) or not scenario_id.strip():
@@ -1706,6 +1707,7 @@ class Application:
             raise ValueError("idempotency_key must be a nonempty string.")
         period = valid_period(period or date.today().strftime("%Y-%m"))
         request_hash = hashlib.sha256(dumps({"command": command, "payload": payload, "scenario_id": scenario_id}).encode()).hexdigest()
+        preview_hash = hashlib.sha256(dumps({"command": command, "payload": payload, "scenario_id": scenario_id, "period": period}).encode()).hexdigest()
         with self.workspace.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -1716,6 +1718,14 @@ class Application:
                             raise ValueError("This idempotency key was already used for different input.")
                         return_scenario = "main" if command in {"apply_scenario", "archive_scenario"} else scenario_id
                         return {"result": {"change_set_id": existing["id"], "version": existing["version"], "id": existing["entity_id"], "replayed": True}, "state": self._state(db, return_scenario, period)}
+                if expected_frontier is not None:
+                    if isinstance(expected_frontier, bool) or not isinstance(expected_frontier, int) or expected_frontier < 0:
+                        raise ValueError("expected_frontier must be a nonnegative integer.")
+                    current_frontier = db.execute("SELECT coalesce(max(version),0) FROM change_sets").fetchone()[0]
+                    if current_frontier != expected_frontier:
+                        raise ValueError("The workspace changed since preview. Preview the impact again.")
+                if expected_request_hash is not None and expected_request_hash != preview_hash:
+                    raise ValueError("The command details changed since preview. Preview the impact again.")
                 # Reserve the writer before backing up, but do not write yet:
                 # a separate read connection can copy the committed database.
                 backup = self.workspace.backup(command) if command in {"close_period", "reopen_period"} else None
@@ -1743,6 +1753,8 @@ class Application:
         with self.workspace.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
+                frontier = db.execute("SELECT coalesce(max(version),0) FROM change_sets").fetchone()[0]
+                request_hash = hashlib.sha256(dumps({"command": command, "payload": payload, "scenario_id": scenario_id, "period": period}).encode()).hexdigest()
                 target = "main" if command == "apply_scenario" else scenario_id
                 if command == "rebase_scenario" and isinstance(payload, dict):
                     target = payload.get("scenario_id") or payload.get("id") or scenario_id
@@ -1752,7 +1764,8 @@ class Application:
                 comparison = compare_reports(before["report"], after["report"])
                 if before["report"]["journals"] != after["report"]["journals"] or before["report"]["summary"] != after["report"]["summary"]:
                     comparison["affected_periods"] = sorted(set(comparison["affected_periods"]) | {focus_period})
-                return {"before": before["report"], "state": after, "comparison": comparison, "selected_period": period, "focus_period": focus_period}
+                return {"before": before["report"], "state": after, "comparison": comparison, "selected_period": period,
+                        "focus_period": focus_period, "frontier": frontier, "request_hash": request_hash}
             except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
                 raise ValueError(f"Workspace operation failed: {exc}") from exc
             finally:

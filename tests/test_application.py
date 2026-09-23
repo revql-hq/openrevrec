@@ -1682,6 +1682,45 @@ def test_preview_rolls_back_every_write(tmp_path):
     assert after["report"]["summary"]["billings"] == "0.00"
 
 
+def test_previewed_command_rejects_changed_workspace_or_details_and_retries_safely(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    billing = {"contract_id": "con_1", "effective_date": "2026-09-01", "amount": "100.00"}
+    preview = application.preview("record_billing", billing, period="2026-09")
+    with pytest.raises(ValueError, match="details changed since preview"):
+        application.execute("record_billing", {**billing, "amount": "101.00"}, period="2026-09",
+                            expected_frontier=preview["frontier"], expected_request_hash=preview["request_hash"])
+    with pytest.raises(ValueError, match="details changed since preview"):
+        application.execute("record_billing", billing, period="2026-10",
+                            expected_frontier=preview["frontier"], expected_request_hash=preview["request_hash"])
+    application.execute("create_customer", {"name": "Unrelated customer"})
+    with pytest.raises(ValueError, match="workspace changed since preview"):
+        application.execute("record_billing", billing, period="2026-09",
+                            expected_frontier=preview["frontier"], expected_request_hash=preview["request_hash"])
+    assert application.state(period="2026-09")["report"]["summary"]["billings"] == "0.00"
+    refreshed = application.preview("record_billing", billing, period="2026-09")
+    accepted = application.execute("record_billing", billing, period="2026-09", idempotency_key="reviewed-billing",
+                                   expected_frontier=refreshed["frontier"], expected_request_hash=refreshed["request_hash"])
+    replayed = application.execute("record_billing", billing, period="2026-09", idempotency_key="reviewed-billing",
+                                   expected_frontier=refreshed["frontier"], expected_request_hash=refreshed["request_hash"])
+    assert replayed["result"]["replayed"] is True
+    assert replayed["result"]["change_set_id"] == accepted["result"]["change_set_id"]
+    assert application.state(period="2026-09")["report"]["summary"]["billings"] == "100.00"
+
+
+def test_scenario_preview_guard_sees_main_changes_after_scenario_base(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    scenario = application.execute("create_scenario", {"name": "Billing review"})["result"]["id"]
+    billing = {"contract_id": "con_1", "effective_date": "2026-09-01", "amount": "100.00"}
+    preview = application.preview("record_billing", billing, scenario_id=scenario, period="2026-09")
+    application.execute("create_customer", {"name": "Main customer"})
+    assert application.state(scenario, "2026-09")["frontier"] == preview["frontier"]
+    with pytest.raises(ValueError, match="workspace changed since preview"):
+        application.execute("record_billing", billing, scenario_id=scenario, period="2026-09",
+                            expected_frontier=preview["frontier"], expected_request_hash=preview["request_hash"])
+
+
 def test_scenario_isolation_compare_and_apply(tmp_path):
     application = app(tmp_path)
     seed(application)

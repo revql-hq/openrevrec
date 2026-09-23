@@ -70,7 +70,8 @@ export function CommandDialog({
     setBusy(true);
     setError("");
     try {
-      const envelope = { ...command(), scenario_id: state.scenario_id, period };
+      const envelope = { ...command(), scenario_id: state.scenario_id, period,
+        ...(preview ? { expected_frontier: preview.frontier, expected_request_hash: preview.request_hash } : {}) };
       if (!preview && previewRequired) {
         setPreview(await post<Preview>("/api/preview", envelope));
       } else {
@@ -98,7 +99,9 @@ export function CommandDialog({
         onClose();
       }
     } catch (e) {
-      setError((e as Error).message);
+      const message = (e as Error).message;
+      if (preview && message.includes("since preview")) setPreview(null);
+      setError(message);
     } finally {
       setBusy(false);
     }

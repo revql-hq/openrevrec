@@ -53,6 +53,19 @@ def test_command_preview_search_sql_and_demo_routes(tmp_path):
     assert web.get("/api/template", headers=headers).data.startswith(b"PK")
 
 
+def test_command_route_enforces_preview_version(tmp_path):
+    web, application = client(tmp_path)
+    headers = {"Authorization": "Bearer secret"}
+    command = {"command": "create_customer", "payload": {"name": "Reviewed customer"}}
+    preview = web.post("/api/preview", json=command, headers=headers).get_json()
+    application.execute("create_customer", {"name": "Intervening customer"})
+    stale = web.post("/api/commands", json={**command, "expected_frontier": preview["frontier"],
+                                          "expected_request_hash": preview["request_hash"]}, headers=headers)
+    assert stale.status_code == 400
+    assert "changed since preview" in stale.get_json()["error"]
+    assert [customer["name"] for customer in application.state()["customers"]] == ["Intervening customer"]
+
+
 def test_static_app_and_json_errors(tmp_path):
     static = tmp_path / "ui"; static.mkdir(); (static / "index.html").write_text("<main>OpenRevRec UI</main>")
     web, _ = client(tmp_path, static_dir=static)
