@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { changeComponentKind, changeObligationKind, changeObligationMethod, contractTerms, suggestedModificationDate, termReviewStatus } from "./contractTerms";
 import { activityEarliestDate, suggestedActivityDate, supportsActivityOnDate } from "./activityDates";
+import { eligibleBillingOriginals } from "./billingCredits";
 import { parseApprovedCombinations } from "./accountRules";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 import { api, post, uid, money, humanize, dateLabel, total, today } from "./api";
@@ -1090,7 +1091,11 @@ export function ActivityForm(
     [creditOriginal, setCreditOriginal] = useState(typeof correctionTarget?.applies_to_change_set_id === "string" ? correctionTarget.applies_to_change_set_id : typeof correctionTarget?.applies_to_reference === "string" ? "external" : ""),
     [externalInvoice, setExternalInvoice] = useState(typeof correctionTarget?.applies_to_reference === "string" ? correctionTarget.applies_to_reference : ""),
     [rationale, setRationale] = useState("");
-  const positiveBillings = contract.activities.filter((item) => item.type === "billing" && Number(item.amount || 0) > 0 && item.effective_date <= effective);
+  const positiveBillings = eligibleBillingOriginals(contract, effective, sourceContractReference);
+  const creditOriginalChoice = creditOriginal === "external" || positiveBillings.some((item) => item.id === creditOriginal) ? creditOriginal : "";
+  const creditReady = activity !== "billing" || !(Number(amount) < 0) ||
+    (creditOriginalChoice === "external" ? Boolean(externalInvoice.trim()) : Boolean(creditOriginalChoice));
+  const sourceReady = !contract.source_contracts?.length || !["billing", "usage"].includes(activity) || Boolean(sourceContractReference);
   const obligation = eligibleObligations.some((o) => o.id === selectedObligation)
     ? selectedObligation
     : "";
@@ -1162,7 +1167,7 @@ export function ActivityForm(
       {...props}
       title={correctionTarget ? `Correct ${activity}` : names[activity]}
       subtitle={correctionTarget ? `${contract.name} · replaces the selected source activity while retaining its history` : contract.name}
-      canSubmit={!changedOriginalPromise && (!requiresObligation || Boolean(selectedTerms))}
+      canSubmit={!changedOriginalPromise && (!requiresObligation || Boolean(selectedTerms)) && creditReady && sourceReady}
       command={() => {
         const payload = {
           contract_id: contract.id,
@@ -1172,7 +1177,7 @@ export function ActivityForm(
             ? { source_contract_reference: sourceContractReference }
             : {}),
           ...(activity === "billing"
-            ? { amount, reference, ...(Number(amount) < 0 ? creditOriginal === "external" ? { applies_to_reference: externalInvoice } : { applies_to_change_set_id: creditOriginal } : {}) }
+            ? { amount, reference, ...(Number(amount) < 0 ? creditOriginalChoice === "external" ? { applies_to_reference: externalInvoice } : { applies_to_change_set_id: creditOriginalChoice } : {}) }
             : activity === "reassessment"
               ? { component_id: component, included_amount: amount }
               : activity === "rate_change"
@@ -1196,7 +1201,7 @@ export function ActivityForm(
       successMessage={correctionTarget ? `${humanize(activity)} source fact corrected.` : `${humanize(activity)} recorded.`}
     >
       <p className="notice">{correctionTarget ? "Replace the original source facts. The original entry stays in change history; this correction recalculates all affected periods." : descriptions[activity]}</p>
-      {["billing", "usage"].includes(activity) && Boolean(contract.source_contracts?.length) && <Field label="Source agreement" hint="Choose the legal agreement that carries this invoice or usage source record; the accounting schedule remains combined."><select required value={sourceContractReference} onChange={(event) => setSourceContractReference(event.target.value)}><option value="">Choose source agreement</option>{contract.source_contracts?.map((source) => <option key={source.reference} value={source.reference}>{source.reference} · {props.state.customers.find((item) => item.id === (source.customer_id || contract.customer_id))?.name || source.customer_id || contract.customer_id}</option>)}</select></Field>}
+      {["billing", "usage"].includes(activity) && Boolean(contract.source_contracts?.length) && <Field label="Source agreement" hint="Choose the legal agreement that carries this invoice or usage source record; the accounting schedule remains combined."><select required value={sourceContractReference} onChange={(event) => { setSourceContractReference(event.target.value); setCreditOriginal(""); setExternalInvoice(""); }}><option value="">Choose source agreement</option>{contract.source_contracts?.map((source) => <option key={source.reference} value={source.reference}>{source.reference} · {props.state.customers.find((item) => item.id === (source.customer_id || contract.customer_id))?.name || source.customer_id || contract.customer_id}</option>)}</select></Field>}
       {changedOriginalPromise && <p className="warning">This variable amount changed as part of a prospective amendment. A later estimate change needs a reviewed split between the original and amended promises.</p>}
       {reassessmentNeedsOriginalPromise && !changedOriginalPromise && <p className="fine-print">This amount predates a prospective amendment. Its change follows the original allocation, with revenue for services already delivered recognized in this period. Preview checks whether the original promise and satisfaction path remain identifiable.</p>}
       {activity === "milestone" && selectedTerms?.kind === "material_right" && <p className="fine-print">{selectedRightExercise ? `This exercised right requires a 100% delivery milestone on ${dateLabel(String(selectedRightExercise.delivery_start))}.` : "A milestone for an unexercised right represents delivery within its exercise window, not an election with later delivery."}</p>}
@@ -1316,7 +1321,7 @@ export function ActivityForm(
           </Field>
         )}
       </div>
-      {activity === "billing" && Number(amount) < 0 && <><Field label="Original invoice for this credit" hint="A credit memo reduces the billed balance. A contractual price reduction is a separate consideration change."><select required value={creditOriginal} onChange={(event) => setCreditOriginal(event.target.value)}><option value="">Choose original invoice</option>{positiveBillings.map((item) => <option value={item.id} key={item.id}>{item.reference || item.id} · {item.effective_date} · {money(item.amount, props.state.workspace.currency)}</option>)}<option value="external">Original invoice is outside this workspace</option></select></Field>{creditOriginal === "external" && <Field label="External original invoice reference"><input required value={externalInvoice} onChange={(event) => setExternalInvoice(event.target.value)} placeholder="Original invoice ID" /></Field>}</>}
+      {activity === "billing" && Number(amount) < 0 && <><Field label="Original invoice for this credit" hint="Choose an invoice from the same source agreement. A credit memo reduces the billed balance; a contractual price reduction is a separate consideration change."><select required value={creditOriginalChoice} onChange={(event) => setCreditOriginal(event.target.value)}><option value="">Choose original invoice</option>{positiveBillings.map((item) => <option value={item.id} key={item.id}>{item.reference || item.id} · {item.effective_date} · {money(item.amount, props.state.workspace.currency)}</option>)}<option value="external">Original invoice is outside this workspace</option></select></Field>{creditOriginalChoice === "external" && <Field label="External original invoice reference"><input required value={externalInvoice} onChange={(event) => setExternalInvoice(event.target.value)} placeholder="Original invoice ID" /></Field>}</>}
       {["progress", "milestone"].includes(activity) && obligation && <p className="fine-print">Previously recorded cumulative completion: {priorPercentage}%. Proposed change: {percentage ? Number(percentage) - Number(priorPercentage) : "—"} percentage points. Resulting completion: {percentage || "—"}%.</p>}
       {activity === "usage" && obligation && <p className="fine-print">Previously recorded units: {priorUnits}. This entry adds {quantity || "—"} units; resulting cumulative units: {quantity ? priorUnits + Number(quantity) : "—"}{selectedTerms?.total_units ? " of " + selectedTerms.total_units + " contracted" : ""}.</p>}
       <Field label="Rationale">
