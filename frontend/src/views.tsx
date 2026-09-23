@@ -386,14 +386,10 @@ export function HomeView(props: ViewProps) {
         <div className="button-group">
           <Button
             primary
-            onClick={() =>
-              dialog({ type: state.customers.length ? "contract" : "customer" })
-            }
+            onClick={() => dialog({ type: "contract" })}
           >
             <Plus size={15} />
-            {state.customers.length
-              ? "Create a contract"
-              : "Add your first customer"}
+            Create a contract
           </Button>
           <Button onClick={demo} busy={busy}>
             Explore example contracts
@@ -731,11 +727,7 @@ export function ContractsView(props: ViewProps) {
         />
         <Button
           primary
-          onClick={() =>
-            props.dialog({
-              type: props.state.customers.length ? "contract" : "customer",
-            })
-          }
+          onClick={() => props.dialog({ type: "contract" })}
         >
           <Plus size={14} />
           New contract

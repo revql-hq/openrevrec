@@ -499,6 +499,7 @@ export default function App() {
               {...formProps}
               contract={contract}
               customerId={dialog.customerId}
+              onCreatedCutoverContract={(id) => setDialog({ type: "opening_position", contractId: id })}
             />
           )}{" "}
           {dialog.type === "activity" && contract && (

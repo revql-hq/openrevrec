@@ -48,6 +48,7 @@ export function CommandDialog({
   successMessage = "Change recorded.",
   previewRequired = true,
   canSubmit = true,
+  onAccepted,
 }: FormProps & {
   title: string;
   subtitle?: string;
@@ -58,6 +59,7 @@ export function CommandDialog({
   successMessage?: string;
   previewRequired?: boolean;
   canSubmit?: boolean;
+  onAccepted?: (result: { id: string; change_set_id: string }) => void;
 }) {
   const [preview, setPreview] = useState<Preview | null>(null),
     [supportFile, setSupportFile] = useState<File | null>(null),
@@ -79,7 +81,7 @@ export function CommandDialog({
         if (pending.current?.body !== body)
           pending.current = { body, key: uid() };
         // A lost response or failed refresh must not duplicate accepted activity.
-        const accepted = await post<{ result: { change_set_id: string } }>("/api/commands", {
+        const accepted = await post<{ result: { id: string; change_set_id: string } }>("/api/commands", {
           ...envelope,
           idempotency_key: pending.current.key,
         });
@@ -97,6 +99,7 @@ export function CommandDialog({
         }
         await onDone(successMessage);
         onClose();
+        onAccepted?.(accepted.result);
       }
     } catch (e) {
       const message = (e as Error).message;
@@ -712,7 +715,7 @@ function ObligationEditor({
   );
 }
 export function ContractForm(
-  props: FormProps & { contract?: Contract; customerId?: string },
+  props: FormProps & { contract?: Contract; customerId?: string; onCreatedCutoverContract?: (id: string) => void },
 ) {
   const { contract } = props;
   const initialEffective = contract ? suggestedModificationDate(contract, props.period) : `${props.period}-01`;
@@ -736,7 +739,7 @@ export function ContractForm(
     [start, setStart] = useState(contract?.start_date || ""),
     [end, setEnd] = useState(contract?.end_date || ""),
     [cutover, setCutover] = useState(contract?.cutover_date || ""),
-    [template, setTemplate] = useState(contract ? "existing" : ""),
+    [template, setTemplate] = useState(contract ? "existing" : "blank"),
     [rationale, setRationale] = useState(""),
     [effective, setEffective] = useState(initialEffective),
     [treatment, setTreatment] = useState(""),
@@ -748,6 +751,45 @@ export function ContractForm(
     [termTrigger, setTermTrigger] = useState(initialTerms?.termAssessment.trigger || ""),
     [termReviewDate, setTermReviewDate] = useState(initialTerms?.termAssessment.reviewDate || ""),
     [loadedTermAssessment, setLoadedTermAssessment] = useState(initialTerms?.termAssessment);
+  const [addingCustomer, setAddingCustomer] = useState(false),
+    [newCustomerName, setNewCustomerName] = useState(""),
+    [newCustomerEmail, setNewCustomerEmail] = useState(""),
+    [newCustomerReference, setNewCustomerReference] = useState(""),
+    [newCustomerSource, setNewCustomerSource] = useState(""),
+    [customerBusy, setCustomerBusy] = useState(false),
+    [customerError, setCustomerError] = useState("");
+  const pendingCustomer = useRef<{ id: string; key: string; body: string } | null>(null);
+  const customerEmailInput = useRef<HTMLInputElement>(null);
+  const createCustomer = async () => {
+    if (!newCustomerName.trim() || customerBusy) return;
+    if (customerEmailInput.current && !customerEmailInput.current.checkValidity()) {
+      setCustomerError("Enter a valid email address.");
+      return;
+    }
+    setCustomerBusy(true);
+    setCustomerError("");
+    try {
+      const id = pendingCustomer.current?.id || uid();
+      const payload = { id, name: newCustomerName.trim(), email: newCustomerEmail.trim(), reference: newCustomerReference.trim(), source_system: newCustomerSource.trim() };
+      const body = JSON.stringify(payload);
+      if (pendingCustomer.current?.body !== body) pendingCustomer.current = { id, key: uid(), body };
+      const accepted = await post<{ result: { id: string } }>("/api/commands", {
+        command: "create_customer",
+        payload,
+        scenario_id: props.state.scenario_id,
+        period: props.period,
+        idempotency_key: pendingCustomer.current.key,
+      });
+      setCustomer(accepted.result.id);
+      await props.onDone("Customer added. Continue the contract.");
+      setAddingCustomer(false);
+      pendingCustomer.current = null;
+    } catch (error) {
+      setCustomerError((error as Error).message);
+    } finally {
+      setCustomerBusy(false);
+    }
+  };
   const [components, setComponents] = useState<Component[]>(
     initialTerms?.consideration || [
       { id: uid(), label: "", kind: "fixed", amount: "" },
@@ -831,7 +873,8 @@ export function ContractForm(
   return (
     <CommandDialog
       {...props}
-      canSubmit={!contract || effective === loadedEffective}
+      canSubmit={(!contract || effective === loadedEffective) && !addingCustomer && !customerBusy}
+      onAccepted={!contract && cutover ? (result) => props.onCreatedCutoverContract?.(result.id) : undefined}
       title={contract ? `Modify ${contract.name}` : "New contract"}
       subtitle={
         contract
@@ -867,7 +910,7 @@ export function ContractForm(
               setComponents([{ id: uid(), label: choice === "annual" ? "Subscription" : "", kind: "fixed", amount: "" }]);
               setObligations([{ id: uid(), name: choice === "annual" ? "Subscription service" : "", kind: "service", ssp: "", method: "exact_days", start_date: nextStart, end_date: nextEnd }]);
               setTermsDirty(false);
-            }}><option value="">Choose a starting point</option><option value="blank">Blank contract</option><option value="annual">Annual subscription template</option></select>
+            }}><option value="blank">Blank contract</option><option value="annual">Annual subscription template</option></select>
           </Field>
           <div className="form-grid">
             <Field label="Contract name">
@@ -897,6 +940,16 @@ export function ContractForm(
               </select>
             </Field>
           </div>
+          {!addingCustomer ? <Button type="button" onClick={() => { pendingCustomer.current = null; setCustomerError(""); setAddingCustomer(true); }}><Plus size={14} /> Add customer here</Button> : <Section title="Add customer" subtitle="Save the customer and continue entering this contract.">
+            <Field label="Customer name"><input value={newCustomerName} onChange={(event) => setNewCustomerName(event.target.value)} placeholder="Acme, Inc." /></Field>
+            <div className="form-grid">
+              <Field label="Email (optional)"><input ref={customerEmailInput} type="email" value={newCustomerEmail} onChange={(event) => setNewCustomerEmail(event.target.value)} /></Field>
+              <Field label="External customer ID (optional)"><input value={newCustomerReference} onChange={(event) => setNewCustomerReference(event.target.value)} /></Field>
+              <Field label="Source system (optional)"><input value={newCustomerSource} onChange={(event) => setNewCustomerSource(event.target.value)} placeholder="CRM" /></Field>
+            </div>
+            <ErrorMessage error={customerError} />
+            <div className="button-group"><Button type="button" onClick={() => { setAddingCustomer(false); setCustomerError(""); }} disabled={customerBusy}>Cancel</Button><Button type="button" primary onClick={createCustomer} busy={customerBusy} disabled={!newCustomerName.trim()}>Save customer</Button></div>
+          </Section>}
           <label className="confirmation-row"><input type="checkbox" checked={combineSources} onChange={(event) => setCombineSources(event.target.checked)} /> Account for multiple source agreements as one contract</label>
           {combineSources && <Section title="Combined source agreements" subtitle="Record the legal agreements and the accountant's AASB 15 paragraph 17 conclusion. Their consideration and obligations belong in this one accounting contract.">
             <Field label="Primary agreement date"><input required type="date" value={primaryAgreementDate} onChange={(event) => setPrimaryAgreementDate(event.target.value)} /></Field>
@@ -1009,6 +1062,12 @@ export function ContractForm(
         <Field label="Planned review date (optional)" hint="An event-based trigger may have no known date. This date is recorded for review; it does not extend the accounting term automatically."><input type="date" min={contract ? effective : start} value={termReviewDate} onChange={(event) => { setTermReviewDate(event.target.value); setTermsDirty(true); }} /></Field>
       </>}
       <ComponentEditor items={components} obligations={obligations} allowEmpty={Boolean(contract)} reviewedMixed={treatment === "mixed"} onChange={(items) => { setComponents(items); setTermsDirty(true); }} />
+      {!contract && components.length === 1 && components[0].kind === "fixed" && obligations.length === 1 && obligations[0].kind === "service" && components[0].amount && !obligations[0].ssp && <div className="notice"><p>If this one service sells on its own for the contract price, copy that price to SSP and fill missing labels. Otherwise, enter its actual SSP below.</p><Button type="button" onClick={() => {
+        const label = name.trim() || "Service";
+        setComponents([{ ...components[0], label: components[0].label || label }]);
+        setObligations([{ ...obligations[0], name: obligations[0].name || label, ssp: components[0].amount }]);
+        setTermsDirty(true);
+      }}>Copy price to SSP</Button></div>}
       <ObligationEditor
         items={obligations}
         allowEmpty={Boolean(contract)}
