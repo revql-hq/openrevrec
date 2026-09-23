@@ -1605,7 +1605,7 @@ class Application:
     def _scenario_conflicts(self, db, scenario_id, base_version):
         own = [row for row in self._rows(db, scenario_id) if row["scenario_id"] == scenario_id
                and row["command"] not in SCENARIO_COMMANDS | DESCRIPTIVE_COMMANDS]
-        main_rows = db.execute("SELECT command, entity_id, version, payload FROM change_sets WHERE scenario_id='main' AND version>? ORDER BY version", (base_version,))
+        main_rows = db.execute("SELECT id, command, entity_id, effective_date, version, payload FROM change_sets WHERE scenario_id='main' AND version>? ORDER BY version", (base_version,))
         originals = {row["id"]: json.loads(row["payload"])
                      for row in db.execute("SELECT id, payload FROM change_sets WHERE command='record_billing'")}
         usage_originals = {row["id"]: json.loads(row["payload"])
@@ -1619,15 +1619,17 @@ class Application:
             main = {**dict(raw), "payload": json.loads(raw["payload"])}
             if main["command"] in DESCRIPTIVE_COMMANDS:
                 continue
-            if any(proposal["command"] == "set_policy" or main["command"] == "set_policy" or
+            matching_proposals = [proposal for proposal in own
+                if proposal["command"] == "set_policy" or main["command"] == "set_policy" or
                    (proposal["entity_id"] == main["entity_id"]
                     and not (_independent_invoices(proposal, main, originals)
                              or _independent_billing_corrections(proposal, main, originals)
                              or _independent_usage_changes(proposal, main, usage_originals)
                              or _independent_satisfaction_changes(proposal, main, satisfaction_originals)
-                             or _independent_rate_changes(proposal, main, rate_originals)))
-                   for proposal in own):
-                conflicts.append({key: main[key] for key in ("command", "entity_id", "version")})
+                             or _independent_rate_changes(proposal, main, rate_originals)))]
+            if matching_proposals:
+                conflicts.append({**{key: main[key] for key in ("id", "command", "entity_id", "effective_date", "version")},
+                                  "proposal_ids": [proposal["id"] for proposal in matching_proposals]})
         return conflicts
 
     def _scenario_command(self, db, command, payload, source, idempotency_key, request_hash):

@@ -1482,7 +1482,9 @@ export function ScenarioView(props: ViewProps) {
       </>
     );
   const currency = state.workspace.currency;
-  const behind = Number(comparison?.main_version || 0) > scenario.base_version;
+  const comparisonReady = Boolean(comparison && !loading && !error);
+  const behind = comparisonReady && Number(comparison?.main_version) > scenario.base_version;
+  const conflictCount = comparisonReady ? comparison?.conflicts?.length || 0 : 0;
   const active = scenario.status === "active";
   return (
     <>
@@ -1542,6 +1544,8 @@ export function ScenarioView(props: ViewProps) {
               )}
               {active && behind && (
                 <Button
+                  disabled={conflictCount > 0}
+                  title={conflictCount > 0 ? "Review conflicts and start a new scenario from current Main" : undefined}
                   onClick={() =>
                     dialog({
                       type: "lifecycle",
@@ -1556,8 +1560,8 @@ export function ScenarioView(props: ViewProps) {
               {active && (
                 <Button
                   primary
-                  disabled={behind}
-                  title={behind ? "Rebase before applying" : undefined}
+                  disabled={!comparisonReady || behind || conflictCount > 0}
+                  title={!comparisonReady ? "Wait for the comparison before applying" : conflictCount > 0 ? "Review conflicts and start a new scenario from current Main" : behind ? "Rebase before applying" : undefined}
                   onClick={() =>
                     dialog({
                       type: "lifecycle",
@@ -1597,7 +1601,20 @@ export function ScenarioView(props: ViewProps) {
                 <Section title="Proposed accounting changes" subtitle="Every proposal recorded in this scenario remains visible even when financial effects offset.">
                   {comparison.proposals?.length ? <div className="table-wrap"><table><thead><tr><th>Effective</th><th>Change</th><th>Entity</th><th>Review note</th></tr></thead><tbody>{comparison.proposals.map((proposal) => <tr key={proposal.id}><td>{dateLabel(proposal.effective_date)}</td><td><button className="table-link" onClick={() => navigate("Activity", proposal.id)}>{humanize(proposal.command)}</button></td><td>{state.contracts.find((contract) => contract.id === proposal.entity_id)?.name || state.customers.find((customer) => customer.id === proposal.entity_id)?.name || proposal.entity_id}</td><td>{proposal.rationale || "—"}</td></tr>)}</tbody></table></div> : <p className="muted">No accounting proposals recorded.</p>}
                 </Section>
-                {Boolean(comparison.conflicts?.length) && <Section title="Main changes requiring conflict review" subtitle="These accepted accounting changes touch the same records as this scenario."><div className="table-wrap"><table><thead><tr><th>Main version</th><th>Change</th><th>Entity</th></tr></thead><tbody>{comparison.conflicts?.map((conflict) => <tr key={conflict.version}><td>{conflict.version}</td><td>{humanize(conflict.command)}</td><td>{conflict.entity_id}</td></tr>)}</tbody></table></div></Section>}
+                {Boolean(comparison.conflicts?.length) && <Section title="Main changes requiring conflict review" subtitle="Open both changes. To revise the proposal, start a scenario from current Main." action={<Button type="button" onClick={() => dialog({ type: "scenario" })}>New scenario from Main</Button>}>
+                  <div className="table-wrap"><table><thead><tr><th>Main change</th><th>Conflicting proposal</th><th>Record</th></tr></thead><tbody>{comparison.conflicts?.map((conflict) => {
+                    const contract = state.contracts.find((item) => item.id === conflict.entity_id);
+                    const customer = state.customers.find((item) => item.id === conflict.entity_id);
+                    return <tr key={conflict.id}>
+                      <td><button className="table-link" onClick={() => navigate("Activity", conflict.id)}>{humanize(conflict.command)}</button><div className="fine-print">{dateLabel(conflict.effective_date)} · Main v{conflict.version}</div></td>
+                      <td>{conflict.proposal_ids.map((id) => {
+                        const proposal = comparison.proposals?.find((item) => item.id === id);
+                        return <div key={id}><button className="table-link" onClick={() => navigate("Activity", id)}>{proposal ? humanize(proposal.command) : "Open proposal"}</button></div>;
+                      })}</td>
+                      <td>{contract ? <button className="table-link" onClick={() => navigate("Contracts", contract.id)}>{contract.name}</button> : customer ? <button className="table-link" onClick={() => navigate("Customers", customer.id)}>{customer.name}</button> : conflict.entity_id}</td>
+                    </tr>;
+                  })}</tbody></table></div>
+                </Section>}
                 <Section
                   title="Selected-period difference"
                   subtitle={monthLabel(period)}

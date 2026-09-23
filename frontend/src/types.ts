@@ -395,7 +395,7 @@ export type Comparison = {
   details?: { period: string; contract_id: string; obligation_id: string; current: string; proposed: string; delta: string }[];
   affected_periods?: string[];
   proposals?: { id: string; command: string; entity_id: string; effective_date: string; rationale: string }[];
-  conflicts?: { command: string; entity_id: string; version: number }[];
+  conflicts?: { id: string; command: string; entity_id: string; effective_date: string; version: number; proposal_ids: string[] }[];
   summary: Partial<Totals>;
   [key: string]: unknown;
 };

@@ -2060,10 +2060,15 @@ def test_scenario_rebase_progress_correction_detects_replacement_date_collision(
 def test_scenario_rebase_keeps_same_obligation_milestones_in_conflict(tmp_path):
     application = _two_progress_obligations(tmp_path, integration_method="milestone")
     scenario = application.execute("create_scenario", {"name": "Integration delivery"})["result"]["id"]
-    application.execute("record_milestone", _progress_fact("integration", "100"), scenario_id=scenario, period="2026-01")
-    application.execute("record_milestone", {**_progress_fact("integration", "100"), "effective_date": "2026-02-15"},
-                        period="2026-02")
-    assert application.compare(scenario, "2026-02")["conflicts"]
+    proposal = application.execute("record_milestone", _progress_fact("integration", "100"),
+                                   scenario_id=scenario, period="2026-01")["result"]["change_set_id"]
+    main = application.execute("record_milestone", {**_progress_fact("integration", "100"), "effective_date": "2026-02-15"},
+                               period="2026-02")["result"]["change_set_id"]
+    assert application.compare(scenario, "2026-02")["conflicts"] == [{
+        "id": main, "command": "record_milestone", "entity_id": "contract",
+        "effective_date": "2026-02-15", "version": application.state()["frontier"],
+        "proposal_ids": [proposal],
+    }]
 
 
 def test_scenario_rebase_combines_progress_with_distinct_milestone(tmp_path):
