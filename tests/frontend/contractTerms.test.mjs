@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { changeComponentKind, changeObligationKind, changeObligationMethod, contractTerms, suggestedModificationDate, termReviewStatus } from '../../frontend/src/contractTerms.ts';
+import { changeComponentKind, changeObligationKind, changeObligationMethod, contractTerms, serviceMonthSelection, serviceMonthTargets, suggestedModificationDate, termReviewStatus } from '../../frontend/src/contractTerms.ts';
 
 const price = { id: 'price', label: 'Fee', kind: 'variable', amount: '100', included_amount: '25' };
 const contract = {
@@ -72,6 +72,20 @@ test('switching to fixed pricing removes constrained fields without mutating the
   assert.equal(changeComponentKind(monthly, 'credit').target_period, undefined);
   assert.equal(changeComponentKind(monthly, 'usage').target_period, '2026-06');
   assert.equal(changeComponentKind(monthly, 'fixed').target_period, undefined);
+});
+
+test('service-month targets require an active, explicitly selected single obligation', () => {
+  const obligations = [
+    { id: 'june', kind: 'service', method: 'monthly', start_date: '2026-06-15', end_date: '2026-06-30' },
+    { id: 'july', kind: 'service', method: 'exact_days', start_date: '2026-07-01', end_date: '2026-07-31' },
+    { id: 'right', kind: 'material_right', method: 'point_in_time', start_date: '2026-06-01', end_date: '2026-07-31' },
+  ];
+  const june = serviceMonthTargets(obligations, '2026-06');
+  assert.deepEqual(june.map((item) => item.id), ['june']);
+  assert.deepEqual(serviceMonthSelection(['june', 'july'], june), []);
+  assert.deepEqual(serviceMonthSelection(['june'], june), ['june']);
+  assert.deepEqual(serviceMonthSelection(['june'], serviceMonthTargets(obligations, '2026-07')), []);
+  assert.deepEqual(serviceMonthTargets(obligations, '2026-13'), []);
 });
 
 test('modification starts no earlier than the contract, and method changes require a fresh SSP', () => {

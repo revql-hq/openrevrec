@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { changeComponentKind, changeObligationKind, changeObligationMethod, contractTerms, suggestedModificationDate, termReviewStatus } from "./contractTerms";
+import { changeComponentKind, changeObligationKind, changeObligationMethod, contractTerms, serviceMonthSelection, serviceMonthTargets, suggestedModificationDate, termReviewStatus } from "./contractTerms";
 import { activityEarliestDate, suggestedActivityDate, supportsActivityOnDate } from "./activityDates";
 import { eligibleBillingOriginals } from "./billingCredits";
 import { parseApprovedCombinations } from "./accountRules";
@@ -341,7 +341,6 @@ function ComponentEditor({
     onChange(
       items.map((item, index) => (index === i ? { ...item, ...patch } : item)),
     );
-  const periodTargets = obligations.filter((obligation) => ["exact_days", "monthly", "prorated_monthly"].includes(obligation.method) && obligation.kind !== "material_right");
   return (
     <Section
       title="Consideration"
@@ -494,8 +493,11 @@ function ComponentEditor({
               }));
             }}><option value="relative_ssp">Relative SSP across all obligations</option><option value="specific">Specific eligible obligations</option></select></Field>
             {item.allocation_scope === "specific" && <>
-              {["variable", "usage"].includes(item.kind) && <Field label="Specific service month (optional)" hint="Use only when the amount relates to a distinct month within one time-based series obligation. A later estimate change catches up in its effective month."><input type="month" value={item.target_period || ""} onChange={(event) => update(i, { target_period: event.target.value, target_obligation_ids: event.target.value ? (item.target_obligation_ids || []).filter((id) => periodTargets.some((obligation) => obligation.id === id)).slice(0, 1) : item.target_obligation_ids || [] })} /></Field>}
-              {item.target_period ? <Field label="Target time-based obligation"><select required value={item.target_obligation_ids?.[0] || ""} onChange={(event) => update(i, { target_obligation_ids: event.target.value ? [event.target.value] : [] })}><option value="">Choose obligation</option>{periodTargets.map((obligation) => <option key={obligation.id} value={obligation.id}>{obligation.name || obligation.id}</option>)}</select></Field> : <fieldset className="target-list"><legend>Target performance obligations</legend>
+              {["variable", "usage"].includes(item.kind) && <Field label="Specific service month (optional)" hint="Use only when the amount relates to a distinct month within one time-based series obligation. A later estimate change catches up in its effective month."><input type="month" value={item.target_period || ""} onChange={(event) => {
+                const month = event.target.value;
+                update(i, { target_period: month, target_obligation_ids: month ? serviceMonthSelection(item.target_obligation_ids, serviceMonthTargets(obligations, month)) : item.target_obligation_ids || [] });
+              }} /></Field>}
+              {item.target_period ? <Field label="Target time-based obligation" hint="Choose one obligation active in this service month; earlier multiple selections are not carried over."><select required value={item.target_obligation_ids?.[0] || ""} onChange={(event) => update(i, { target_obligation_ids: event.target.value ? [event.target.value] : [] })}><option value="">Choose obligation</option>{serviceMonthTargets(obligations, item.target_period).map((obligation) => <option key={obligation.id} value={obligation.id}>{obligation.name || obligation.id}</option>)}</select></Field> : <fieldset className="target-list"><legend>Target performance obligations</legend>
                 {obligations.map((obligation) => <label key={obligation.id}><input type="checkbox" checked={item.target_obligation_ids?.includes(obligation.id) || false} onChange={(event) => update(i, { target_obligation_ids: event.target.checked ? [...(item.target_obligation_ids || []), obligation.id] : (item.target_obligation_ids || []).filter((id) => id !== obligation.id) })} /> {obligation.name || obligation.id}</label>)}
               </fieldset>}
               <Field label="Specific-allocation rationale" hint={item.target_period ? "Explain why the payment terms relate specifically to this month's distinct service and why allocating the full amount there meets the allocation objective." : "Record why this component relates specifically to these obligations and why the resulting allocation is consistent with the accounting conclusion."}><textarea required rows={2} value={item.allocation_rationale || ""} onChange={(event) => update(i, { allocation_rationale: event.target.value })} /></Field>
@@ -1011,9 +1013,12 @@ export function ContractForm(
         onChange={(items) => {
           setObligations(items);
           const currentIds = new Set(items.map((item) => item.id));
-          setComponents((current) => current.map((item) => item.target_obligation_ids
-            ? { ...item, target_obligation_ids: item.target_obligation_ids.filter((id) => currentIds.has(id)) }
-            : item));
+          setComponents((current) => current.map((item) => {
+            if (!item.target_obligation_ids) return item;
+            const targets = item.target_obligation_ids.filter((id) => currentIds.has(id));
+            return { ...item, target_obligation_ids: item.target_period
+              ? serviceMonthSelection(targets, serviceMonthTargets(items, item.target_period)) : targets };
+          }));
           setTermsDirty(true);
         }}
         start={contract ? effective : start}

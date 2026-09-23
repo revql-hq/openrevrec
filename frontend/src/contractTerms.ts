@@ -123,6 +123,19 @@ export function changeObligationKind(item: Obligation, kind: string): Obligation
   return { ...rest, kind };
 }
 
+export function serviceMonthTargets(obligations: Obligation[], month: string): Obligation[] {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return [];
+  return obligations.filter((item) =>
+    ["exact_days", "monthly", "prorated_monthly"].includes(item.method) &&
+    item.kind !== "material_right" &&
+    item.start_date.slice(0, 7) <= month && item.end_date.slice(0, 7) >= month,
+  );
+}
+
+export function serviceMonthSelection(current: string[] | undefined, eligible: Obligation[]): string[] {
+  return current?.length === 1 && eligible.some((item) => item.id === current[0]) ? current : [];
+}
+
 export function suggestedModificationDate(contract: Contract, period: string): string {
   const periodStart = `${period}-01`;
   return contract.start_date > periodStart ? contract.start_date : periodStart;
