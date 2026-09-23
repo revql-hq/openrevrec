@@ -634,6 +634,77 @@ def test_opening_position_starts_from_reconciled_legacy_balances_without_backfil
     assert any(row["role"] == "revenue" and row["account"] == "4100" for row in application.state(period="2026-10")["report"]["journals"])
 
 
+def test_source_openings_catch_offsetting_contract_errors_when_gl_totals_match(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    for reference, recognized, billed, asset, deferred in (
+        ("CON-A", "200.00", "300.00", "0.00", "100.00"),
+        ("CON-B", "300.00", "200.00", "100.00", "0.00"),
+    ):
+        application.execute("create_contract", {
+            "id": reference, "name": reference, "reference": reference, "customer_id": "customer",
+            "start_date": "2026-01-01", "end_date": "2026-12-31", "cutover_date": "2026-09-01",
+            "consideration": [{"id": "price", "kind": "fixed", "amount": "600.00"}],
+            "obligations": [{"id": "service", "name": "Service", "kind": "service", "ssp": "600.00", "method": "monthly",
+                             "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+        }, period="2026-09")
+        application.execute("record_opening_position", {
+            "contract_id": reference, "effective_date": "2026-09-01", "billed_to_date": billed,
+            "contract_asset": asset, "deferred_revenue": deferred,
+            "source_name": "Legacy close", "rationale": "Accepted opening position",
+            "opening_obligations": [{"obligation_id": "service", "recognized_to_date": recognized}],
+        }, period="2026-09")
+    summary = application.state(period="2026-09")["report"]["summary"]
+    application.execute("record_control_totals", {
+        "period": "2026-09", "source_name": "Independent GL", "rationale": "September control totals",
+        **{key: summary[key] for key in ("billings", "contract_asset", "deferred_revenue")},
+    }, period="2026-09")
+    manifest = {"period": "2026-09", "source_name": "Independent legacy opening register",
+                "rationale": "All September cutovers, grouped by accounting contract.",
+                "contract_references": ["CON-A", "CON-B"], "billing_references": [], "usage_references": [],
+                "opening_positions": [
+                    {"contract_reference": "CON-A", "cutover_date": "2026-09-01", "billed_to_date": "200.00",
+                     "contract_asset": "100.00", "deferred_revenue": "0.00", "recognized_to_date": "300.00"},
+                    {"contract_reference": "CON-B", "cutover_date": "2026-09-01", "billed_to_date": "300.00",
+                     "contract_asset": "0.00", "deferred_revenue": "100.00", "recognized_to_date": "200.00"},
+                ]}
+    application.execute("record_population_manifest", manifest, period="2026-09")
+    review = application.reports(period="2026-09")
+    assert next(check for check in review["checks"] if check["id"] == "external_controls")["status"] == "pass"
+    assert next(check for check in review["checks"] if check["id"] == "source_population")["status"] == "review"
+    comparison = review["population_comparison"]
+    assert [item["contract_reference"] for item in comparison["mismatched_openings"]] == ["CON-A", "CON-B"]
+    assert comparison["missing_openings"] == comparison["unexpected_openings"] == []
+    book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-09"), review)))
+    assert [book["Source openings"].cell(row, 3).value for row in (2, 3)] == ["Balances differ", "Balances differ"]
+    assert book["Source openings"]["F2"].value == 200
+    assert book["Source openings"]["J2"].value == 300
+    book.close()
+    with pytest.raises(ValueError, match="duplicate contract and cutover"):
+        application.execute("record_population_manifest", {**manifest, "opening_positions": manifest["opening_positions"] * 2}, period="2026-09")
+    with pytest.raises(ValueError, match="stated in cents"):
+        application.execute("record_population_manifest", {**manifest, "opening_positions": [{**manifest["opening_positions"][0], "billed_to_date": "200.001"}]}, period="2026-09")
+    with pytest.raises(ValueError, match="selected period"):
+        application.execute("record_population_manifest", {**manifest, "opening_positions": [{**manifest["opening_positions"][0], "cutover_date": "2026-08-01"}]}, period="2026-09")
+    application.execute("record_population_manifest", {**manifest, "opening_positions": []}, period="2026-09")
+    assert application.reports(period="2026-09")["population_comparison"]["unexpected_openings"] == [("CON-A", "2026-09-01"), ("CON-B", "2026-09-01")]
+    application.execute("record_population_manifest", {**manifest, "opening_positions": manifest["opening_positions"][:1]}, period="2026-09")
+    assert application.reports(period="2026-09")["population_comparison"]["unexpected_openings"] == [("CON-B", "2026-09-01")]
+    legacy_manifest = {key: value for key, value in manifest.items() if key != "opening_positions"}
+    application.execute("record_population_manifest", legacy_manifest, period="2026-09")
+    legacy_comparison = application.reports(period="2026-09")["population_comparison"]
+    assert legacy_comparison["unverified_openings"] == [("CON-A", "2026-09-01"), ("CON-B", "2026-09-01")]
+    assert legacy_comparison["unexpected_openings"] == []
+    corrected = [
+        {**manifest["opening_positions"][0], "billed_to_date": "300.00", "contract_asset": "0.00", "deferred_revenue": "100.00", "recognized_to_date": "200.00"},
+        {**manifest["opening_positions"][1], "billed_to_date": "200.00", "contract_asset": "100.00", "deferred_revenue": "0.00", "recognized_to_date": "300.00"},
+    ]
+    application.execute("record_population_manifest", {**manifest, "opening_positions": corrected}, period="2026-09")
+    assert next(check for check in application.reports(period="2026-09")["checks"] if check["id"] == "source_population")["status"] == "pass"
+    application.execute("record_population_manifest", {**manifest, "opening_positions": corrected + [{**corrected[0], "contract_reference": "CON-MISSING"}]}, period="2026-09")
+    assert application.reports(period="2026-09")["population_comparison"]["missing_openings"] == [("CON-MISSING", "2026-09-01")]
+
+
 def test_opening_position_preserves_manual_progress_measure(tmp_path):
     application = app(tmp_path)
     application.execute("create_customer", {"id": "cus_1", "name": "Customer"})

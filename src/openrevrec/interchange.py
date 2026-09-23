@@ -159,6 +159,20 @@ def export_bytes(state, review=None):
                     for item in usage_rows] +
                    [[contract_ref, usage_ref, "", "", "", "", "Unexpected in workspace", population["source_name"], population["rationale"]] for contract_ref, usage_ref in comparison.get("unexpected_usage", [])] +
                    [[item["contract_id"], item["activity_id"], "", "", "", "", "Workspace priced usage lacks reference", population["source_name"], population["rationale"]] for item in comparison.get("unidentified_usage", [])])
+            opening_fields = ("billed_to_date", "contract_asset", "deferred_revenue", "recognized_to_date")
+            _sheet(book, "Source openings", ["Contract reference", "Cutover date", "Comparison", "Source", "Population basis",
+                                             *[f"Source {field.replace('_', ' ')}" for field in opening_fields],
+                                             *[f"Workspace {field.replace('_', ' ')}" for field in opening_fields], "Activity ID"],
+                   [[item["contract_reference"], item["cutover_date"], item["status"], population["source_name"], population["rationale"],
+                     *[Decimal(item["source_values"][field]) for field in opening_fields],
+                     *[Decimal(item["workspace_values"][field]) if item["workspace_values"][field] != "" else "" for field in opening_fields], item["activity_id"]]
+                    for item in comparison.get("opening_value_rows", [])] +
+                   [[reference, cutover, "Unexpected in workspace", population["source_name"], population["rationale"], *([""] * 8), ""]
+                    for reference, cutover in comparison.get("unexpected_openings", [])] +
+                   [[reference, cutover, "Source opening balances not supplied", population["source_name"], population["rationale"], *([""] * 8), ""]
+                    for reference, cutover in comparison.get("unverified_openings", [])] +
+                   [[item["contract_id"], "", "Workspace opening lacks contract reference", population["source_name"], population["rationale"], *([""] * 8), item["activity_id"]]
+                    for item in comparison.get("unidentified_openings", [])])
         money_keys = {"opening_contract_asset", "opening_deferred_revenue", "revenue", "billings", "closing_contract_asset", "closing_deferred_revenue"}
         rollforward_keys = ["contract_id", "contract_name", "opening_contract_asset", "opening_deferred_revenue", "revenue", "billings", "closing_contract_asset", "closing_deferred_revenue"]
         _sheet(book, "Contract rollforward", rollforward_keys, [[Decimal(row[k]) if k in money_keys else row[k] for k in rollforward_keys] for row in review["rollforward"]])
