@@ -94,6 +94,7 @@ export type Review = {
 
 const views = [
   "Close readiness",
+  "Accounting warnings",
   "Contract balance rollforward",
   "Billing vs revenue",
   "External controls",
@@ -283,6 +284,16 @@ function ReportContent({
   props: ViewProps;
 }) {
   const currency = props.state.workspace.currency;
+  if (view === "Accounting warnings")
+    return <Section title="Accounting warnings" subtitle={`${review.warnings.length} warning${review.warnings.length === 1 ? "" : "s"} for ${monthLabel(review.period)}.`} action={<Button onClick={() => props.navigate("Reports", undefined, "Close readiness")}>Review close checks</Button>}>
+      {review.warnings.length > 0 ? <div className="report-list">{review.warnings.map((warning, index) => {
+        const matches = props.state.contracts.filter((contract) => warning.startsWith(`${contract.name}:`) || warning.startsWith(`${contract.name} /`));
+        const longest = Math.max(0, ...matches.map((contract) => contract.name.length));
+        const targets = matches.filter((contract) => contract.name.length === longest);
+        const target = targets.length === 1 ? targets[0] : undefined;
+        return <div key={`${index}:${warning}`}><span className="warning-message">{warning}</span>{target && <Button onClick={() => props.navigate("Contracts", target.id, "Overview")}>Open contract</Button>}</div>;
+      })}</div> : <Empty title="No accounting warnings">This period has no accounting warnings.</Empty>}
+    </Section>;
   if (view === "Close readiness")
     return (
       <>

@@ -447,7 +447,7 @@ export function HomeView(props: ViewProps) {
           {state.report.warnings.length > 0 && (
             <button
               className="attention-action"
-              onClick={() => navigate("Reports")}
+              onClick={() => navigate("Reports", undefined, "Accounting warnings")}
               aria-label={`Review ${state.report.warnings.length} accounting warning${state.report.warnings.length === 1 ? "" : "s"}`}
             >
               <span className="attention-count">{state.report.warnings.length}</span>
