@@ -196,6 +196,8 @@ def export_bytes(state, review=None):
             return row.get("dimensions", {}).get(key.removeprefix("dimension:"), "")
         return row.get(key, "")
     _sheet(book, "Journal entries", journal_keys, [[journal_cell(row, key) for key in journal_keys] for row in report["journals"]])
+    _sheet(book, "Dimension balance", ["Contract ID", "Dimensions", "Net debit / (credit)"],
+           [[row["contract_id"], row["dimensions"], Decimal(row["net_debit"])] for row in report.get("segment_imbalances", [])])
     _sheet(book, "Posting guide", ["Step", "Treatment"], [["1", "Confirm how your billing system posts invoices before using journal entries."], ["2", "Example for a 1,200 invoice and 100 recognized revenue: OpenRevRec derives debit billing clearing 1,200; credit deferred revenue 1,100; credit revenue 100."], ["3", "If the external invoice posting is debit accounts receivable 1,200 and credit the mapped billing clearing account 1,200, the clearing account nets to zero."], ["4", "If external invoices credit revenue or deferred revenue instead, map or transform the offset and reconcile before posting. Do not post both full outputs unchanged."], ["5", "Review profile dimensions and any cross-dimension opening transfer against the ledger's segment-balancing rules."], ["6", "Record the external journal reference against this batch ID after posting. Reexporting the same batch is not a new posting instruction."], ["7", "If a posted close is revised, the replacement sheet compares each recorded source batch with this version. Confirm which batch represents the ledger before using its delta."], ["Boundary", "OpenRevRec does not post to the ledger or independently verify a user-entered posting reference."]])
     _sheet(book, "External posting records", ["Period", "Batch ID", "Close ID", "External journal reference", "Posted date", "Rationale", "Recorded at", "Current batch"],
            [[item.get("period", ""), item.get("batch_id", ""), item.get("close_id", ""), item.get("external_journal_reference", ""), item.get("posted_date", ""), item.get("rationale", ""), item.get("recorded_at", ""), item.get("batch_id") == batch_id if item.get("period") == report["period"] else ""] for item in state.get("postings", [])])
@@ -217,6 +219,9 @@ def export_bytes(state, review=None):
     _sheet(book, "Profile dimensions", ["Profile ID", "Dimension", "Value"],
            [[profile_id, key, value] for profile_id, profile in sorted(profiles.items()) for key, value in sorted(profile["dimensions"].items())])
     _sheet(book, "Profile assignments", ["Contract ID", "Profile ID"], [[contract_id, profile_id] for contract_id, profile_id in sorted(assignments.items())])
+    obligation_assignments = report.get("policy_obligation_profile_assignments", {})
+    _sheet(book, "Obligation profile assignments", ["Contract ID", "Obligation ID", "Profile ID"],
+           [[contract_id, obligation_id, profile_id] for contract_id, items in sorted(obligation_assignments.items()) for obligation_id, profile_id in sorted(items.items())])
     _sheet(book, "Account overrides", ["Scope", "Contract ID", "Obligation ID", "Role", "Account"],
            [["Contract", contract_id, "", role, account] for contract_id, roles in overrides.get("contracts", {}).items() for role, account in roles.items()] +
            [["Obligation", contract_id, obligation_id, "revenue", account] for contract_id, items in overrides.get("obligations", {}).items() for obligation_id, account in items.items()])

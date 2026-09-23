@@ -107,7 +107,7 @@ def _financial_signature(report):
     return {
         "summary": {k: report["summary"].get(k, "0.00") for k in keys},
         "contracts": sorted((c["id"], tuple(c.get(k, "0.00") for k in keys)) for c in report["contracts"]),
-        "journals": sorted((j["contract_id"], j["account"], j["debit"], j["credit"]) for j in report["journals"]),
+        "journals": sorted((j["contract_id"], j["account"], tuple(sorted(j.get("dimensions", {}).items())), j["debit"], j["credit"]) for j in report["journals"]),
         "schedule": sorted((r["contract_id"], r["obligation_id"], r["revenue"])
                            for r in report["schedule"]
                            if r["period"] == report["period"] and Decimal(r["revenue"]) != 0),
@@ -150,7 +150,7 @@ class Application:
 
     def _project(self, db, scenario_id="main", frontier=None):
         meta = self.workspace.metadata(db)
-        baseline_policy = {"version": 1, "effective_period": "0001-01", "currency": meta["currency"], "rounding": "ROUND_HALF_UP", "ruleset_version": "orr-0.1", "accounts": DEFAULT_ACCOUNTS.copy(), "account_changes": DEFAULT_ACCOUNTS.copy(), "account_overrides": {"contracts": {}, "obligations": {}}, "override_changes": {}, "account_profiles": {}, "profile_changes": {}, "profile_assignments": {}, "profile_assignment_changes": {}}
+        baseline_policy = {"version": 1, "effective_period": "0001-01", "currency": meta["currency"], "rounding": "ROUND_HALF_UP", "ruleset_version": "orr-0.1", "accounts": DEFAULT_ACCOUNTS.copy(), "account_changes": DEFAULT_ACCOUNTS.copy(), "account_overrides": {"contracts": {}, "obligations": {}}, "override_changes": {}, "account_profiles": {}, "profile_changes": {}, "profile_assignments": {}, "profile_assignment_changes": {}, "obligation_profile_assignments": {}, "obligation_profile_assignment_changes": {}}
         state = {"workspace": meta, "scenario_id": scenario_id,
                  "policy": baseline_policy, "policy_versions": [baseline_policy],
                  "customers": [], "contracts": [], "renewal_links": [], "notes": [], "evidence": [], "judgment_reviews": [], "term_reviews": [], "closes": [], "controls": [], "population_manifests": [], "postings": []}
@@ -190,6 +190,7 @@ class Application:
                           "override_changes": p.get("override_changes", {}), "account_overrides": {},
                           "profile_changes": p.get("profile_changes", {}), "account_profiles": {},
                           "profile_assignment_changes": p.get("profile_assignment_changes", {}), "profile_assignments": {},
+                          "obligation_profile_assignment_changes": p.get("obligation_profile_assignment_changes", {}), "obligation_profile_assignments": {},
                           "account_transition": p.get("account_transition"),
                           "change_set_id": row["id"], "recorded_at": row["recorded_at"]}
                 state["policy_versions"].append(policy)
@@ -226,6 +227,7 @@ class Application:
         overrides = {"contracts": {}, "obligations": {}}
         profiles = {}
         assignments = {}
+        obligation_assignments = {}
         transitions_by_period = {}
         for policy in sorted(state["policy_versions"], key=lambda item: (item["effective_period"], item["version"])):
             mapping.update(policy["account_changes"])
@@ -262,10 +264,22 @@ class Application:
                     assignments.pop(contract_id, None)
                 else:
                     assignments[contract_id] = profile_id
+            for contract_id, changed in policy.get("obligation_profile_assignment_changes", {}).items():
+                current = obligation_assignments.setdefault(contract_id, {})
+                for obligation_id, profile_id in changed.items():
+                    if profile_id is None:
+                        current.pop(obligation_id, None)
+                    else:
+                        current[obligation_id] = profile_id
+                if not current:
+                    obligation_assignments.pop(contract_id, None)
             if any(profile_id not in profiles for profile_id in assignments.values()):
                 raise ValueError("An accounting profile assignment references a missing profile")
+            if any(profile_id not in profiles for items in obligation_assignments.values() for profile_id in items.values()):
+                raise ValueError("An obligation profile assignment references a missing profile")
             policy["account_profiles"] = copy.deepcopy(profiles)
             policy["profile_assignments"] = assignments.copy()
+            policy["obligation_profile_assignments"] = copy.deepcopy(obligation_assignments)
             effective_period = policy["effective_period"]
             policy["account_transition"] = policy.get("account_transition") or transitions_by_period.get(effective_period, "external")
             transitions_by_period[effective_period] = policy["account_transition"]
@@ -289,6 +303,7 @@ class Application:
                 if period == row["period"]:
                     report.update({k: snapshot[k] for k in ("summary", "contracts", "journals", "warnings")})
                     report["account_transitions"] = snapshot.get("account_transitions", [])
+                    report["segment_imbalances"] = snapshot.get("segment_imbalances", [])
                     report["closed"] = True
                     report["close_id"] = row["id"]
         report["schedule"].sort(key=lambda r: (r["period"], r["contract_id"], r["obligation_id"]))
@@ -618,6 +633,28 @@ class Application:
                 raise ValueError("Assign only existing contracts to existing accounting profiles.")
             p["profile_assignment_changes"] = {contract_id: requested_assignments.get(contract_id) for contract_id in set(previous_assignments) | set(requested_assignments)
                                                if previous_assignments.get(contract_id) != requested_assignments.get(contract_id)}
+            previous_obligation_assignments = current_policy.get("obligation_profile_assignments", {})
+            requested_obligation_assignments = p.pop("obligation_profile_assignments", previous_obligation_assignments)
+            if not isinstance(requested_obligation_assignments, dict):
+                raise ValueError("Obligation profile assignments must be an object.")
+            normalized_obligation_assignments = {}
+            for contract_id, assigned in requested_obligation_assignments.items():
+                contract = next((item for item in state["contracts"] if item["id"] == contract_id), None)
+                if contract is None or not isinstance(assigned, dict):
+                    raise ValueError("Assign obligation profiles only within existing contracts.")
+                known_obligations = {item["id"] for item in contract["obligations"]}
+                known_obligations.update(item["id"] for activity in contract["activities"] for item in activity.get("obligations", []))
+                if any(obligation_id not in known_obligations or not isinstance(profile_id, str) or profile_id not in normalized_profiles for obligation_id, profile_id in assigned.items()):
+                    raise ValueError("Assign existing accounting profiles to existing obligations.")
+                if assigned:
+                    normalized_obligation_assignments[contract_id] = assigned.copy()
+            p["obligation_profile_assignment_changes"] = {}
+            for contract_id in set(previous_obligation_assignments) | set(normalized_obligation_assignments):
+                before = previous_obligation_assignments.get(contract_id, {})
+                after = normalized_obligation_assignments.get(contract_id, {})
+                changed = {obligation_id: after.get(obligation_id) for obligation_id in set(before) | set(after) if before.get(obligation_id) != after.get(obligation_id)}
+                if changed:
+                    p["obligation_profile_assignment_changes"][contract_id] = changed
             candidate_accounts = {**current_policy["accounts"], **p["accounts"]}
             if p.get("account_transition") not in (None, "transfer", "external"):
                 raise ValueError("Choose transfer or external reconciliation for existing balance-sheet positions.")
@@ -631,7 +668,7 @@ class Application:
             if not p.get("account_transition"):
                 p.pop("account_transition", None)
             latest_closed = max((c["period"] for c in state["closes"] if c["status"] == "closed"), default=None)
-            if latest_closed and p["effective_period"] <= latest_closed and (candidate_accounts != current_policy["accounts"] or any(p["override_changes"].values()) or p["profile_changes"] or p["profile_assignment_changes"]):
+            if latest_closed and p["effective_period"] <= latest_closed and (candidate_accounts != current_policy["accounts"] or any(p["override_changes"].values()) or p["profile_changes"] or p["profile_assignment_changes"] or p["obligation_profile_assignment_changes"]):
                 raise ValueError(f"Account mappings effective {p['effective_period']} would affect closed period {latest_closed}; reopen it before changing policy.")
         elif command == "add_note":
             p["id"] = p.get("id") or identifier("note")

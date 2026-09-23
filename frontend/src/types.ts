@@ -153,10 +153,13 @@ export type Report = {
   policy_version?: number;
   policy_effective_period?: string;
   policy_accounts?: Record<string, string>;
+  policy_account_profiles?: Record<string, AccountProfile>;
+  policy_obligation_profile_assignments?: Record<string, Record<string, string>>;
   summary: Totals;
   contracts: ContractReport[];
   schedule: Schedule[];
   journals: Journal[];
+  segment_imbalances?: { contract_id: string; dimensions: Record<string, string>; net_debit: string }[];
   warnings: string[];
   catch_ups?: CatchUp[];
   renewal_links?: RenewalLinkReport[];
@@ -288,6 +291,7 @@ export type State = {
     };
     account_profiles?: Record<string, AccountProfile>;
     profile_assignments?: Record<string, string>;
+    obligation_profile_assignments?: Record<string, Record<string, string>>;
     account_transition?: "transfer" | "external";
   };
   policy_versions: {
@@ -300,6 +304,7 @@ export type State = {
     };
     account_profiles?: Record<string, AccountProfile>;
     profile_assignments?: Record<string, string>;
+    obligation_profile_assignments?: Record<string, Record<string, string>>;
     change_set_id?: string;
   }[];
   customers: Customer[];

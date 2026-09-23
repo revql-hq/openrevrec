@@ -1622,6 +1622,53 @@ def test_reusable_account_profile_maps_multiple_contracts_and_balances_dimension
         application.execute("set_policy", {"effective_period": "2026-12", "account_profiles": {"services": {**profile, "accounts": {"unknown": "9999"}}}}, period="2026-12")
 
 
+def test_obligation_profiles_route_revenue_dimensions_and_flag_segment_imbalance(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "contract", "name": "Two services", "customer_id": "customer", "start_date": "2026-01-01", "end_date": "2026-06-30",
+        "consideration": [{"id": "fee", "kind": "fixed", "amount": "1200.00"}],
+        "obligations": [
+            {"id": "setup", "name": "Setup", "kind": "service", "ssp": "600.00", "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-06-30"},
+            {"id": "support", "name": "Support", "kind": "service", "ssp": "600.00", "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-06-30"},
+        ],
+    }, period="2026-01")
+    profiles = {
+        "base": {"name": "Base", "accounts": {}, "dimensions": {"Department": "Head office", "Project": "P-17"}},
+        "setup": {"name": "Setup", "accounts": {"revenue": "4100"}, "dimensions": {"Department": "Implementation"}},
+        "support": {"name": "Support", "accounts": {"revenue": "4200"}, "dimensions": {"Department": "Recurring"}},
+    }
+    with pytest.raises(ValueError, match="existing accounting profiles"):
+        application.execute("set_policy", {"effective_period": "2026-01", "account_profiles": profiles,
+            "obligation_profile_assignments": {"contract": {"setup": "missing"}}}, period="2026-01")
+    application.execute("set_policy", {"effective_period": "2026-01", "account_profiles": profiles,
+        "profile_assignments": {"contract": "base"},
+        "obligation_profile_assignments": {"contract": {"setup": "setup", "support": "support"}},
+        "account_transition": "transfer"}, period="2026-01")
+    application.execute("record_billing", {"contract_id": "contract", "effective_date": "2026-01-01", "amount": "1200.00"}, period="2026-01")
+    state = application.state(period="2026-01")
+    journals = state["report"]["journals"]
+    revenue = {row["obligation_ids"][0]: row for row in journals if row["role"] == "revenue"}
+    assert (revenue["setup"]["account"], revenue["setup"]["dimensions"], revenue["setup"]["account_profile_id"]) == ("4100", {"Department": "Implementation", "Project": "P-17"}, "setup")
+    assert (revenue["support"]["account"], revenue["support"]["dimensions"], revenue["support"]["account_profile_id"]) == ("4200", {"Department": "Recurring", "Project": "P-17"}, "support")
+    assert all(row["dimensions"] == {"Department": "Head office", "Project": "P-17"} for row in journals if row["role"] != "revenue")
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in journals) == 0
+    assert any("not by dimension combination" in warning for warning in state["report"]["warnings"])
+    assert {tuple(sorted(row["dimensions"].items())): row["net_debit"] for row in state["report"]["segment_imbalances"]} == {
+        (("Department", "Head office"), ("Project", "P-17")): "200.00", (("Department", "Implementation"), ("Project", "P-17")): "-100.00", (("Department", "Recurring"), ("Project", "P-17")): "-100.00"}
+    book = load_workbook(io.BytesIO(export_bytes(state)), read_only=True)
+    assert list(book["Obligation profile assignments"].values)[1:] == [("contract", "setup", "setup"), ("contract", "support", "support")]
+    assert book["Dimension balance"].max_row == 4
+    book.close()
+    application.execute("set_policy", {"effective_period": "2026-02", "account_profiles": {**profiles, "support": {**profiles["support"], "dimensions": {}}},
+        "obligation_profile_assignments": {"contract": {"support": "support"}}}, period="2026-02")
+    february = application.state(period="2026-02")
+    assert february["policy"]["obligation_profile_assignments"] == {"contract": {"support": "support"}}
+    assert next(row for row in february["report"]["journals"] if row["role"] == "revenue" and row["account"] == "4000")["dimensions"] == {"Department": "Head office", "Project": "P-17"}
+    assert next(row for row in february["report"]["journals"] if row["role"] == "revenue" and row["account"] == "4200")["dimensions"] == {"Department": "Head office", "Project": "P-17"}
+    assert application.state(period="2026-01")["report"]["journals"] == journals
+
+
 def test_export_batch_identity_changes_with_journal_not_descriptive_notes(tmp_path):
     application = app(tmp_path)
     seed(application)

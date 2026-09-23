@@ -307,11 +307,13 @@ export function JournalsTable({
   currency,
   contractName,
   onContract,
+  profileName,
 }: {
   rows: Journal[];
   currency: string;
   contractName: (id: string) => string;
   onContract?: (id: string) => void;
+  profileName?: (id: string) => string;
 }) {
   if (!rows.length)
     return (
@@ -354,7 +356,7 @@ export function JournalsTable({
                 )}
               </td>
               <td className="muted">{row.description}</td>
-              <td>{Object.entries(row.dimensions || {}).map(([key, value]) => `${key}: ${value}`).join(" · ") || "—"}{row.account_profile_id && <small className="cell-subtitle">Profile {row.account_profile_id}</small>}</td>
+              <td>{Object.entries(row.dimensions || {}).map(([key, value]) => `${key}: ${value}`).join(" · ") || "—"}{row.account_profile_id && <small className="cell-subtitle">Profile {profileName?.(row.account_profile_id) || row.account_profile_id}</small>}</td>
               <td className="number">
                 {Number(row.debit) === 0 ? "—" : money(row.debit, currency)}
               </td>

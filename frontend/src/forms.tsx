@@ -137,6 +137,7 @@ export function CommandDialog({
                   contractName={(id) =>
                     preview.state.contracts.find((c) => c.id === id)?.name || id
                   }
+                  profileName={(id) => preview.state.policy.account_profiles?.[id]?.name || id}
                 />
               </Section>
               {["record_opening_position", "link_renewal_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "set_policy", "reopen_period"].includes(command().command) && <Section title="Support this judgment" subtitle="Attach the document or analysis used for this accounting conclusion.">
@@ -651,7 +652,7 @@ function ObligationEditor({
           </div>
           {recognitionTimingPreview(item) && <p className="fine-print">{recognitionTimingPreview(item)}</p>}
           {item.kind === "material_right" && (
-            <><p className="fine-print">This workflow recognizes the right when the promised goods or services are delivered, or when the right expires. Exercise followed by later delivery needs separate accounting treatment and is not represented here.</p><div className="form-grid">
+            <><p className="fine-print">The right's allocation is recognized when the option expires or when the promised goods or services are delivered. Record an exercise and its future delivery on the contract after creation; link a separate renewal contract if it contains new consideration.</p><div className="form-grid">
               <Field label="Exercise window begins">
                 <input
                   type="date"
@@ -1452,6 +1453,7 @@ export function CloseForm(props: FormProps & { reopen?: boolean }) {
           contractName={(id) =>
             state.contracts.find((c) => c.id === id)?.name || id
           }
+          profileName={(id) => state.policy.account_profiles?.[id]?.name || id}
         />
       </Section>
       <Field label={reopen ? "Reason for reopening" : "Close review note"}>
@@ -1534,6 +1536,7 @@ export function PolicyForm(props: FormProps) {
     [overrides, setOverrides] = useState(props.state.policy.account_overrides || { contracts: {}, obligations: {} }),
     [profiles, setProfiles] = useState<Record<string, AccountProfile>>(props.state.policy.account_profiles || {}),
     [assignments, setAssignments] = useState<Record<string, string>>(props.state.policy.profile_assignments || {}),
+    [obligationAssignments, setObligationAssignments] = useState<Record<string, Record<string, string>>>(props.state.policy.obligation_profile_assignments || {}),
     [effectivePeriod, setEffectivePeriod] = useState(props.period),
     [rationale, setRationale] = useState(""),
     [transition, setTransition] = useState(""),
@@ -1547,9 +1550,14 @@ export function PolicyForm(props: FormProps) {
     [profileAccounts, setProfileAccounts] = useState<Record<string, string>>({}),
     [dimensionRows, setDimensionRows] = useState<{ id: string; key: string; value: string }[]>([]),
     [assignmentContractId, setAssignmentContractId] = useState(""),
-    [assignmentProfileId, setAssignmentProfileId] = useState("");
+    [assignmentProfileId, setAssignmentProfileId] = useState(""),
+    [obligationContractId, setObligationContractId] = useState(""),
+    [assignmentObligationId, setAssignmentObligationId] = useState(""),
+    [obligationProfileId, setObligationProfileId] = useState("");
   const selectedContract = props.state.contracts.find((contract) => contract.id === contractId);
   const obligations = selectedContract ? Array.from(new Map([...selectedContract.obligations, ...selectedContract.activities.flatMap((activity) => (activity.obligations as typeof selectedContract.obligations | undefined) || [])].map((obligation) => [obligation.id, obligation])).values()) : [];
+  const assignmentContract = props.state.contracts.find((contract) => contract.id === obligationContractId);
+  const assignmentObligations = assignmentContract ? Array.from(new Map([...assignmentContract.obligations, ...assignmentContract.activities.flatMap((activity) => (activity.obligations as typeof assignmentContract.obligations | undefined) || [])].map((obligation) => [obligation.id, obligation])).values()) : [];
   const addMapping = () => {
     const code = accountCode.trim();
     if (!contractId || !code || (scope === "obligation" && !obligationId)) return;
@@ -1584,6 +1592,7 @@ export function PolicyForm(props: FormProps) {
       setOverrides(policy.account_overrides || { contracts: {}, obligations: {} });
       setProfiles(policy.account_profiles || {});
       setAssignments(policy.profile_assignments || {});
+      setObligationAssignments(policy.obligation_profile_assignments || {});
       selectProfile("");
     }
   };
@@ -1592,10 +1601,10 @@ export function PolicyForm(props: FormProps) {
       {...props}
       period={effectivePeriod}
       title="Company & accounting policy"
-      subtitle="Four journal roles can route through reusable profiles, contract mappings, and obligation revenue mappings."
+      subtitle="Four required journal roles can route to as many GL codes and dimension combinations as your contracts need."
       command={() => ({
         command: "set_policy",
-        payload: { name, accounts, account_overrides: overrides, account_profiles: profiles, profile_assignments: assignments, account_transition: transition || undefined, effective_period: effectivePeriod, rationale },
+        payload: { name, accounts, account_overrides: overrides, account_profiles: profiles, profile_assignments: assignments, obligation_profile_assignments: obligationAssignments, account_transition: transition || undefined, effective_period: effectivePeriod, rationale },
       })}
       confirmLabel="Save policy"
       successMessage="Company policy updated."
@@ -1626,8 +1635,8 @@ export function PolicyForm(props: FormProps) {
           />
         </Field>
       ))}
-      <Section title="Reusable accounting profiles" subtitle="A profile supplies optional GL accounts and journal dimensions for every assigned contract. Direct contract and obligation mappings take precedence over its accounts. Ordinary contract movements share one dimension set; cross-dimension balance transfers may need ERP segment balancing.">
-        {Object.entries(profiles).map(([id, profile]) => <div className="upload-row" key={id}><span><strong>{profile.name}</strong> · {Object.entries(profile.accounts).map(([role, code]) => `${humanize(role)} ${code}`).join(", ") || "Default accounts"}{Object.keys(profile.dimensions).length ? ` · ${Object.entries(profile.dimensions).map(([key, value]) => `${key}: ${value}`).join(", ")}` : ""}</span><Button type="button" onClick={() => selectProfile(id)}>Edit</Button><Button type="button" onClick={() => { const next = { ...profiles }; delete next[id]; setProfiles(next); setAssignments(Object.fromEntries(Object.entries(assignments).filter(([, profileId]) => profileId !== id))); if (editingProfileId === id) selectProfile(""); }}>Remove</Button></div>)}
+      <Section title="Reusable accounting profiles" subtitle="A profile supplies optional GL accounts and journal dimensions. Assign one to a contract for balance lines, or to an obligation for its revenue lines. A different revenue dimension can need interunit balancing in the destination ledger.">
+        {Object.entries(profiles).map(([id, profile]) => <div className="upload-row" key={id}><span><strong>{profile.name}</strong> · {Object.entries(profile.accounts).map(([role, code]) => `${humanize(role)} ${code}`).join(", ") || "Default accounts"}{Object.keys(profile.dimensions).length ? ` · ${Object.entries(profile.dimensions).map(([key, value]) => `${key}: ${value}`).join(", ")}` : ""}</span><Button type="button" onClick={() => selectProfile(id)}>Edit</Button><Button type="button" onClick={() => { const next = { ...profiles }; delete next[id]; setProfiles(next); setAssignments(Object.fromEntries(Object.entries(assignments).filter(([, profileId]) => profileId !== id))); setObligationAssignments(Object.fromEntries(Object.entries(obligationAssignments).map(([contractId, items]) => [contractId, Object.fromEntries(Object.entries(items).filter(([, profileId]) => profileId !== id))]).filter(([, items]) => Object.keys(items).length))); if (editingProfileId === id) selectProfile(""); }}>Remove</Button></div>)}
         <Field label="Profile"><select value={editingProfileId} onChange={(event) => selectProfile(event.target.value)}><option value="">New profile</option>{Object.entries(profiles).map(([id, profile]) => <option key={id} value={id}>{profile.name}</option>)}</select></Field>
         <Field label="Profile name"><input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="e.g. Managed services" /></Field>
         <div className="form-grid">{Object.keys(accounts).map((role) => <Field key={role} label={`${humanize(role)} account`} hint="Leave blank to use the workspace default."><input value={profileAccounts[role] || ""} onChange={(event) => setProfileAccounts({ ...profileAccounts, [role]: event.target.value })} /></Field>)}</div>
@@ -1638,8 +1647,12 @@ export function PolicyForm(props: FormProps) {
         {Object.entries(assignments).map(([id, profileId]) => <div className="upload-row" key={id}><span>{props.state.contracts.find((contract) => contract.id === id)?.name || id} → {profiles[profileId]?.name || profileId}</span><Button type="button" onClick={() => { const next = { ...assignments }; delete next[id]; setAssignments(next); }}>Remove</Button></div>)}
         <div className="form-grid"><Field label="Contract"><select value={assignmentContractId} onChange={(event) => setAssignmentContractId(event.target.value)}><option value="">Choose contract</option>{props.state.contracts.map((contract) => <option key={contract.id} value={contract.id}>{contract.name}</option>)}</select></Field><Field label="Profile"><select value={assignmentProfileId} onChange={(event) => setAssignmentProfileId(event.target.value)}><option value="">Choose profile</option>{Object.entries(profiles).map(([id, profile]) => <option key={id} value={id}>{profile.name}</option>)}</select></Field></div>
         <Button type="button" disabled={!assignmentContractId || !assignmentProfileId} onClick={() => { setAssignments({ ...assignments, [assignmentContractId]: assignmentProfileId }); setAssignmentContractId(""); }}>Assign profile</Button>
+        <h4>Obligation revenue assignments</h4>
+        {Object.entries(obligationAssignments).flatMap(([contractId, items]) => Object.entries(items).map(([obligationId, profileId]) => <div className="upload-row" key={`${contractId}:${obligationId}`}><span>{props.state.contracts.find((contract) => contract.id === contractId)?.name || contractId} / {obligationId} → {profiles[profileId]?.name || profileId}</span><Button type="button" onClick={() => { const next = { ...obligationAssignments, [contractId]: { ...items } }; delete next[contractId][obligationId]; if (!Object.keys(next[contractId]).length) delete next[contractId]; setObligationAssignments(next); }}>Remove</Button></div>))}
+        <div className="form-grid"><Field label="Contract"><select value={obligationContractId} onChange={(event) => { setObligationContractId(event.target.value); setAssignmentObligationId(""); }}><option value="">Choose contract</option>{props.state.contracts.map((contract) => <option key={contract.id} value={contract.id}>{contract.name}</option>)}</select></Field><Field label="Revenue obligation"><select value={assignmentObligationId} onChange={(event) => setAssignmentObligationId(event.target.value)}><option value="">Choose obligation</option>{assignmentObligations.map((obligation) => <option key={obligation.id} value={obligation.id}>{obligation.name}</option>)}</select></Field><Field label="Revenue profile"><select value={obligationProfileId} onChange={(event) => setObligationProfileId(event.target.value)}><option value="">Choose profile</option>{Object.entries(profiles).map(([id, profile]) => <option key={id} value={id}>{profile.name}</option>)}</select></Field></div>
+        <Button type="button" disabled={!obligationContractId || !assignmentObligationId || !obligationProfileId} onClick={() => { setObligationAssignments({ ...obligationAssignments, [obligationContractId]: { ...(obligationAssignments[obligationContractId] || {}), [assignmentObligationId]: obligationProfileId } }); setAssignmentObligationId(""); }}>Assign obligation profile</Button>
       </Section>
-      <Section title="Specific account mappings" subtitle="Contract mappings take precedence over profile and workspace accounts. An obligation revenue mapping takes precedence over its contract's revenue account.">
+      <Section title="Specific account mappings" subtitle="For revenue, an obligation account override takes precedence over its obligation profile, then the contract mapping, contract profile, and workspace default.">
         {Object.entries(overrides.contracts).flatMap(([id, roles]) => Object.entries(roles).map(([mappedRole, code]) => (
           <div className="upload-row" key={`contract:${id}:${mappedRole}`}><span>{props.state.contracts.find((contract) => contract.id === id)?.name || id} · {humanize(mappedRole)} → {code}</span><Button type="button" onClick={() => { const next = { ...overrides.contracts, [id]: { ...roles } }; delete next[id][mappedRole]; if (!Object.keys(next[id]).length) delete next[id]; setOverrides({ ...overrides, contracts: next }); }}>Remove</Button></div>
         )))}

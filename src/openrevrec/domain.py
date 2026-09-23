@@ -1089,19 +1089,27 @@ def _assigned_profile(profiles: dict | None, assignments: dict | None, contract_
     return (profiles or {}).get((assignments or {}).get(contract_id), {})
 
 
+def _assigned_obligation_profile(profiles: dict, assignments: dict, contract_id: str, obligation_id: str) -> tuple[str | None, dict]:
+    profile_id = assignments.get(contract_id, {}).get(obligation_id)
+    return profile_id, profiles.get(profile_id, {}) if profile_id else {}
+
+
 def _resolved_dimensions(profiles: dict | None, assignments: dict | None, contract_id: str) -> dict[str, str]:
     return _assigned_profile(profiles, assignments, contract_id).get("dimensions", {})
 
 
-def _resolved_account(accounts: dict, overrides: dict, contract_id: str, role: str, obligation_id: str | None = None, *, profiles: dict | None = None, assignments: dict | None = None) -> str:
+def _resolved_account(accounts: dict, overrides: dict, contract_id: str, role: str, obligation_id: str | None = None, *, profiles: dict | None = None, assignments: dict | None = None, obligation_assignments: dict | None = None) -> str:
     if obligation_id is not None:
         account = overrides.get("obligations", {}).get(contract_id, {}).get(obligation_id)
         if account:
             return str(account)
+        _, profile = _assigned_obligation_profile(profiles or {}, obligation_assignments or {}, contract_id, obligation_id)
+        if profile.get("accounts", {}).get(role):
+            return str(profile["accounts"][role])
     return str(overrides.get("contracts", {}).get(contract_id, {}).get(role) or _assigned_profile(profiles, assignments, contract_id).get("accounts", {}).get(role) or accounts[role])
 
 
-def _journals(report: dict, period: str, accounts: dict[str, str], overrides: dict, profiles: dict, assignments: dict, schedule: list[dict], previous_accounts: dict, previous_overrides: dict, previous_profiles: dict, previous_assignments: dict, transition: str) -> tuple[list[dict], list[dict], list[str]]:
+def _journals(report: dict, period: str, accounts: dict[str, str], overrides: dict, profiles: dict, assignments: dict, obligation_assignments: dict, schedule: list[dict], previous_accounts: dict, previous_overrides: dict, previous_profiles: dict, previous_assignments: dict, transition: str) -> tuple[list[dict], list[dict], list[str], list[dict]]:
     movements = {
         "billing_clearing": decimal(report["billings"]),
         "contract_asset": decimal(report["contract_asset"]) - decimal(report["beginning_contract_asset"]),
@@ -1137,18 +1145,23 @@ def _journals(report: dict, period: str, accounts: dict[str, str], overrides: di
     description = f"{report['name']} — {period} revenue and billing movement"
     for role in ("billing_clearing", "contract_asset", "deferred_revenue"):
         entry(role, _resolved_account(accounts, overrides, contract_id, role, profiles=profiles, assignments=assignments), movements[role], description)
-    revenue_by_account: dict[str, Decimal] = defaultdict(lambda: ZERO)
-    obligations_by_account: dict[str, set[str]] = defaultdict(set)
+    revenue_by_route: dict[tuple[str, tuple[tuple[str, str], ...], str], Decimal] = defaultdict(lambda: ZERO)
+    obligations_by_route: dict[tuple[str, tuple[tuple[str, str], ...], str], set[str]] = defaultdict(set)
     for row in schedule:
         if row["period"] == period:
-            account = _resolved_account(accounts, overrides, contract_id, "revenue", row["obligation_id"], profiles=profiles, assignments=assignments)
-            revenue_by_account[account] += decimal(row["revenue"])
-            obligations_by_account[account].add(row["obligation_id"])
-    if sum(revenue_by_account.values(), ZERO) != decimal(report["revenue"]):
+            obligation_id = row["obligation_id"]
+            account = _resolved_account(accounts, overrides, contract_id, "revenue", obligation_id, profiles=profiles, assignments=assignments, obligation_assignments=obligation_assignments)
+            obligation_profile_id, obligation_profile = _assigned_obligation_profile(profiles, obligation_assignments, contract_id, obligation_id)
+            dimensions = {**current_dimensions, **obligation_profile.get("dimensions", {})}
+            route = (account, tuple(sorted(dimensions.items())), obligation_profile_id or current_profile_id or "")
+            revenue_by_route[route] += decimal(row["revenue"])
+            obligations_by_route[route].add(obligation_id)
+    if sum(revenue_by_route.values(), ZERO) != decimal(report["revenue"]):
         raise ValueError(f"Revenue detail does not reconcile for contract {contract_id}")
-    for account, revenue in sorted(revenue_by_account.items()):
-        suffix = "" if len(revenue_by_account) == 1 else f":{account}"
-        entry("revenue", account, -revenue, description, suffix, sorted(obligations_by_account[account]))
+    for index, (route, revenue) in enumerate(sorted(revenue_by_route.items())):
+        account, dimension_items, profile_id = route
+        suffix = "" if len(revenue_by_route) == 1 else f":{index + 1}"
+        entry("revenue", account, -revenue, description, suffix, sorted(obligations_by_route[route]), dimensions=dict(dimension_items), profile_id=profile_id)
 
     for role, opening_field in (("contract_asset", "beginning_contract_asset"), ("deferred_revenue", "beginning_deferred_revenue")):
         if report.get("cutover_period") == period:
@@ -1171,7 +1184,14 @@ def _journals(report: dict, period: str, accounts: dict[str, str], overrides: di
             entry(role, new, -opening * direction, f"{report['name']} — transfer opening {ACCOUNT_NAMES[role].lower()} from {old} to {new}", ":transfer-in", dimensions=current_dimensions, profile_id=current_profile_id or "")
         else:
             warnings.append(f"{report['name']}: reconcile external transfer of {amount(opening)} {ACCOUNT_NAMES[role].lower()} from {old} to {new} for {period}, including segment dimensions.")
-    return result, transitions, warnings
+    dimension_nets: dict[tuple[tuple[str, str], ...], int] = defaultdict(int)
+    for row in result:
+        dimension_nets[tuple(sorted(row.get("dimensions", {}).items()))] += row["debit_minor"] - row["credit_minor"]
+    segment_imbalances = [{"contract_id": contract_id, "dimensions": dict(dimensions), "net_debit": amount(Decimal(net) / 100)}
+                          for dimensions, net in sorted(dimension_nets.items()) if net]
+    if segment_imbalances:
+        warnings.append(f"{report['name']}: journal balances overall but not by dimension combination; confirm the destination ledger's interunit balancing rules or prepare separate balancing entries before posting.")
+    return result, transitions, warnings, segment_imbalances
 
 
 def calculate(state: dict, period: str) -> dict:
@@ -1211,6 +1231,7 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
     overrides = policy.get("account_overrides", {"contracts": {}, "obligations": {}})
     profiles = policy.get("account_profiles", {})
     assignments = policy.get("profile_assignments", {})
+    obligation_assignments = policy.get("obligation_profile_assignments", {})
     year, month = (int(part) for part in period.split("-"))
     previous_period = f"{year - 1:04d}-12" if month == 1 else f"{year:04d}-{month - 1:02d}"
     previous_policy = max((row for row in versions if row.get("effective_period", "0001-01") <= previous_period), key=lambda row: (row.get("effective_period", "0001-01"), row.get("version", 0)), default={})
@@ -1220,10 +1241,10 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
     previous_assignments = (previous_policy or policy).get("profile_assignments", {})
     if any(not str(accounts[role]).strip() for role in DEFAULT_ACCOUNTS):
         raise ValueError("All four journal account roles require an account code")
-    report: dict[str, Any] = {"period": period, "summary": {}, "contracts": [], "schedule": [], "journals": [], "account_transitions": [], "warnings": [], "catch_ups": [], "renewal_links": [],
+    report: dict[str, Any] = {"period": period, "summary": {}, "contracts": [], "schedule": [], "journals": [], "account_transitions": [], "segment_imbalances": [], "warnings": [], "catch_ups": [], "renewal_links": [],
                               "policy_version": policy.get("version", 1), "policy_effective_period": policy.get("effective_period", "0001-01"),
                               "policy_accounts": accounts, "policy_account_overrides": overrides,
-                              "policy_account_profiles": profiles, "policy_profile_assignments": assignments}
+                              "policy_account_profiles": profiles, "policy_profile_assignments": assignments, "policy_obligation_profile_assignments": obligation_assignments}
     identifiers = set()
     with localcontext() as context:
         context.prec = 48
@@ -1246,10 +1267,11 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
             report["schedule"].extend(schedule)
             report["catch_ups"].extend(catch_ups)
             report["warnings"].extend(warnings)
-            journals, transitions, transition_warnings = _journals(projection, period, accounts, overrides, profiles, assignments, schedule, previous_accounts, previous_overrides, previous_profiles, previous_assignments, policy.get("account_transition", "external"))
+            journals, transitions, transition_warnings, segment_imbalances = _journals(projection, period, accounts, overrides, profiles, assignments, obligation_assignments, schedule, previous_accounts, previous_overrides, previous_profiles, previous_assignments, policy.get("account_transition", "external"))
             report["journals"].extend(journals)
             report["account_transitions"].extend(transitions)
             report["warnings"].extend(transition_warnings)
+            report["segment_imbalances"].extend(segment_imbalances)
         projected = {item["id"]: item for item in report["contracts"]}
         names = {item["id"]: item["name"] for item in state.get("contracts", [])}
         for link in state.get("renewal_links", []):
