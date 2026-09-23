@@ -381,6 +381,76 @@ def test_material_right_exercise_command_and_workbook_schedule_later_delivery(tm
     assert imported.state(period="2026-12")["report"]["summary"]["recognized_to_date"] == "600.00"
 
 
+def test_linked_renewal_keeps_old_right_allocation_separate_from_new_price(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "original", "name": "Original option", "customer_id": "cus_1", "start_date": "2026-01-01", "end_date": "2026-06-30",
+        "consideration": [{"id": "fee", "kind": "fixed", "amount": "600.00"}],
+        "obligations": [{"id": "right", "name": "Renewal right", "kind": "material_right", "ssp": "600.00", "method": "point_in_time",
+                         "start_date": "2026-01-01", "end_date": "2026-06-30", "exercise_start": "2026-04-01", "exercise_end": "2026-06-30"}],
+    }, period="2026-01")
+    application.execute("create_contract", {
+        "id": "renewal", "name": "Renewal service", "customer_id": "cus_1", "start_date": "2026-07-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "new_fee", "kind": "fixed", "amount": "300.00"}],
+        "obligations": [{"id": "service", "name": "Renewal service", "kind": "service", "ssp": "300.00", "method": "monthly",
+                         "start_date": "2026-07-01", "end_date": "2026-12-31"}],
+    }, period="2026-06")
+    link = {"contract_id": "original", "obligation_id": "right", "renewal_contract_id": "renewal",
+            "additional_consideration": "300.00", "price_basis": "new_consideration_only", "rationale": "New fee is separate from the carried right"}
+    with pytest.raises(ValueError, match="Exercise the material right"):
+        application.execute("link_renewal_contract", link, period="2026-06")
+    application.execute("record_right_exercise", {"contract_id": "original", "obligation_id": "right", "effective_date": "2026-06-15",
+        "delivery_method": "monthly", "delivery_start": "2026-07-01", "delivery_end": "2026-12-31",
+        "rationale": "Option elected for six months"}, period="2026-06")
+    with pytest.raises(ValueError, match="only new consideration"):
+        application.execute("link_renewal_contract", {**link, "price_basis": ""}, period="2026-06")
+    with pytest.raises(ValueError, match="initial transaction price"):
+        application.execute("link_renewal_contract", {**link, "additional_consideration": "900.00"}, period="2026-06")
+    application.execute("record_billing", {"contract_id": "original", "effective_date": "2026-01-01", "amount": "600.00"}, period="2026-01")
+    application.execute("record_billing", {"contract_id": "renewal", "effective_date": "2026-06-15", "amount": "300.00"}, period="2026-06")
+    application.execute("link_renewal_contract", link, period="2026-07")
+    with pytest.raises(ValueError, match="already has a linked renewal"):
+        application.execute("link_renewal_contract", link, period="2026-07")
+    june = application.state(period="2026-06")["report"]
+    july = application.state(period="2026-07")["report"]
+    assert june["summary"]["revenue"] == "0.00"
+    assert july["summary"]["transaction_price"] == "900.00"
+    assert july["summary"]["revenue"] == "150.00"
+    assert july["summary"]["deferred_revenue"] == "750.00"
+    support = july["renewal_links"][0]
+    assert (support["original_right_allocation"], support["initial_new_consideration"], support["combined_consideration"],
+            support["right_revenue"], support["renewal_revenue"], support["combined_revenue"]) == (
+                "600.00", "300.00", "900.00", "100.00", "50.00", "150.00")
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in july["journals"]) == 0
+    exported = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-07"))), read_only=True)
+    assert exported["Renewal links"]["J2"].value == 900
+    assert exported["Renewal links"]["M2"].value == 150
+    exported.close()
+
+
+def test_linked_renewal_imports_after_contracts_and_exercise(tmp_path):
+    application = app(tmp_path)
+    book = load_workbook(io.BytesIO(template_bytes()))
+    book["Customers"].append(["customer", "Customer"])
+    book["Contracts"].append(["original", "customer", "Original", "2026-01-01", "2026-06-30"])
+    book["Contracts"].append(["renewal", "customer", "Renewal", "2026-07-01", "2026-12-31"])
+    book["Consideration"].append(["original", "old", "Old fee", "fixed", "600.00"])
+    book["Consideration"].append(["renewal", "new", "New fee", "fixed", "300.00"])
+    book["Obligations"].append(["original", "right", "Renewal right", "material_right", "600.00", "point_in_time", "2026-01-01", "2026-06-30", None, "2026-04-01", "2026-06-30"])
+    book["Obligations"].append(["renewal", "service", "Renewal service", "service", "300.00", "monthly", "2026-07-01", "2026-12-31"])
+    book["Right Exercises"].append(["original", "right", "2026-06-15", "monthly", "2026-07-01", "2026-12-31", "Option elected", "exercise:1"])
+    book["Renewal Links"].append(["original", "right", "renewal", "300.00", "new_consideration_only", "New fee excludes old right", "link:1"])
+    data = io.BytesIO()
+    book.save(data)
+    book.close()
+    preview = preview_import_bytes(application, data.getvalue(), period="2026-07")
+    assert preview["result"]["controls"]["counts"]["link_renewal_contract"] == 1
+    assert preview["state"]["report"]["renewal_links"][0]["combined_consideration"] == "900.00"
+    import_bytes(application, data.getvalue(), period="2026-07", expected_frontier=preview["frontier"], expected_hash=preview["result"]["file_hash"])
+    assert application.state(period="2026-07")["report"]["summary"]["revenue"] == "150.00"
+
+
 def test_material_right_exercise_cannot_rewrite_an_accepted_expiry_month(tmp_path):
     application = app(tmp_path)
     application.execute("create_customer", {"id": "cus_1", "name": "Customer"})

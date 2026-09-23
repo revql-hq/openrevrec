@@ -159,8 +159,30 @@ export type Report = {
   journals: Journal[];
   warnings: string[];
   catch_ups?: CatchUp[];
+  renewal_links?: RenewalLinkReport[];
   closed?: boolean;
   close_id?: string;
+};
+export type RenewalLinkReport = {
+  change_set_id: string;
+  recorded_at: string;
+  contract_id: string;
+  contract_name: string;
+  obligation_id: string;
+  obligation_name: string;
+  renewal_contract_id: string;
+  renewal_contract_name: string;
+  exercise_date: string;
+  delivery_start: string;
+  delivery_end: string;
+  original_right_allocation: string;
+  initial_new_consideration: string;
+  current_renewal_price: string;
+  combined_consideration: string;
+  right_revenue: string;
+  renewal_revenue: string;
+  combined_revenue: string;
+  rationale: string;
 };
 export type Scenario = {
   id: string;
@@ -282,6 +304,7 @@ export type State = {
   }[];
   customers: Customer[];
   contracts: Contract[];
+  renewal_links?: { contract_id: string; obligation_id: string; renewal_contract_id: string; change_set_id: string }[];
   scenarios: Scenario[];
   change_sets: Change[];
   closes: Close[];

@@ -278,6 +278,8 @@ tfoot th, tfoot td { background: #f7f7f4; border-top: 1px solid var(--line); bor
 .target-list legend { color: var(--muted); font-size: 12px; padding: 0 5px; }
 .target-list label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .target-list input { width: auto; }
+.confirmation-row { display: flex; align-items: flex-start; gap: 9px; padding: 10px 0; font-size: 13px; }
+.confirmation-row input { width: auto; margin-top: 2px; }
 .check-row:last-child { border-bottom: 0; }
 .check-row p { margin-top: 2px; color: var(--muted); font-size: 11px; }
 .check-row .button { margin-left: 8px; }

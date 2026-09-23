@@ -739,6 +739,8 @@ export function ContractView(props: ViewProps) {
   const serviceDates = effectiveTerms.obligations.flatMap((obligation) => [obligation.start_date, obligation.end_date]).sort();
   const openingActivity = contract.activities.find((activity) => activity.type === "opening_position");
   const pendingOpening = Boolean(contract.cutover_date && !openingActivity);
+  const unlinkedExercises = contract.activities.filter((activity) => activity.type === "right_exercise" && !(state.renewal_links || []).some((link) => link.contract_id === contract.id && link.obligation_id === activity.obligation_id));
+  const renewalSupport = (state.report.renewal_links || []).filter((link) => link.contract_id === contract.id || link.renewal_contract_id === contract.id);
   const termsToggle = <div className="button-group"><Button type="button" primary={termsView === "effective"} onClick={() => setTermsView("effective")}>Effective at {props.period} end</Button><Button type="button" primary={termsView === "baseline"} onClick={() => setTermsView("baseline")}>Original baseline</Button></div>;
   return (
     <>
@@ -751,6 +753,7 @@ export function ContractView(props: ViewProps) {
         >
           Edit details
         </Button>
+        {unlinkedExercises.length > 0 && <Button disabled={pendingOpening} onClick={() => dialog({ type: "renewal_link", contractId: contract.id })}>Link renewal</Button>}
         <Button
           disabled={pendingOpening}
           onClick={() => dialog({ type: "contract", contractId: contract.id })}
@@ -1036,6 +1039,7 @@ export function ContractView(props: ViewProps) {
           </div>}
           {Boolean(report?.allocation_components?.some((item) => item.scope === "specific")) && <><h3>Specific-allocation conclusions</h3><div className="table-wrap"><table><thead><tr><th>Component</th><th className="number">Included amount</th><th className="number">Recognized to date</th><th>Target obligations</th><th>Service month</th><th>Accounting rationale</th></tr></thead><tbody>{report?.allocation_components?.filter((item) => item.scope === "specific").map((item) => <tr key={item.component_id}><td>{item.label}</td><td className="number">{money(item.included_amount, currency)}</td><td className="number">{item.recognized_to_date === null || item.recognized_to_date === undefined ? "—" : money(item.recognized_to_date, currency)}</td><td>{item.target_obligation_ids.map((id) => report.allocation.find((row) => row.obligation_id === id)?.name || id).join(", ")}</td><td>{item.target_period || "All service periods"}</td><td>{item.rationale}</td></tr>)}</tbody></table></div></>}
           {Boolean(report?.original_promise_changes?.length) && <><h3>Changes assigned to original promises</h3><div className="table-wrap"><table><thead><tr><th>Effective date</th><th>Component</th><th>Original obligation</th><th className="number">Allocated change</th><th className="number">Recognized to date</th><th>Accounting rationale</th></tr></thead><tbody>{report?.original_promise_changes?.map((item, index) => <tr key={`${item.activity_id || item.effective_date}:${item.obligation_id}:${index}`}><td>{dateLabel(item.effective_date)}</td><td>{item.component}</td><td>{item.obligation}</td><td className="number">{money(item.allocated_change, currency)}</td><td className="number">{money(item.recognized_to_date, currency)}</td><td>{item.rationale}</td></tr>)}</tbody></table></div></>}
+          {renewalSupport.length > 0 && <><h3>Linked renewal</h3>{renewalSupport.map((link) => <div key={link.change_set_id} className="notice"><p><Button type="button" onClick={() => props.navigate("Contracts", link.contract_id, "Allocation")}>{link.contract_name}</Button> → <Button type="button" onClick={() => props.navigate("Contracts", link.renewal_contract_id, "Allocation")}>{link.renewal_contract_name}</Button> · delivery {dateLabel(link.delivery_start)} – {dateLabel(link.delivery_end)}</p><p>Original right allocation {money(link.original_right_allocation, currency)} + current renewal price {money(link.current_renewal_price, currency)} = {money(link.combined_consideration, currency)}. This month: {money(link.right_revenue, currency)} + {money(link.renewal_revenue, currency)} = {money(link.combined_revenue, currency)} revenue.</p><p className="fine-print">{link.rationale}</p></div>)}</>}
         </Section>
       )}
       {tab === "Recognition" && (

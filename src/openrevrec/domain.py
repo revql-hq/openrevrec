@@ -1220,7 +1220,7 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
     previous_assignments = (previous_policy or policy).get("profile_assignments", {})
     if any(not str(accounts[role]).strip() for role in DEFAULT_ACCOUNTS):
         raise ValueError("All four journal account roles require an account code")
-    report: dict[str, Any] = {"period": period, "summary": {}, "contracts": [], "schedule": [], "journals": [], "account_transitions": [], "warnings": [], "catch_ups": [],
+    report: dict[str, Any] = {"period": period, "summary": {}, "contracts": [], "schedule": [], "journals": [], "account_transitions": [], "warnings": [], "catch_ups": [], "renewal_links": [],
                               "policy_version": policy.get("version", 1), "policy_effective_period": policy.get("effective_period", "0001-01"),
                               "policy_accounts": accounts, "policy_account_overrides": overrides,
                               "policy_account_profiles": profiles, "policy_profile_assignments": assignments}
@@ -1250,6 +1250,38 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
             report["journals"].extend(journals)
             report["account_transitions"].extend(transitions)
             report["warnings"].extend(transition_warnings)
+        projected = {item["id"]: item for item in report["contracts"]}
+        names = {item["id"]: item["name"] for item in state.get("contracts", [])}
+        for link in state.get("renewal_links", []):
+            if link["effective_date"][:7] > period:
+                continue
+            source = projected.get(link["contract_id"])
+            renewal = projected.get(link["renewal_contract_id"])
+            if source is None or renewal is None:
+                continue
+            right = next((item for item in source["allocation"] if item["obligation_id"] == link["obligation_id"]), None)
+            if right is None:
+                raise ValueError("A linked renewal no longer has its original material-right allocation")
+            right_revenue = sum((decimal(item["revenue"]) for item in report["schedule"] if item["contract_id"] == source["id"] and item["obligation_id"] == right["obligation_id"] and item["period"] == period), ZERO)
+            renewal_revenue = decimal(renewal["revenue"])
+            right_allocation = decimal(right["amount"])
+            renewal_price = decimal(renewal["transaction_price"])
+            report["renewal_links"].append({
+                "change_set_id": link["change_set_id"], "recorded_at": link["recorded_at"],
+                "contract_id": source["id"], "contract_name": names[source["id"]],
+                "obligation_id": right["obligation_id"], "obligation_name": right["name"],
+                "renewal_contract_id": renewal["id"], "renewal_contract_name": names[renewal["id"]],
+                "exercise_date": link["effective_date"], "delivery_start": link["delivery_start"], "delivery_end": link["delivery_end"],
+                "original_right_allocation": amount(right_allocation),
+                "initial_new_consideration": link["additional_consideration"],
+                "current_renewal_price": amount(renewal_price), "combined_consideration": amount(right_allocation + renewal_price),
+                "right_revenue": amount(right_revenue), "renewal_revenue": amount(renewal_revenue),
+                "combined_revenue": amount(right_revenue + renewal_revenue),
+                "rationale": link["rationale"],
+            })
+            if (decimal(source["contract_asset"]) > ZERO and decimal(renewal["deferred_revenue"]) > ZERO
+                or decimal(source["deferred_revenue"]) > ZERO and decimal(renewal["contract_asset"]) > ZERO):
+                report["warnings"].append(f"{names[source['id']]} / {names[renewal['id']]}: linked contracts have offsetting asset and deferred balances; review their presentation before posting.")
         report["summary"] = {key: amount(sum((decimal(item[key]) for item in report["contracts"]), ZERO)) for key in REPORT_AMOUNTS}
     report["schedule"].sort(key=lambda item: (item["period"], item["contract_id"], item["obligation_id"]))
     report["warnings"] = list(dict.fromkeys(report["warnings"]))

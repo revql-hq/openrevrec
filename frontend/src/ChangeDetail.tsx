@@ -25,7 +25,7 @@ type Detail = {
   judgment_reviews: JudgmentReview[];
 };
 
-const JUDGMENT_COMMANDS = new Set(["create_contract", "record_opening_position", "record_right_exercise", "modify_contract", "reassess_variable_consideration", "record_adjustment", "set_policy", "reopen_period"]);
+const JUDGMENT_COMMANDS = new Set(["create_contract", "record_opening_position", "record_right_exercise", "link_renewal_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "set_policy", "reopen_period"]);
 
 function JudgmentReviewPanel({ props, change, reviews, onRecorded }: { props: ViewProps; change: Detail["change"]; reviews: JudgmentReview[]; onRecorded: () => void }) {
   const [reviewer, setReviewer] = useState("");

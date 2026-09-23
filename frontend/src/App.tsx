@@ -28,6 +28,7 @@ import {
   CustomerForm,
   ContractForm,
   ActivityForm,
+  RenewalLinkForm,
   OpeningPositionForm,
   TermReviewForm,
   ScenarioForm,
@@ -68,6 +69,7 @@ export type Dialog = {
     | "customer"
     | "contract"
     | "activity"
+    | "renewal_link"
     | "opening_position"
     | "term_review"
     | "scenario"
@@ -502,6 +504,7 @@ export default function App() {
               correctionTarget={dialog.action === "correct" ? contract.activities.find((activity) => activity.id === dialog.entityId) : undefined}
             />
           )}{" "}
+          {dialog.type === "renewal_link" && contract && <RenewalLinkForm {...formProps} contract={contract} />}{" "}
           {dialog.type === "opening_position" && contract && (
             <OpeningPositionForm {...formProps} contract={contract} />
           )}{" "}
