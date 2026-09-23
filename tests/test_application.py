@@ -705,6 +705,67 @@ def test_source_openings_catch_offsetting_contract_errors_when_gl_totals_match(t
     assert application.reports(period="2026-09")["population_comparison"]["missing_openings"] == [("CON-MISSING", "2026-09-01")]
 
 
+def test_source_opening_obligations_catch_offsetting_splits_inside_one_contract(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "contract", "name": "Migrated bundle", "reference": "BUNDLE-1", "customer_id": "customer",
+        "start_date": "2026-01-01", "end_date": "2026-12-31", "cutover_date": "2026-09-01",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "600.00"}],
+        "obligations": [
+            {"id": obligation, "name": obligation, "kind": "service", "ssp": "300.00", "method": "monthly",
+             "start_date": "2026-01-01", "end_date": "2026-12-31"}
+            for obligation in ("service-a", "service-b")
+        ],
+    }, period="2026-09")
+    application.execute("record_opening_position", {
+        "contract_id": "contract", "effective_date": "2026-09-01", "billed_to_date": "300.00",
+        "contract_asset": "0.00", "deferred_revenue": "0.00", "source_name": "Legacy close",
+        "rationale": "Accepted bundle opening", "opening_obligations": [
+            {"obligation_id": "service-a", "recognized_to_date": "200.00"},
+            {"obligation_id": "service-b", "recognized_to_date": "100.00"},
+        ],
+    }, period="2026-09")
+    summary = application.state(period="2026-09")["report"]["summary"]
+    application.execute("record_control_totals", {
+        "period": "2026-09", "source_name": "Independent GL", "rationale": "September close",
+        **{key: summary[key] for key in ("billings", "contract_asset", "deferred_revenue")},
+    }, period="2026-09")
+    manifest = {"period": "2026-09", "source_name": "Approved legacy schedule", "rationale": "All September cutovers and obligation rows.",
+                "contract_references": ["BUNDLE-1"], "billing_references": [], "usage_references": [],
+                "opening_positions": [{"contract_reference": "BUNDLE-1", "cutover_date": "2026-09-01",
+                                       "billed_to_date": "300.00", "contract_asset": "0.00", "deferred_revenue": "0.00", "recognized_to_date": "300.00"}],
+                "opening_obligations": [
+                    {"contract_reference": "BUNDLE-1", "cutover_date": "2026-09-01", "obligation_id": "service-a", "recognized_to_date": "100.00"},
+                    {"contract_reference": "BUNDLE-1", "cutover_date": "2026-09-01", "obligation_id": "service-b", "recognized_to_date": "200.00"},
+                ]}
+    application.execute("record_population_manifest", manifest, period="2026-09")
+    review = application.reports(period="2026-09")
+    assert next(check for check in review["checks"] if check["id"] == "external_controls")["status"] == "pass"
+    assert review["population_comparison"]["mismatched_openings"] == []
+    assert [row["obligation_id"] for row in review["population_comparison"]["mismatched_opening_obligations"]] == ["service-a", "service-b"]
+    assert next(check for check in review["checks"] if check["id"] == "source_population")["status"] == "review"
+    book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-09"), review)))
+    assert [book["Source opening obligations"].cell(row, 4).value for row in (2, 3)] == ["Recognized amount differs", "Recognized amount differs"]
+    book.close()
+    application.execute("record_population_manifest", {**manifest, "opening_obligations": []}, period="2026-09")
+    assert application.reports(period="2026-09")["population_comparison"]["unverified_opening_obligations"] == [("BUNDLE-1", "2026-09-01")]
+    with pytest.raises(ValueError, match="duplicate references"):
+        application.execute("record_population_manifest", {**manifest, "opening_obligations": manifest["opening_obligations"] * 2}, period="2026-09")
+    with pytest.raises(ValueError, match="stated in cents"):
+        application.execute("record_population_manifest", {**manifest, "opening_obligations": [{**manifest["opening_obligations"][0], "recognized_to_date": "100.001"}]}, period="2026-09")
+    with pytest.raises(ValueError, match="belong to a source cutover"):
+        application.execute("record_population_manifest", {**manifest, "opening_obligations": [{**manifest["opening_obligations"][0], "contract_reference": "OTHER"}]}, period="2026-09")
+    application.execute("record_population_manifest", {**manifest, "opening_obligations": manifest["opening_obligations"][:1]}, period="2026-09")
+    incomplete = application.reports(period="2026-09")["population_comparison"]
+    assert incomplete["unexpected_opening_obligations"] == [("BUNDLE-1", "2026-09-01", "service-b")]
+    assert incomplete["mismatched_source_opening_obligation_totals"][0]["source_total"] == "100.00"
+    correct = [{**manifest["opening_obligations"][0], "recognized_to_date": "200.00"},
+               {**manifest["opening_obligations"][1], "recognized_to_date": "100.00"}]
+    application.execute("record_population_manifest", {**manifest, "opening_obligations": correct}, period="2026-09")
+    assert next(check for check in application.reports(period="2026-09")["checks"] if check["id"] == "source_population")["status"] == "pass"
+
+
 def test_opening_position_preserves_manual_progress_measure(tmp_path):
     application = app(tmp_path)
     application.execute("create_customer", {"id": "cus_1", "name": "Customer"})

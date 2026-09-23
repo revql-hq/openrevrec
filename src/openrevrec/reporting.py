@@ -167,6 +167,60 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
         else:
             row["status"] = "Matched"
         opening_value_rows.append(row)
+    expected_obligation_rows = manifest.get("opening_obligations", []) if manifest else []
+    obligations_by_opening: dict[tuple[str, str], list[dict]] = {}
+    for item in expected_obligation_rows:
+        obligations_by_opening.setdefault((item["contract_reference"], item["cutover_date"]), []).append(item)
+    opening_obligation_rows = []
+    missing_opening_obligations = []
+    unexpected_opening_obligations = []
+    unverified_opening_obligations = []
+    mismatched_opening_obligations = []
+    mismatched_source_opening_obligation_totals = []
+    for opening in expected_opening_rows:
+        key = opening["contract_reference"], opening["cutover_date"]
+        source_rows = obligations_by_opening.get(key, [])
+        actual = actual_opening_by_key.get(key, [])
+        if not source_rows and len(actual) == 1 and len(actual[0]["opening_obligations"]) > 1:
+            unverified_opening_obligations.append(key)
+        if not source_rows:
+            continue
+        source_total = sum((_decimal(row["recognized_to_date"]) for row in source_rows), ZERO)
+        if source_total != _decimal(opening["recognized_to_date"]):
+            mismatched_source_opening_obligation_totals.append({
+                "contract_reference": key[0], "cutover_date": key[1],
+                "source_total": _amount(source_total), "source_opening_total": opening["recognized_to_date"],
+            })
+        actual_by_id = {row["obligation_id"]: row for row in actual[0]["opening_obligations"]} if len(actual) == 1 else {}
+        source_ids = {row["obligation_id"] for row in source_rows}
+        if len(actual) == 1:
+            for obligation_id in sorted(actual_by_id.keys() - source_ids):
+                unexpected_opening_obligations.append((key[0], key[1], obligation_id))
+                opening_obligation_rows.append({
+                    "contract_reference": key[0], "cutover_date": key[1], "obligation_id": obligation_id,
+                    "source_amount": "", "workspace_amount": actual_by_id[obligation_id]["recognized_to_date"],
+                    "activity_id": actual[0]["id"], "status": "Obligation not in source",
+                })
+        for source_row in source_rows:
+            obligation_id = source_row["obligation_id"]
+            workspace_row = actual_by_id.get(obligation_id)
+            result = {"contract_reference": key[0], "cutover_date": key[1], "obligation_id": obligation_id,
+                      "source_amount": source_row["recognized_to_date"],
+                      "workspace_amount": workspace_row["recognized_to_date"] if workspace_row else "",
+                      "activity_id": actual[0]["id"] if len(actual) == 1 else ""}
+            if not actual:
+                result["status"] = "Opening missing in workspace"
+            elif len(actual) > 1:
+                result["status"] = "Duplicate opening in workspace"
+            elif not workspace_row:
+                result["status"] = "Obligation missing in workspace"
+                missing_opening_obligations.append((key[0], key[1], obligation_id))
+            elif _decimal(source_row["recognized_to_date"]) != _decimal(workspace_row["recognized_to_date"]):
+                result["status"] = "Recognized amount differs"
+                mismatched_opening_obligations.append(result)
+            else:
+                result["status"] = "Matched"
+            opening_obligation_rows.append(result)
     return {
         "source_name": manifest["source_name"] if manifest else "",
         "expected_contract_count": len(expected_contracts), "actual_contract_count": len(actual_contracts),
@@ -194,6 +248,13 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
         "unverified_openings": sorted(actual_opening_set) if manifest and not source_openings_supplied else [],
         "mismatched_openings": mismatched_openings,
         "opening_value_rows": opening_value_rows,
+        "expected_opening_obligation_count": len(expected_obligation_rows),
+        "missing_opening_obligations": missing_opening_obligations,
+        "unexpected_opening_obligations": unexpected_opening_obligations,
+        "unverified_opening_obligations": unverified_opening_obligations,
+        "mismatched_opening_obligations": mismatched_opening_obligations,
+        "mismatched_source_opening_obligation_totals": mismatched_source_opening_obligation_totals,
+        "opening_obligation_rows": opening_obligation_rows,
     }
 
 

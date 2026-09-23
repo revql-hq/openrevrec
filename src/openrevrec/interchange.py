@@ -173,6 +173,17 @@ def export_bytes(state, review=None):
                     for reference, cutover in comparison.get("unverified_openings", [])] +
                    [[item["contract_id"], "", "Workspace opening lacks contract reference", population["source_name"], population["rationale"], *([""] * 8), item["activity_id"]]
                     for item in comparison.get("unidentified_openings", [])])
+            _sheet(book, "Source opening obligations", ["Contract reference", "Cutover date", "Obligation ID", "Comparison",
+                                                         "Source recognized to date", "Workspace recognized to date", "Activity ID", "Source", "Population basis"],
+                   [[item["contract_reference"], item["cutover_date"], item["obligation_id"], item["status"],
+                     Decimal(item["source_amount"]) if item["source_amount"] != "" else "",
+                     Decimal(item["workspace_amount"]) if item["workspace_amount"] != "" else "",
+                     item["activity_id"], population["source_name"], population["rationale"]]
+                    for item in comparison.get("opening_obligation_rows", [])] +
+                   [[reference, cutover, "", "Obligation amounts not supplied", "", "", "", population["source_name"], population["rationale"]]
+                    for reference, cutover in comparison.get("unverified_opening_obligations", [])] +
+                   [[item["contract_reference"], item["cutover_date"], "", f"Source obligation total {item['source_total']} differs from source opening {item['source_opening_total']}", "", "", "", population["source_name"], population["rationale"]]
+                    for item in comparison.get("mismatched_source_opening_obligation_totals", [])])
         money_keys = {"opening_contract_asset", "opening_deferred_revenue", "revenue", "billings", "closing_contract_asset", "closing_deferred_revenue"}
         rollforward_keys = ["contract_id", "contract_name", "opening_contract_asset", "opening_deferred_revenue", "revenue", "billings", "closing_contract_asset", "closing_deferred_revenue"]
         _sheet(book, "Contract rollforward", rollforward_keys, [[Decimal(row[k]) if k in money_keys else row[k] for k in rollforward_keys] for row in review["rollforward"]])

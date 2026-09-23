@@ -1139,7 +1139,7 @@ class Application:
         elif command == "record_population_manifest":
             if scenario_id != "main":
                 raise ValueError("Source population manifests belong to Main, not a scenario.")
-            if set(p) - {"period", "source_name", "rationale", "contract_references", "billing_references", "usage_references", "opening_positions"}:
+            if set(p) - {"period", "source_name", "rationale", "contract_references", "billing_references", "usage_references", "opening_positions", "opening_obligations"}:
                 raise ValueError("Source population manifest has unsupported fields.")
             p["period"] = valid_period(p.get("period"))
             if any(close["period"] == p["period"] and close["status"] == "closed" for close in state["closes"]):
@@ -1218,6 +1218,28 @@ class Application:
             opening_keys = [(item["contract_reference"], item["cutover_date"]) for item in normalized_openings]
             if len(set(opening_keys)) != len(opening_keys):
                 raise ValueError("The source opening list contains duplicate contract and cutover references.")
+            obligations = p.get("opening_obligations", [])
+            if not isinstance(obligations, list):
+                raise ValueError("Provide a source opening-obligation list, even when empty.")
+            normalized_obligations = []
+            for item in obligations:
+                if not isinstance(item, dict) or set(item) != {"contract_reference", "cutover_date", "obligation_id", "recognized_to_date"}:
+                    raise ValueError("Each source opening-obligation row needs a contract reference, cutover date, obligation ID, and cumulative recognized amount.")
+                row = {"contract_reference": normalize_reference(item["contract_reference"], "Contract reference"),
+                       "cutover_date": valid_date(item["cutover_date"], "Source cutover date"),
+                       "obligation_id": normalize_reference(item["obligation_id"], "Obligation ID")}
+                if (row["contract_reference"], row["cutover_date"]) not in opening_keys:
+                    raise ValueError("Each source opening-obligation row must belong to a source cutover opening in this period.")
+                value = Decimal(decimal_string(item["recognized_to_date"], "Source obligation recognized to date", True))
+                if value != value.quantize(Decimal("0.01")):
+                    raise ValueError("Source opening-obligation amounts must be stated in cents.")
+                row["recognized_to_date"] = f"{value:.2f}"
+                normalized_obligations.append(row)
+            obligation_keys = [(item["contract_reference"], item["cutover_date"], item["obligation_id"]) for item in normalized_obligations]
+            if len(set(obligation_keys)) != len(obligation_keys):
+                raise ValueError("The source opening-obligation list contains duplicate references.")
+            if "opening_obligations" in p:
+                p["opening_obligations"] = normalized_obligations
         elif command == "record_export_posting":
             if scenario_id != "main":
                 raise ValueError("External posting records belong to Main.")
