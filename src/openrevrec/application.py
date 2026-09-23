@@ -36,7 +36,7 @@ def _contract_source_references(contract: dict) -> list[str]:
             if contract.get("source_contracts") else [contract["reference"]] if contract.get("reference") else [])
 
 
-def _distinct_billing_identity(left: dict, right: dict) -> bool:
+def _distinct_source_identity(left: dict, right: dict) -> bool:
     shared_identity = False
     for field in ("reference", "import_source_identity"):
         if left.get(field) and right.get(field):
@@ -53,7 +53,7 @@ def _independent_invoices(left: dict, right: dict, originals: dict[str, dict]) -
     if left["command"] != "record_billing" or right["command"] != "record_billing":
         return False
     a, b = left["payload"], right["payload"]
-    if not _distinct_billing_identity(a, b):
+    if not _distinct_source_identity(a, b):
         return False
     left_amount, right_amount = Decimal(a["amount"]), Decimal(b["amount"])
     if left_amount > 0 and right_amount > 0:
@@ -62,7 +62,7 @@ def _independent_invoices(left: dict, right: dict, originals: dict[str, dict]) -
         if a.get("applies_to_change_set_id") and b.get("applies_to_change_set_id"):
             first = originals.get(a["applies_to_change_set_id"])
             second = originals.get(b["applies_to_change_set_id"])
-            return bool(first and second and _distinct_billing_identity(first, second))
+            return bool(first and second and _distinct_source_identity(first, second))
         if a.get("applies_to_reference") and b.get("applies_to_reference"):
             return (a.get("source_contract_reference"), a["applies_to_reference"]) != (b.get("source_contract_reference"), b["applies_to_reference"])
         return False
@@ -70,7 +70,7 @@ def _independent_invoices(left: dict, right: dict, originals: dict[str, dict]) -
         credit, invoice = (a, b) if left_amount < 0 else (b, a)
         if credit.get("applies_to_change_set_id"):
             original = originals.get(credit["applies_to_change_set_id"])
-            return bool(original and _distinct_billing_identity(original, invoice))
+            return bool(original and _distinct_source_identity(original, invoice))
         # An external-original credit is independent only if the newly added
         # invoice has its own reference and is not the named original.
         return bool(credit.get("applies_to_reference") and invoice.get("reference")
@@ -91,8 +91,31 @@ def _independent_billing_corrections(left: dict, right: dict, originals: dict[st
     if not all(isinstance(item, dict) and item.get("amount") and Decimal(item["amount"]) > 0
                for item in (original_a, original_b, replacement_a, replacement_b)):
         return False
-    return all(_distinct_billing_identity(first, second)
+    return all(_distinct_source_identity(first, second)
                for first in (original_a, replacement_a) for second in (original_b, replacement_b))
+
+
+def _independent_usage_changes(left: dict, right: dict, originals: dict[str, dict]) -> bool:
+    """Rebase separate usage facts only when every original and replacement stays distinct."""
+    def identities(row: dict) -> list[dict] | None:
+        if row["command"] == "record_usage":
+            return [row["payload"]]
+        if row["command"] != "correct_activity":
+            return None
+        payload = row["payload"]
+        original = originals.get(payload.get("target_change_set_id"))
+        replacement = payload.get("replacement")
+        if original is None or not isinstance(replacement, dict):
+            return None
+        return [original, replacement]
+
+    a, b = identities(left), identities(right)
+    if a is None or b is None:
+        return False
+    if left["command"] == "correct_activity" and right["command"] == "correct_activity":
+        if left["payload"].get("target_change_set_id") == right["payload"].get("target_change_set_id"):
+            return False
+    return all(_distinct_source_identity(first, second) for first in a for second in b)
 
 
 def valid_date(value, label="Effective date") -> str:
@@ -1327,6 +1350,8 @@ class Application:
         main_rows = db.execute("SELECT command, entity_id, version, payload FROM change_sets WHERE scenario_id='main' AND version>? ORDER BY version", (base_version,))
         originals = {row["id"]: json.loads(row["payload"])
                      for row in db.execute("SELECT id, payload FROM change_sets WHERE command='record_billing'")}
+        usage_originals = {row["id"]: json.loads(row["payload"])
+                           for row in db.execute("SELECT id, payload FROM change_sets WHERE command='record_usage'")}
         conflicts = []
         for raw in main_rows:
             main = {**dict(raw), "payload": json.loads(raw["payload"])}
@@ -1335,7 +1360,8 @@ class Application:
             if any(proposal["command"] == "set_policy" or main["command"] == "set_policy" or
                    (proposal["entity_id"] == main["entity_id"]
                     and not (_independent_invoices(proposal, main, originals)
-                             or _independent_billing_corrections(proposal, main, originals)))
+                             or _independent_billing_corrections(proposal, main, originals)
+                             or _independent_usage_changes(proposal, main, usage_originals)))
                    for proposal in own):
                 conflicts.append({key: main[key] for key in ("command", "entity_id", "version")})
         return conflicts

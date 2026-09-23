@@ -1615,6 +1615,149 @@ def test_scenario_rebase_accepts_distinct_identified_invoices_on_one_contract(tm
         row["credit_minor"] for row in accepted["report"]["journals"])
 
 
+def _metered_usage_scenario_app(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "contract", "customer_id": "customer", "name": "Metered service", "reference": "AG-1",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "meter", "kind": "metered", "amount": "0",
+                           "metered_value_mode": "invoice_value", "pricing_basis": "right_to_invoice",
+                           "rounding_period": "calendar_month",
+                           "rationale": "Reviewed source prices correspond to delivered value."}],
+        "obligations": [{"id": "units", "name": "Metered service", "kind": "service", "ssp": "0",
+                         "method": "metered", "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+    }, period="2026-01")
+    return application
+
+
+def _priced_usage(reference, quantity, value, day):
+    return {"contract_id": "contract", "obligation_id": "units", "effective_date": day,
+            "quantity": quantity, "invoice_value": value, "reference": reference}
+
+
+def test_scenario_rebase_combines_distinct_source_usage_rows(tmp_path):
+    application = _metered_usage_scenario_app(tmp_path)
+    scenario = application.execute("create_scenario", {"name": "Second usage source"})["result"]["id"]
+    application.execute("record_usage", _priced_usage("USG-2", "9", "0.17", "2026-01-15"),
+                        scenario_id=scenario, period="2026-01")
+    application.execute("record_usage", _priced_usage("USG-1", "1001", "15.17", "2026-01-10"), period="2026-01")
+    assert application.compare(scenario, "2026-01")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-01")
+    application.execute("apply_scenario", {"scenario_id": scenario}, period="2026-01")
+    report = application.state(period="2026-01")["report"]
+    assert report["summary"]["revenue"] == "15.34"
+    assert {item["reference"] for item in report["contracts"][0]["metered_usage_valuation"]} == {"USG-1", "USG-2"}
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in report["journals"]) == 0
+
+
+def test_scenario_rebase_reviews_duplicate_source_usage(tmp_path):
+    application = _metered_usage_scenario_app(tmp_path)
+    scenario = application.execute("create_scenario", {"name": "Duplicate source usage"})["result"]["id"]
+    application.execute("record_usage", _priced_usage("USG-1", "9", "0.17", "2026-01-15"),
+                        scenario_id=scenario, period="2026-01")
+    application.execute("record_usage", _priced_usage("USG-1", "1001", "15.17", "2026-01-10"), period="2026-01")
+    assert application.compare(scenario, "2026-01")["conflicts"]
+    with pytest.raises(ValueError, match="same accounting records"):
+        application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-01")
+
+
+def test_scenario_rebase_reviews_shared_import_usage_identity(tmp_path):
+    application = _metered_usage_scenario_app(tmp_path)
+    scenario = application.execute("create_scenario", {"name": "Same imported row"})["result"]["id"]
+    import_id = ["Usage", "source:1"]
+    application.execute("record_usage", {**_priced_usage("USG-A", "9", "0.17", "2026-01-15"),
+                                         "import_source_identity": import_id}, scenario_id=scenario, period="2026-01")
+    application.execute("record_usage", {**_priced_usage("USG-B", "1001", "15.17", "2026-01-10"),
+                                         "import_source_identity": import_id}, period="2026-01")
+    assert application.compare(scenario, "2026-01")["conflicts"]
+
+
+def test_scenario_rebase_reviews_unidentified_finite_usage(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "contract", "customer_id": "customer", "name": "Finite units",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "100.00"}],
+        "obligations": [{"id": "units", "name": "Units", "kind": "service", "ssp": "100.00",
+                         "method": "usage", "total_units": "100", "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+    }, period="2026-01")
+    scenario = application.execute("create_scenario", {"name": "Second usage fact"})["result"]["id"]
+    activity = {"contract_id": "contract", "obligation_id": "units", "effective_date": "2026-01-10", "quantity": "10"}
+    application.execute("record_usage", activity, scenario_id=scenario, period="2026-01")
+    application.execute("record_usage", {**activity, "effective_date": "2026-01-11"}, period="2026-01")
+    assert application.compare(scenario, "2026-01")["conflicts"]
+
+
+def test_scenario_rebase_flags_combined_finite_usage_overage(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "contract", "customer_id": "customer", "name": "Finite units",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "100.00"}],
+        "obligations": [{"id": "units", "name": "Units", "kind": "service", "ssp": "100.00",
+                         "method": "usage", "total_units": "100", "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+    }, period="2026-01")
+    scenario = application.execute("create_scenario", {"name": "Other source"})["result"]["id"]
+    application.execute("record_usage", {"contract_id": "contract", "obligation_id": "units",
+                        "effective_date": "2026-01-10", "quantity": "60", "reference": "USG-A"},
+                        scenario_id=scenario, period="2026-01")
+    application.execute("record_usage", {"contract_id": "contract", "obligation_id": "units",
+                        "effective_date": "2026-01-11", "quantity": "60", "reference": "USG-B"}, period="2026-01")
+    assert application.compare(scenario, "2026-01")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-01")
+    report = application.state(scenario, "2026-01")["report"]
+    assert report["summary"]["recognized_to_date"] == "100.00"
+    assert any("recorded usage exceeds total_units" in warning for warning in report["warnings"])
+
+
+def test_scenario_rebase_combines_corrections_to_distinct_usage_rows(tmp_path):
+    application = _metered_usage_scenario_app(tmp_path)
+    first = application.execute("record_usage", _priced_usage("USG-1", "1001", "15.17", "2026-01-10"), period="2026-01")["result"]["change_set_id"]
+    second = application.execute("record_usage", _priced_usage("USG-2", "9", "0.17", "2026-01-15"), period="2026-01")["result"]["change_set_id"]
+    scenario = application.execute("create_scenario", {"name": "Correct first source row"})["result"]["id"]
+    application.execute("correct_activity", {"target_change_set_id": first, "rationale": "Reviewed source amount",
+        "replacement": _priced_usage("USG-1", "1001", "15.16", "2026-01-10")}, scenario_id=scenario, period="2026-01")
+    application.execute("correct_activity", {"target_change_set_id": second, "rationale": "Reviewed source amount",
+        "replacement": _priced_usage("USG-2", "9", "0.18", "2026-01-15")}, period="2026-01")
+    assert application.compare(scenario, "2026-01")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-01")
+    application.execute("apply_scenario", {"scenario_id": scenario}, period="2026-01")
+    report = application.state(period="2026-01")["report"]
+    assert report["summary"]["revenue"] == "15.34"
+    assert {item["reference"]: item["unrounded_value"] for item in report["contracts"][0]["metered_usage_valuation"]} == {"USG-1": "15.16", "USG-2": "0.18"}
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in report["journals"]) == 0
+
+
+def test_scenario_rebase_combines_new_usage_with_distinct_correction(tmp_path):
+    application = _metered_usage_scenario_app(tmp_path)
+    original = application.execute("record_usage", _priced_usage("USG-1", "1001", "15.17", "2026-01-10"), period="2026-01")["result"]["change_set_id"]
+    scenario = application.execute("create_scenario", {"name": "New usage source"})["result"]["id"]
+    application.execute("record_usage", _priced_usage("USG-2", "9", "0.17", "2026-01-15"),
+                        scenario_id=scenario, period="2026-01")
+    application.execute("correct_activity", {"target_change_set_id": original, "rationale": "Reviewed source amount",
+        "replacement": _priced_usage("USG-1", "1001", "15.16", "2026-01-10")}, period="2026-01")
+    assert application.compare(scenario, "2026-01")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-01")
+    application.execute("apply_scenario", {"scenario_id": scenario}, period="2026-01")
+    assert application.state(period="2026-01")["report"]["summary"]["revenue"] == "15.33"
+
+
+def test_scenario_rebase_reviews_same_usage_correction_target(tmp_path):
+    application = _metered_usage_scenario_app(tmp_path)
+    original = application.execute("record_usage", _priced_usage("USG-1", "1001", "15.17", "2026-01-10"), period="2026-01")["result"]["change_set_id"]
+    scenario = application.execute("create_scenario", {"name": "First correction"})["result"]["id"]
+    application.execute("correct_activity", {"target_change_set_id": original, "rationale": "Scenario correction",
+        "replacement": _priced_usage("USG-1", "1001", "15.16", "2026-01-10")}, scenario_id=scenario, period="2026-01")
+    application.execute("correct_activity", {"target_change_set_id": original, "rationale": "Main correction",
+        "replacement": _priced_usage("USG-1", "1001", "15.15", "2026-01-10")}, period="2026-01")
+    assert application.compare(scenario, "2026-01")["conflicts"]
+    with pytest.raises(ValueError, match="same accounting records"):
+        application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-01")
+
+
 def test_scenario_rebase_accepts_corrections_to_distinct_identified_invoices(tmp_path):
     application = app(tmp_path)
     seed(application)
