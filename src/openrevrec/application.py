@@ -152,6 +152,55 @@ def _independent_satisfaction_changes(left: dict, right: dict, originals: dict[s
     return first is not None and second is not None and first != second
 
 
+def _independent_rate_changes(left: dict, right: dict, originals: dict[str, dict]) -> bool:
+    """Distinct dated meter rates can be replayed together; one day has one rate."""
+    def source_identity(payload: dict) -> str | None:
+        identity = payload.get("import_source_identity")
+        return dumps(identity) if identity is not None else None
+
+    def current_fact(change_id: str, seen: set[str]) -> tuple[str, dict, set[str]] | None:
+        if change_id in seen:
+            return None
+        seen.add(change_id)
+        row = originals.get(change_id)
+        if row is None:
+            return None
+        payload = row["payload"]
+        identity = source_identity(payload)
+        if row["command"] == "record_rate_change":
+            return change_id, payload, {identity} if identity else set()
+        if row["command"] != "correct_activity":
+            return None
+        prior = current_fact(payload.get("target_change_set_id"), seen)
+        replacement = payload.get("replacement")
+        if prior is None or not isinstance(replacement, dict) or replacement.get("component_id") != prior[1].get("component_id"):
+            return None
+        root, _, identities = prior
+        return root, replacement, identities | ({identity} if identity else set())
+
+    def fact(row: dict) -> tuple[str, set[str], str | None, set[str]] | None:
+        payload = row["payload"]
+        identity = source_identity(payload)
+        if row["command"] == "record_rate_change":
+            return payload.get("component_id"), {payload.get("effective_date")}, None, {identity} if identity else set()
+        if row["command"] != "correct_activity":
+            return None
+        prior = current_fact(payload.get("target_change_set_id"), set())
+        replacement = payload.get("replacement")
+        if prior is None or not isinstance(replacement, dict) or replacement.get("component_id") != prior[1].get("component_id"):
+            return None
+        root, previous, identities = prior
+        return (replacement.get("component_id"), {previous.get("effective_date"), replacement.get("effective_date")},
+                root, identities | ({identity} if identity else set()))
+
+    a, b = fact(left), fact(right)
+    if a is None or b is None or not a[0] or a[0] != b[0] or None in a[1] | b[1]:
+        return False
+    if a[2] is not None and a[2] == b[2]:
+        return False
+    return not (a[1] & b[1] or a[3] & b[3])
+
+
 def valid_date(value, label="Effective date") -> str:
     _date(value, label)
     return value
@@ -1511,6 +1560,8 @@ class Application:
                            for row in db.execute("SELECT id, payload FROM change_sets WHERE command='record_usage'")}
         satisfaction_originals = {row["id"]: {"command": row["command"], "payload": json.loads(row["payload"])}
                                   for row in db.execute("SELECT id, command, payload FROM change_sets WHERE command IN ('record_progress', 'record_milestone', 'correct_activity')")}
+        rate_originals = {row["id"]: {"command": row["command"], "payload": json.loads(row["payload"])}
+                          for row in db.execute("SELECT id, command, payload FROM change_sets WHERE command IN ('record_rate_change', 'correct_activity')")}
         conflicts = []
         for raw in main_rows:
             main = {**dict(raw), "payload": json.loads(raw["payload"])}
@@ -1521,7 +1572,8 @@ class Application:
                     and not (_independent_invoices(proposal, main, originals)
                              or _independent_billing_corrections(proposal, main, originals)
                              or _independent_usage_changes(proposal, main, usage_originals)
-                             or _independent_satisfaction_changes(proposal, main, satisfaction_originals)))
+                             or _independent_satisfaction_changes(proposal, main, satisfaction_originals)
+                             or _independent_rate_changes(proposal, main, rate_originals)))
                    for proposal in own):
                 conflicts.append({key: main[key] for key in ("command", "entity_id", "version")})
         return conflicts

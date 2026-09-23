@@ -2792,6 +2792,103 @@ def test_metered_rate_changes_use_delivery_date_and_round_once_per_month(tmp_pat
             "rationale": "Late rate change after the accepted close"}, period="2026-02")
 
 
+def _unit_rate_scenario_app(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "contract", "name": "Metered service", "customer_id": "customer",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "meter", "kind": "metered", "amount": "0", "unit_rate": "0.01",
+                           "pricing_basis": "right_to_invoice", "rounding_period": "calendar_month",
+                           "rationale": "Invoice value tracks delivered units."}],
+        "obligations": [{"id": "units", "name": "Units", "kind": "service", "ssp": "0",
+                         "method": "metered", "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+    }, period="2026-01")
+    for day in ("2026-01-10", "2026-01-20", "2026-02-10"):
+        application.execute("record_usage", {"contract_id": "contract", "obligation_id": "units",
+                                             "effective_date": day, "quantity": "10"}, period=day[:7])
+    return application
+
+
+def _meter_rate(day, rate):
+    return {"contract_id": "contract", "component_id": "meter", "effective_date": day,
+            "unit_rate": rate, "rationale": "Approved price reflects delivered value."}
+
+
+def test_scenario_rebase_combines_rates_on_distinct_effective_dates(tmp_path):
+    application = _unit_rate_scenario_app(tmp_path)
+    scenario = application.execute("create_scenario", {"name": "February rate"})["result"]["id"]
+    application.execute("record_rate_change", _meter_rate("2026-02-01", "0.03"), scenario_id=scenario, period="2026-02")
+    application.execute("record_rate_change", _meter_rate("2026-01-15", "0.02"), period="2026-01")
+    assert application.compare(scenario, "2026-02")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-02")
+    application.execute("apply_scenario", {"scenario_id": scenario}, period="2026-02")
+    report = application.state(period="2026-02")["report"]
+    assert report["summary"]["revenue"] == "0.30"
+    assert report["summary"]["recognized_to_date"] == "0.60"
+    assert [(row["effective_date"], row["unit_rate"]) for row in report["contracts"][0]["metered_rate_history"]] == [
+        ("2026-01-01", "0.01"), ("2026-01-15", "0.02"), ("2026-02-01", "0.03")]
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in report["journals"]) == 0
+
+
+def test_scenario_rebase_keeps_same_day_or_imported_rate_in_conflict(tmp_path):
+    application = _unit_rate_scenario_app(tmp_path)
+    scenario = application.execute("create_scenario", {"name": "Alternative January rate"})["result"]["id"]
+    application.execute("record_rate_change", _meter_rate("2026-01-15", "0.02"), scenario_id=scenario, period="2026-01")
+    application.execute("record_rate_change", _meter_rate("2026-01-15", "0.03"), period="2026-01")
+    assert application.compare(scenario, "2026-02")["conflicts"]
+    with pytest.raises(ValueError, match="same accounting records"):
+        application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-02")
+
+    (tmp_path / "second").mkdir()
+    application = _unit_rate_scenario_app(tmp_path / "second")
+    scenario = application.execute("create_scenario", {"name": "Imported January rate"})["result"]["id"]
+    identity = ["Rate Changes", "source:1"]
+    application.execute("record_rate_change", {**_meter_rate("2026-01-15", "0.02"), "import_source_identity": identity},
+                        scenario_id=scenario, period="2026-01")
+    application.execute("record_rate_change", {**_meter_rate("2026-02-01", "0.03"), "import_source_identity": identity}, period="2026-02")
+    assert application.compare(scenario, "2026-02")["conflicts"]
+
+
+def test_scenario_rebase_combines_corrections_to_different_dated_rates(tmp_path):
+    application = _unit_rate_scenario_app(tmp_path)
+    january = application.execute("record_rate_change", _meter_rate("2026-01-15", "0.02"), period="2026-01")["result"]["change_set_id"]
+    february = application.execute("record_rate_change", _meter_rate("2026-02-01", "0.03"), period="2026-02")["result"]["change_set_id"]
+    scenario = application.execute("create_scenario", {"name": "Correct January price"})["result"]["id"]
+    application.execute("correct_activity", {"target_change_set_id": january, "rationale": "Correct January rate",
+        "replacement": _meter_rate("2026-01-15", "0.025")}, scenario_id=scenario, period="2026-01")
+    application.execute("correct_activity", {"target_change_set_id": february, "rationale": "Correct February rate",
+        "replacement": _meter_rate("2026-02-01", "0.035")}, period="2026-02")
+    assert application.compare(scenario, "2026-02")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-02")
+    application.execute("apply_scenario", {"scenario_id": scenario}, period="2026-02")
+    report = application.state(period="2026-02")["report"]
+    assert report["summary"]["revenue"] == "0.35"
+    assert report["summary"]["recognized_to_date"] == "0.70"
+
+
+def test_scenario_rebase_rate_correction_respects_new_rate_date(tmp_path):
+    application = _unit_rate_scenario_app(tmp_path)
+    january = application.execute("record_rate_change", _meter_rate("2026-01-15", "0.02"), period="2026-01")["result"]["change_set_id"]
+    scenario = application.execute("create_scenario", {"name": "Correct January price"})["result"]["id"]
+    application.execute("correct_activity", {"target_change_set_id": january, "rationale": "Correct January rate",
+        "replacement": _meter_rate("2026-01-15", "0.025")}, scenario_id=scenario, period="2026-01")
+    application.execute("record_rate_change", _meter_rate("2026-02-01", "0.03"), period="2026-02")
+    assert application.compare(scenario, "2026-02")["conflicts"] == []
+    application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-02")
+    application.execute("apply_scenario", {"scenario_id": scenario}, period="2026-02")
+    assert application.state(period="2026-02")["report"]["summary"]["recognized_to_date"] == "0.65"
+
+    (tmp_path / "collision").mkdir()
+    application = _unit_rate_scenario_app(tmp_path / "collision")
+    january = application.execute("record_rate_change", _meter_rate("2026-01-15", "0.02"), period="2026-01")["result"]["change_set_id"]
+    scenario = application.execute("create_scenario", {"name": "Move January rate"})["result"]["id"]
+    application.execute("correct_activity", {"target_change_set_id": january, "rationale": "Move rate effective day",
+        "replacement": _meter_rate("2026-02-01", "0.025")}, scenario_id=scenario, period="2026-02")
+    application.execute("record_rate_change", _meter_rate("2026-02-01", "0.03"), period="2026-02")
+    assert application.compare(scenario, "2026-02")["conflicts"]
+
+
 def test_metered_invoice_value_uses_reviewed_source_amount_without_inferred_flat_rate(tmp_path):
     application = app(tmp_path)
     application.execute("create_customer", {"id": "customer", "name": "Customer"})
