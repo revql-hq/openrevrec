@@ -1721,6 +1721,26 @@ export function PolicyForm(props: FormProps) {
     [obligationContractId, setObligationContractId] = useState(""),
     [assignmentObligationId, setAssignmentObligationId] = useState(""),
     [obligationProfileId, setObligationProfileId] = useState("");
+  const draftPayload = {
+    name, accounts, account_overrides: overrides, account_profiles: profiles,
+    profile_assignments: assignments, obligation_profile_assignments: obligationAssignments,
+    account_dimension_rules: ruleRows.map((row) => ({ account: row.account.trim(), dimensions: Object.fromEntries(row.dimensions.map((dimension) => [dimension.key.trim(), dimension.value.trim()])) })),
+    account_dimension_source: ruleSource, account_dimension_coverage: coverageMode,
+    account_transition: transition || undefined, effective_period: effectivePeriod, rationale,
+  };
+  const draftSnapshot = JSON.stringify(draftPayload);
+  const loadedSnapshot = useRef(draftSnapshot);
+  const loadedMonth = useRef(effectivePeriod);
+  useEffect(() => {
+    if (loadedMonth.current !== effectivePeriod) {
+      loadedSnapshot.current = draftSnapshot;
+      loadedMonth.current = effectivePeriod;
+    }
+  }, [effectivePeriod, draftSnapshot]);
+  const originalProfile = editingProfileId ? profiles[editingProfileId] : undefined;
+  const profileEditorDirty = profileName !== (originalProfile?.name || "") ||
+    JSON.stringify(profileAccounts) !== JSON.stringify(originalProfile?.accounts || {}) ||
+    JSON.stringify(dimensionRows.map((row) => [row.key, row.value])) !== JSON.stringify(Object.entries(originalProfile?.dimensions || {}));
   const selectedContract = props.state.contracts.find((contract) => contract.id === contractId);
   const obligations = selectedContract ? Array.from(new Map([...selectedContract.obligations, ...selectedContract.activities.flatMap((activity) => (activity.obligations as typeof selectedContract.obligations | undefined) || [])].map((obligation) => [obligation.id, obligation])).values()) : [];
   const assignmentContract = props.state.contracts.find((contract) => contract.id === obligationContractId);
@@ -1760,25 +1780,46 @@ export function PolicyForm(props: FormProps) {
     }
   };
   const chooseEffectivePeriod = (month: string) => {
-    setEffectivePeriod(month);
+    if (month === effectivePeriod) return true;
+    const unsavedDraft = draftSnapshot !== loadedSnapshot.current || profileEditorDirty || Boolean(pastedRules.trim() || accountCode.trim());
+    if (unsavedDraft && !window.confirm(`Discard unsaved policy edits and load the saved mappings for ${month}?`)) return false;
     const policy = [...props.state.policy_versions]
       .filter((item) => item.effective_period <= month)
       .sort((a, b) => a.effective_period.localeCompare(b.effective_period) || a.version - b.version)
       .at(-1);
-    if (policy) {
-      setAccounts(policy.accounts);
-      setOverrides(policy.account_overrides || { contracts: {}, obligations: {} });
-      setProfiles(policy.account_profiles || {});
-      setRuleSource(policy.account_dimension_source || "");
-      setCoverageMode(policy.account_dimension_coverage || "listed");
-      setRuleRows((policy.account_dimension_rules || []).map((rule) => ({
-        id: uid(), account: rule.account,
-        dimensions: Object.entries(rule.dimensions).map(([key, value]) => ({ id: uid(), key, value })),
-      })));
-      setAssignments(policy.profile_assignments || {});
-      setObligationAssignments(policy.obligation_profile_assignments || {});
-      selectProfile("");
-    }
+    if (!policy) return false;
+    setName(props.state.workspace.name);
+    setAccounts(policy.accounts);
+    setOverrides(policy.account_overrides || { contracts: {}, obligations: {} });
+    setProfiles(policy.account_profiles || {});
+    setRuleSource(policy.account_dimension_source || "");
+    setCoverageMode(policy.account_dimension_coverage || "listed");
+    setRuleRows((policy.account_dimension_rules || []).map((rule) => ({
+      id: uid(), account: rule.account,
+      dimensions: Object.entries(rule.dimensions).map(([key, value]) => ({ id: uid(), key, value })),
+    })));
+    setAssignments(policy.profile_assignments || {});
+    setObligationAssignments(policy.obligation_profile_assignments || {});
+    setRationale("");
+    setTransition("");
+    setPastedRules("");
+    setPasteError("");
+    setEditingProfileId("");
+    setProfileName("");
+    setProfileAccounts({});
+    setDimensionRows([]);
+    setScope("contract");
+    setContractId("");
+    setRole("revenue");
+    setObligationId("");
+    setAccountCode("");
+    setAssignmentContractId("");
+    setAssignmentProfileId("");
+    setObligationContractId("");
+    setAssignmentObligationId("");
+    setObligationProfileId("");
+    setEffectivePeriod(month);
+    return true;
   };
   return (
     <CommandDialog
@@ -1787,13 +1828,7 @@ export function PolicyForm(props: FormProps) {
       period={effectivePeriod}
       title="Company & accounting policy"
       subtitle="Four required journal roles can route to more GL codes through profiles and overrides. Balance routes stay at contract level; revenue can vary by obligation."
-      command={() => ({
-        command: "set_policy",
-        payload: { name, accounts, account_overrides: overrides, account_profiles: profiles, profile_assignments: assignments, obligation_profile_assignments: obligationAssignments,
-          account_dimension_rules: ruleRows.map((row) => ({ account: row.account.trim(), dimensions: Object.fromEntries(row.dimensions.map((dimension) => [dimension.key.trim(), dimension.value.trim()])) })),
-          account_dimension_source: ruleSource, account_dimension_coverage: coverageMode,
-          account_transition: transition || undefined, effective_period: effectivePeriod, rationale },
-      })}
+      command={() => ({ command: "set_policy", payload: draftPayload })}
       confirmLabel="Save policy"
       successMessage="Company policy updated."
     >
@@ -1809,7 +1844,7 @@ export function PolicyForm(props: FormProps) {
           required
           type="month"
           value={effectivePeriod}
-          onChange={(e) => chooseEffectivePeriod(e.target.value)}
+          onChange={(e) => { if (!chooseEffectivePeriod(e.target.value)) e.target.value = effectivePeriod; }}
         />
       </Field>
       {Object.entries(accounts).map(([role, account]) => (
