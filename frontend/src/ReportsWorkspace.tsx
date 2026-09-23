@@ -72,7 +72,7 @@ export type Review = {
   scenario_impacts: Impact[];
   external_control?: { period: string; source_name: string; rationale: string; billings: string; contract_asset: string; deferred_revenue: string; close_cutoff_date?: string; recorded_at: string } | null;
   external_control_comparison: Record<string, { derived: string; external: string; difference: string }>;
-  population_manifest?: { change_set_id?: string; source_name: string; rationale: string; contract_references: string[]; billing_references: { contract_reference: string; invoice_reference: string }[]; usage_references?: { contract_reference: string; usage_reference: string; quantity?: string; invoice_value?: string }[] } | null;
+  population_manifest?: { change_set_id?: string; source_name: string; rationale: string; contract_references: string[]; billing_references: { contract_reference: string; invoice_reference: string; amount?: string }[]; usage_references?: { contract_reference: string; usage_reference: string; quantity?: string; invoice_value?: string }[] } | null;
   population_comparison: {
     expected_contract_count: number; actual_contract_count: number; expected_billing_count: number; actual_billing_count: number;
     expected_usage_count?: number; actual_usage_count?: number;
@@ -80,6 +80,8 @@ export type Review = {
     unidentified_contracts: { id: string; name: string }[];
     missing_billings: [string, string][]; unexpected_billings: [string, string][]; duplicate_billings: [string, string][];
     unidentified_billings: { contract_id: string; activity_id: string }[];
+    unverified_billings?: [string, string][];
+    mismatched_billings?: { contract_reference: string; invoice_reference: string; source_amount: string; workspace_amount: string; activity_id: string }[];
     missing_usage?: [string, string][]; unexpected_usage?: [string, string][]; duplicate_usage?: [string, string][];
     unidentified_usage?: { contract_id: string; activity_id: string }[];
     unverified_usage?: [string, string][];
@@ -226,7 +228,7 @@ function SourcePopulation({ review, props }: { review: Review; props: ViewProps 
   const [sourceName, setSourceName] = useState(manifest?.source_name || "");
   const [rationale, setRationale] = useState(manifest?.rationale || "");
   const [contracts, setContracts] = useState((manifest?.contract_references || []).join("\n"));
-  const [billings, setBillings] = useState((manifest?.billing_references || []).map((item) => `${item.contract_reference} | ${item.invoice_reference}`).join("\n"));
+  const [billings, setBillings] = useState((manifest?.billing_references || []).map((item) => `${item.contract_reference} | ${item.invoice_reference}${item.amount !== undefined ? ` | ${item.amount}` : ""}`).join("\n"));
   const [usage, setUsage] = useState((manifest?.usage_references || []).map((item) => `${item.contract_reference} | ${item.usage_reference}${item.quantity !== undefined ? ` | ${item.quantity} | ${item.invoice_value}` : ""}`).join("\n"));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -238,11 +240,11 @@ function SourcePopulation({ review, props }: { review: Review; props: ViewProps 
       if (!line.trim()) continue;
       const divider = line.includes("\t") ? "\t" : "|";
       const parts = line.split(divider).map((part) => part.trim());
-      if (parts.length !== 2 || !parts.every(Boolean)) {
-        setError(`Invoice line ${index + 1} needs a contract reference and invoice reference separated by a tab or |.`);
+      if (![2, 3].includes(parts.length) || !parts.every(Boolean)) {
+        setError(`Invoice line ${index + 1} needs contract reference | invoice reference | signed amount. Existing ID-only rows can remain for review.`);
         return;
       }
-      billingReferences.push({ contract_reference: parts[0], invoice_reference: parts[1] });
+      billingReferences.push({ contract_reference: parts[0], invoice_reference: parts[1], ...(parts.length === 3 ? { amount: parts[2] } : {}) });
     }
     const usageReferences = [];
     for (const [index, line] of usage.split(/\r?\n/).entries()) {
@@ -272,25 +274,27 @@ function SourcePopulation({ review, props }: { review: Review; props: ViewProps 
     ["Missing invoices", comparison.missing_billings.map((item) => item.join(" / "))],
     ["Unexpected invoices", comparison.unexpected_billings.map((item) => item.join(" / "))],
     ["Duplicate workspace invoices", comparison.duplicate_billings.map((item) => item.join(" / "))],
+    ["Invoice amounts not checked", (comparison.unverified_billings || []).map((item) => item.join(" / "))],
     ["Missing priced usage", (comparison.missing_usage || []).map((item) => item.join(" / "))],
     ["Unexpected priced usage", (comparison.unexpected_usage || []).map((item) => item.join(" / "))],
     ["Duplicate workspace priced usage", (comparison.duplicate_usage || []).map((item) => item.join(" / "))],
     ["Priced usage values not checked", (comparison.unverified_usage || []).map((item) => item.join(" / "))],
   ] as const;
-  return <Section title="Source population" subtitle="Compare independent source IDs with workspace contracts, invoices, and priced usage.">
+  return <Section title="Source population" subtitle="Compare independent agreement IDs, signed invoice amounts, and priced usage with workspace records.">
     <p className="muted">Include contracts active or carrying a balance and {monthLabel(props.period)} billing and priced-usage records. Investigate missing or duplicate IDs in the source records.</p>
     {manifest ? <>
       <p className="notice">{manifest.source_name}: {comparison.actual_contract_count} workspace source agreements versus {comparison.expected_contract_count} register agreements; {comparison.actual_billing_count} workspace invoices versus {comparison.expected_billing_count} source invoices; {comparison.actual_usage_count || 0} priced usage records versus {comparison.expected_usage_count || 0} source records.</p>
       {groups.map(([label, items]) => items.length > 0 && <div className="check-row review" key={label}><span className="check-icon">{items.length}</span><div><strong>{label}</strong><p>{items.join(", ")}</p></div></div>)}
       {comparison.unidentified_contracts.map((item) => <div className="check-row review" key={item.id}><span className="check-icon">1</span><div><strong>Contract missing source reference</strong><p>{item.name}</p></div><Button onClick={() => props.navigate("Contracts", item.id, "Overview")}>Open</Button></div>)}
       {comparison.unidentified_billings.map((item) => <div className="check-row review" key={item.activity_id}><span className="check-icon">1</span><div><strong>Billing missing source identity</strong><p>{item.contract_id}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
+      {(comparison.mismatched_billings || []).map((item) => <div className="check-row review" key={`${item.contract_reference}:${item.invoice_reference}`}><span className="check-icon">1</span><div><strong>Invoice amount differs</strong><p>{item.contract_reference} / {item.invoice_reference}: source {money(item.source_amount, props.state.workspace.currency)}; workspace {money(item.workspace_amount, props.state.workspace.currency)}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
       {(comparison.unidentified_usage || []).map((item) => <div className="check-row review" key={item.activity_id}><span className="check-icon">1</span><div><strong>Priced usage missing source identity</strong><p>{item.contract_id}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
       {(comparison.mismatched_usage || []).map((item) => <div className="check-row review" key={`${item.contract_reference}:${item.usage_reference}`}><span className="check-icon">1</span><div><strong>Priced usage values differ</strong><p>{item.contract_reference} / {item.usage_reference}: source {item.source_quantity} units, {money(item.source_invoice_value, props.state.workspace.currency)}; workspace {item.workspace_quantity} units, {money(item.workspace_invoice_value, props.state.workspace.currency)}</p></div><Button onClick={() => props.navigate("Activity", item.activity_id)}>Open</Button></div>)}
-      {!groups.some(([, items]) => items.length) && !comparison.unidentified_contracts.length && !comparison.unidentified_billings.length && !(comparison.unidentified_usage || []).length && !(comparison.mismatched_usage || []).length && <p className="notice">Every listed source record matches a workspace record.</p>}
+      {!groups.some(([, items]) => items.length) && !comparison.unidentified_contracts.length && !comparison.unidentified_billings.length && !(comparison.mismatched_billings || []).length && !(comparison.unidentified_usage || []).length && !(comparison.mismatched_usage || []).length && <p className="notice">Every listed source record matches a workspace record.</p>}
     </> : <p className="notice">No independent source population has been recorded for this period.</p>}
     {props.state.scenario_id === "main" && !props.state.report.closed ? <form onSubmit={(event) => void submit(event)}>
       <div className="form-grid"><Field label="Independent source name"><input required value={sourceName} onChange={(event) => setSourceName(event.target.value)} placeholder="Billing extract and contract register" /></Field><Field label="Population and cutoff basis"><input required value={rationale} onChange={(event) => setRationale(event.target.value)} placeholder="Identify filters, cutoff, and source owner" /></Field></div>
-      <div className="form-grid"><Field label="Source contract references" hint="One contract reference per line; leave empty only if the source population is empty."><textarea rows={8} value={contracts} onChange={(event) => setContracts(event.target.value)} /></Field><Field label="Source invoice and credit references" hint="One per line: contract reference | invoice reference. You can also paste two tab-separated columns."><textarea rows={8} value={billings} onChange={(event) => setBillings(event.target.value)} /></Field></div>
+      <div className="form-grid"><Field label="Source contract references" hint="One contract reference per line; leave empty only if the source population is empty."><textarea rows={8} value={contracts} onChange={(event) => setContracts(event.target.value)} /></Field><Field label="Source invoices and credits" hint="One per line: contract reference | invoice reference | signed amount. Paste three tab-separated columns or use |. Older ID-only rows stay under review until amounts are supplied."><textarea rows={8} value={billings} onChange={(event) => setBillings(event.target.value)} /></Field></div>
       <Field label="Source priced-usage records" hint="One per line: contract reference | unique usage record ID | delivered units | invoice value. Paste four tab-separated columns or use |. Older ID-only rows stay under review until values are supplied."><textarea rows={6} value={usage} onChange={(event) => setUsage(event.target.value)} /></Field>
       <Button primary type="submit" busy={busy}>Record source population</Button>
     </form> : <p className="fine-print">Reopen the period to revise the accepted source population.</p>}

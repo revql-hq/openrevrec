@@ -1123,9 +1123,16 @@ class Application:
                 raise ValueError("The source contract list contains duplicate references.")
             normalized_billings = []
             for item in billings:
-                if not isinstance(item, dict) or set(item) != {"contract_reference", "invoice_reference"}:
-                    raise ValueError("Each source billing row needs a contract and invoice reference.")
-                normalized_billings.append({key: normalize_reference(item[key], key.replace("_", " ").capitalize()) for key in ("contract_reference", "invoice_reference")})
+                if not isinstance(item, dict) or set(item) not in ({"contract_reference", "invoice_reference"}, {"contract_reference", "invoice_reference", "amount"}):
+                    raise ValueError("Each source billing row needs a contract and invoice reference, with an optional signed amount.")
+                normalized = {key: normalize_reference(item[key], key.replace("_", " ").capitalize()) for key in ("contract_reference", "invoice_reference")}
+                if "amount" in item:
+                    normalized["amount"] = decimal_string(item["amount"], "Source invoice amount")
+                    source_amount = Decimal(normalized["amount"])
+                    if source_amount != source_amount.quantize(Decimal("0.01")):
+                        raise ValueError("Source invoice amount must be stated in cents.")
+                    normalized["amount"] = f"{source_amount:.2f}"
+                normalized_billings.append(normalized)
             p["billing_references"] = normalized_billings
             keys = [(item["contract_reference"], item["invoice_reference"]) for item in normalized_billings]
             if len(set(keys)) != len(keys):

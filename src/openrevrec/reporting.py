@@ -60,6 +60,10 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
     unidentified_billings = [{"contract_id": contract["id"], "activity_id": activity["id"]} for (contract, activity), key in zip(actual_billing_rows, actual_billings) if not all(key)]
     actual_billing_set = {key for key in actual_billings if all(key)}
     duplicate_billings = sorted(key for key, count in Counter(actual_billings).items() if all(key) and count > 1)
+    actual_billing_by_key: dict[tuple[str, str], list[dict]] = {}
+    for (_, activity), key in zip(actual_billing_rows, actual_billings):
+        if all(key):
+            actual_billing_by_key.setdefault(key, []).append(activity)
     actual_usage_rows = [(contract, activity) for contract in state["contracts"]
                          if len(contract["consideration"]) == 1 and contract["consideration"][0].get("metered_value_mode") == "invoice_value"
                          for activity in contract["activities"] if activity["type"] == "usage" and activity["effective_date"][:7] == period]
@@ -70,7 +74,31 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
     actual_usage_set = {key for key in actual_usage if all(key)}
     duplicate_usage = sorted(key for key, count in Counter(actual_usage).items() if all(key) and count > 1)
     expected_contracts = set(manifest["contract_references"]) if manifest else set()
-    expected_billings = {(item["contract_reference"], item["invoice_reference"]) for item in manifest["billing_references"]} if manifest else set()
+    expected_billing_rows = manifest["billing_references"] if manifest else []
+    expected_billings = {(item["contract_reference"], item["invoice_reference"]) for item in expected_billing_rows}
+    billing_value_rows = []
+    mismatched_billings = []
+    unverified_billings = []
+    for item in expected_billing_rows:
+        key = item["contract_reference"], item["invoice_reference"]
+        actual = actual_billing_by_key.get(key, [])
+        row = {"contract_reference": key[0], "invoice_reference": key[1],
+               "source_amount": item.get("amount", ""),
+               "workspace_amount": actual[0]["amount"] if len(actual) == 1 else "",
+               "activity_id": actual[0]["id"] if len(actual) == 1 else ""}
+        if not actual:
+            row["status"] = "Missing in workspace"
+        elif len(actual) > 1:
+            row["status"] = "Duplicate in workspace"
+        elif "amount" not in item:
+            row["status"] = "Source amount not supplied"
+            unverified_billings.append(key)
+        elif _decimal(item["amount"]) != _decimal(actual[0]["amount"]):
+            row["status"] = "Amounts differ"
+            mismatched_billings.append(row)
+        else:
+            row["status"] = "Matched"
+        billing_value_rows.append(row)
     expected_usage_rows = manifest.get("usage_references", []) if manifest else []
     expected_usage = {(item["contract_reference"], item["usage_reference"]) for item in expected_usage_rows}
     actual_usage_by_key: dict[tuple[str, str], list[dict]] = {}
@@ -113,6 +141,8 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
         "missing_billings": sorted(expected_billings - actual_billing_set),
         "unexpected_billings": sorted(actual_billing_set - expected_billings),
         "unidentified_billings": unidentified_billings, "duplicate_billings": duplicate_billings,
+        "unverified_billings": unverified_billings, "mismatched_billings": mismatched_billings,
+        "billing_value_rows": billing_value_rows,
         "missing_usage": sorted(expected_usage - actual_usage_set),
         "unexpected_usage": sorted(actual_usage_set - expected_usage),
         "unidentified_usage": unidentified_usage, "duplicate_usage": duplicate_usage,

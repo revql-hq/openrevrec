@@ -129,17 +129,24 @@ def export_bytes(state, review=None):
             missing_contracts = set(comparison["missing_contracts"])
             missing_billings = {tuple(item) for item in comparison["missing_billings"]}
             duplicate_contracts = set(comparison["duplicate_contracts"])
-            duplicate_billings = {tuple(item) for item in comparison["duplicate_billings"]}
             _sheet(book, "Source contracts", ["Contract reference", "Comparison", "Source", "Population basis"],
                    [[reference, "Missing in workspace" if reference in missing_contracts else "Duplicate in workspace" if reference in duplicate_contracts else "Matched", population["source_name"], population["rationale"]]
                     for reference in population["contract_references"]] +
                    [[reference, "Unexpected in workspace", population["source_name"], population["rationale"]] for reference in comparison["unexpected_contracts"]] +
                    [[item["id"], "Workspace contract lacks reference", population["source_name"], population["rationale"]] for item in comparison["unidentified_contracts"]])
-            _sheet(book, "Source invoices", ["Contract reference", "Invoice reference", "Comparison", "Source", "Population basis"],
-                   [[item["contract_reference"], item["invoice_reference"], "Missing in workspace" if (item["contract_reference"], item["invoice_reference"]) in missing_billings else "Duplicate in workspace" if (item["contract_reference"], item["invoice_reference"]) in duplicate_billings else "Matched", population["source_name"], population["rationale"]]
-                    for item in population["billing_references"]] +
-                   [[contract_ref, invoice_ref, "Unexpected in workspace", population["source_name"], population["rationale"]] for contract_ref, invoice_ref in comparison["unexpected_billings"]] +
-                   [[item["contract_id"], item["activity_id"], "Workspace billing lacks reference", population["source_name"], population["rationale"]] for item in comparison["unidentified_billings"]])
+            billing_rows = comparison.get("billing_value_rows")
+            if billing_rows is None:  # Older closed checkpoints compared invoice identities only.
+                duplicate_billings = {tuple(item) for item in comparison["duplicate_billings"]}
+                billing_rows = [{"contract_reference": item["contract_reference"], "invoice_reference": item["invoice_reference"],
+                                 "status": "Missing in workspace" if (item["contract_reference"], item["invoice_reference"]) in missing_billings else "Duplicate in workspace" if (item["contract_reference"], item["invoice_reference"]) in duplicate_billings else "Identity matched; amount not checked"}
+                                for item in population["billing_references"]]
+            _sheet(book, "Source invoices", ["Contract reference", "Invoice reference", "Comparison", "Source", "Population basis", "Source amount", "Workspace amount", "Activity ID"],
+                   [[item["contract_reference"], item["invoice_reference"], item["status"], population["source_name"], population["rationale"],
+                     Decimal(item["source_amount"]) if item.get("source_amount") not in (None, "") else "",
+                     Decimal(item["workspace_amount"]) if item.get("workspace_amount") not in (None, "") else "", item.get("activity_id", "")]
+                    for item in billing_rows] +
+                   [[contract_ref, invoice_ref, "Unexpected in workspace", population["source_name"], population["rationale"], "", "", ""] for contract_ref, invoice_ref in comparison["unexpected_billings"]] +
+                   [[item["contract_id"], item["activity_id"], "Workspace billing lacks reference", population["source_name"], population["rationale"], "", "", item["activity_id"]] for item in comparison["unidentified_billings"]])
             usage_rows = comparison.get("usage_value_rows")
             if usage_rows is None:  # Closed checkpoints from before value comparison retain their original identity result.
                 missing_usage = {tuple(item) for item in comparison.get("missing_usage", [])}

@@ -65,7 +65,7 @@ def test_combined_source_agreements_share_accounting_and_reconcile_independent_r
     application.execute("record_population_manifest", {"period": "2026-02", "source_name": "Contract and invoice registers",
                          "rationale": "All February source agreements and invoices.",
                          "contract_references": ["AG-A", "AG-B"],
-                         "billing_references": [{"contract_reference": "AG-B", "invoice_reference": "INV-1"}],
+                         "billing_references": [{"contract_reference": "AG-B", "invoice_reference": "INV-1", "amount": "200.00"}],
                          "usage_references": []}, period="2026-02")
     comparison = application.reports(period="2026-02")["population_comparison"]
     assert comparison["actual_contract_count"] == 2
@@ -135,8 +135,8 @@ def test_combined_contract_import_keeps_invoice_and_priced_usage_source_agreemen
     application.execute("record_population_manifest", {"period": "2026-01", "source_name": "Independent registers",
                          "rationale": "All January agreements, invoices, and priced usage.",
                          "contract_references": ["AG-A", "AG-B"],
-                         "billing_references": [{"contract_reference": "AG-A", "invoice_reference": "INV-1"},
-                                                {"contract_reference": "AG-B", "invoice_reference": "INV-1"}],
+                         "billing_references": [{"contract_reference": "AG-A", "invoice_reference": "INV-1", "amount": "5.00"},
+                                                {"contract_reference": "AG-B", "invoice_reference": "INV-1", "amount": "10.00"}],
                          "usage_references": [{"contract_reference": "AG-B", "usage_reference": "USG-B",
                                                "quantity": "100", "invoice_value": "15.17"}]}, period="2026-01")
     comparison = application.reports(period="2026-01")["population_comparison"]
@@ -1445,7 +1445,7 @@ def test_source_population_catches_missing_records_even_when_money_totals_match(
     summary = application.state(period="2026-09")["report"]["summary"]
     application.execute("record_control_totals", {"period": "2026-09", "source_name": "Trial balance", "rationale": "Independent GL and billing totals", **{key: summary[key] for key in ("billings", "contract_asset", "deferred_revenue")}}, period="2026-09")
     manifest = {"period": "2026-09", "source_name": "Contract register and invoice ledger", "rationale": "Active agreements and September invoices, including credits.",
-                "contract_references": ["CON-1", "CON-2"], "billing_references": [{"contract_reference": "CON-1", "invoice_reference": "INV-1"}, {"contract_reference": "CON-2", "invoice_reference": "INV-2"}]}
+                "contract_references": ["CON-1", "CON-2"], "billing_references": [{"contract_reference": "CON-1", "invoice_reference": "INV-1", "amount": "12000.00"}, {"contract_reference": "CON-2", "invoice_reference": "INV-2", "amount": "25.00"}]}
     application.execute("record_population_manifest", manifest, period="2026-09")
     review = application.reports(period="2026-09")
     assert next(check for check in review["checks"] if check["id"] == "external_controls")["status"] == "pass"
@@ -1491,7 +1491,7 @@ def test_source_population_uses_imported_billing_source_id_when_invoice_referenc
     preview = preview_import_bytes(application, data.getvalue(), period="2026-09")
     import_bytes(application, data.getvalue(), period="2026-09", expected_frontier=preview["frontier"], expected_hash=preview["result"]["file_hash"])
     application.execute("record_population_manifest", {"period": "2026-09", "source_name": "ERP register", "rationale": "All active contracts and September billing transactions.",
-                "contract_references": ["CON-1"], "billing_references": [{"contract_reference": "CON-1", "invoice_reference": "billing:125"}]}, period="2026-09")
+                "contract_references": ["CON-1"], "billing_references": [{"contract_reference": "CON-1", "invoice_reference": "billing:125", "amount": "125.00"}]}, period="2026-09")
     comparison = application.reports(period="2026-09")["population_comparison"]
     assert comparison["missing_billings"] == []
     assert comparison["unidentified_billings"] == []
@@ -1504,10 +1504,62 @@ def test_source_population_flags_duplicate_workspace_invoice_identities(tmp_path
     for day in ("01", "02"):
         application.execute("record_billing", {"contract_id": "con_1", "effective_date": f"2026-09-{day}", "amount": "50.00", "reference": "INV-1"}, period="2026-09")
     application.execute("record_population_manifest", {"period": "2026-09", "source_name": "Invoice ledger", "rationale": "All September transactions.",
-                "contract_references": ["CON-1"], "billing_references": [{"contract_reference": "CON-1", "invoice_reference": "INV-1"}]}, period="2026-09")
+                "contract_references": ["CON-1"], "billing_references": [{"contract_reference": "CON-1", "invoice_reference": "INV-1", "amount": "50.00"}]}, period="2026-09")
     review = application.reports(period="2026-09")
     assert review["population_comparison"]["duplicate_billings"] == [("CON-1", "INV-1")]
     assert next(check for check in review["checks"] if check["id"] == "source_population")["status"] == "review"
+
+
+def test_source_population_checks_signed_invoice_amounts_when_aggregate_totals_cancel(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    application.execute("edit_details", {"entity_id": "con_1", "reference": "CON-1"}, period="2026-09")
+    original = application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-01",
+        "amount": "100.00", "reference": "INV-1"}, period="2026-09")["result"]["change_set_id"]
+    application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-02",
+        "amount": "200.00", "reference": "INV-2"}, period="2026-09")
+    application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-03",
+        "amount": "-20.00", "reference": "CM-1", "applies_to_change_set_id": original,
+        "rationale": "Source credit memo"}, period="2026-09")
+    summary = application.state(period="2026-09")["report"]["summary"]
+    assert summary["billings"] == "280.00"
+    application.execute("record_control_totals", {"period": "2026-09", "source_name": "Trial balance",
+        "rationale": "Independent billing and GL totals", **{key: summary[key] for key in ("billings", "contract_asset", "deferred_revenue")}}, period="2026-09")
+    manifest = {"period": "2026-09", "source_name": "Invoice ledger", "rationale": "September invoice and credit detail",
+        "contract_references": ["CON-1"], "billing_references": [
+            {"contract_reference": "CON-1", "invoice_reference": "INV-1"},
+            {"contract_reference": "CON-1", "invoice_reference": "INV-2"},
+            {"contract_reference": "CON-1", "invoice_reference": "CM-1"}]}
+    application.execute("record_population_manifest", manifest, period="2026-09")
+    review = application.reports(period="2026-09")
+    assert len(review["population_comparison"]["unverified_billings"]) == 3
+    assert next(check for check in review["checks"] if check["id"] == "source_population")["status"] == "review"
+    wrong = [{**item, "amount": amount} for item, amount in zip(manifest["billing_references"], ("110.00", "190.00", "-20.00"))]
+    application.execute("record_population_manifest", {**manifest, "billing_references": wrong}, period="2026-09")
+    review = application.reports(period="2026-09")
+    assert next(check for check in review["checks"] if check["id"] == "external_controls")["status"] == "pass"
+    assert review["population_comparison"]["missing_billings"] == review["population_comparison"]["unexpected_billings"] == []
+    assert {row["invoice_reference"] for row in review["population_comparison"]["mismatched_billings"]} == {"INV-1", "INV-2"}
+    assert next(check for check in review["checks"] if check["id"] == "source_population")["status"] == "review"
+    with pytest.raises(ValueError, match="stated in cents"):
+        application.execute("record_population_manifest", {**manifest, "billing_references": [{**wrong[0], "amount": "110.001"}]}, period="2026-09")
+    correct = [{**item, "amount": amount} for item, amount in zip(manifest["billing_references"], ("100.00", "200.00", "-20.00"))]
+    application.execute("record_population_manifest", {**manifest, "billing_references": correct}, period="2026-09")
+    review = application.reports(period="2026-09")
+    assert review["population_comparison"]["mismatched_billings"] == review["population_comparison"]["unverified_billings"] == []
+    assert next(check for check in review["checks"] if check["id"] == "source_population")["status"] == "pass"
+    book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-09"), review)), read_only=True)
+    assert [(row[1], row[2], row[5], row[6]) for row in list(book["Source invoices"].values)[1:]] == [
+        ("INV-1", "Matched", 100, 100), ("INV-2", "Matched", 200, 200), ("CM-1", "Matched", -20, -20)]
+    book.close()
+    legacy_review = deepcopy(review)
+    legacy_review["population_comparison"].pop("billing_value_rows")
+    legacy_review["population_manifest"]["billing_references"] = manifest["billing_references"]
+    legacy_book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-09"), legacy_review)), read_only=True)
+    assert legacy_book["Source invoices"]["C2"].value == "Identity matched; amount not checked"
+    legacy_book.close()
+    application.execute("close_period", {"period": "2026-09", "review_dispositions": accept_review_items(application, "2026-09")}, period="2026-09")
+    assert application.reports(period="2026-09")["population_comparison"]["billing_value_rows"][2]["status"] == "Matched"
 
 
 def test_period_associated_task_is_a_close_item_without_due_date(tmp_path):
