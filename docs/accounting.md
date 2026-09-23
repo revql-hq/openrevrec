@@ -57,7 +57,7 @@ Contract baselines are retained. Record revised accounting through dated activit
 - **Variable consideration reassessment:** The new included amount changes the transaction price and produces the cumulative adjustment required on its effective date.
 - **Adjustment:** A signed revenue adjustment is recognized on its effective date. The remaining amount is spread over remaining satisfaction. An adjustment after full satisfaction can leave a residual that the report flags for review.
 
-A separate-contract conclusion is entered as a new contract. For a termination or other amendment, record the revised consideration and obligations explicitly and review the resulting scenario before accepting it.
+A separate-contract conclusion is entered as a new contract and linked to the original when the added promises are distinct, the net price increase reflects their standalone selling prices, and the original terms are unchanged. If an amendment reprices the original service and the whole amendment fails that separate-contract test, enter both original and added obligations in one prospective modification when all remaining services are distinct from transferred service. The revised lifetime consideration includes amounts already recognized; only the remaining amount is reallocated. A combination of distinct and non-distinct remaining services still needs a separate reviewed model. For a termination or other amendment, record the revised consideration and obligations explicitly and review the resulting scenario before accepting it.
 
 ## Period review views
 

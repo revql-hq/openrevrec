@@ -532,7 +532,7 @@ class Application:
             if any(item["kind"] != "fixed" for item in added["consideration"]):
                 raise ValueError("Separate-contract amendment linking currently requires fixed added consideration; review variable pricing separately.")
             if any(item["type"] == "modification" and item["effective_date"] == p["effective_date"] for item in original["activities"]):
-                raise ValueError("An amendment that also changes the original contract needs a mixed-treatment review; do not label the added contract as a separate-contract modification.")
+                raise ValueError("This link requires unchanged original terms. If all remaining services are distinct, enter one prospective modification with both services and the revised lifetime consideration.")
             if p.get("original_terms_effect") != "unchanged":
                 raise ValueError("Confirm that this amendment does not change the original contract's remaining promises or price.")
             if p.get("price_basis") != "distinct_at_standalone_price":
@@ -676,7 +676,7 @@ class Application:
             if command == "modify_contract":
                 p["rationale"] = required_text(p, "rationale")
                 if any(link["contract_id"] == p["contract_id"] and link["effective_date"] == p["effective_date"] for link in state["modification_links"]):
-                    raise ValueError("This date has a linked separate-contract amendment. A change to the original contract needs a mixed-treatment review.")
+                    raise ValueError("This date has a linked separate-contract amendment. Review the whole amendment; if all remaining services are distinct, enter one prospective modification instead of this link.")
                 if p.get("treatment") not in {"prospective", "catch_up"}:
                     raise ValueError("Choose prospective or catch_up treatment. Separate contracts use create_contract.")
                 if "consideration" not in p and "obligations" not in p:

@@ -214,7 +214,7 @@ def test_separate_contract_amendment_link_preserves_two_revenue_schedules(tmp_pa
     assert any(item["contract_id"] == "original" and item["related_contract_id"] == "added"
                for item in application.reports(period="2026-07")["exceptions"]["warnings"])
     assert sum(row["debit_minor"] - row["credit_minor"] for row in july["report"]["journals"]) == 0
-    with pytest.raises(ValueError, match="mixed-treatment review"):
+    with pytest.raises(ValueError, match="one prospective modification"):
         application.execute("modify_contract", {"contract_id": "original", "effective_date": "2026-06-15",
             "treatment": "prospective", "consideration": [{"id": "original_price", "kind": "fixed", "amount": "1080"}],
             "rationale": "Discount the remaining original service"}, period="2026-07")
@@ -222,6 +222,39 @@ def test_separate_contract_amendment_link_preserves_two_revenue_schedules(tmp_pa
     assert book["Modification links"]["D2"].value == "2026-06-15"
     assert book["Modification links"]["L2"].value == 200
     book.close()
+
+
+def test_repriced_original_and_added_distinct_service_use_one_prospective_modification(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "original", "customer_id": "cus_1", "name": "Annual service",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "original_price", "kind": "fixed", "amount": "1200"}],
+        "obligations": [{"id": "original_service", "name": "Annual service", "kind": "service", "ssp": "1200",
+                         "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+    }, period="2026-01")
+    application.execute("modify_contract", {
+        "contract_id": "original", "effective_date": "2026-07-01", "treatment": "prospective",
+        "rationale": "The remaining monthly service and added service are distinct; the net amendment price is below the added service's standalone price.",
+        "consideration": [{"id": "original_price", "kind": "fixed", "amount": "1380"}],
+        "obligations": [
+            {"id": "original_service", "name": "Annual service", "kind": "service", "ssp": "1200",
+             "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-12-31"},
+            {"id": "added_service", "name": "Additional service", "kind": "service", "ssp": "300",
+             "method": "monthly", "start_date": "2026-07-01", "end_date": "2026-09-30"},
+        ],
+    }, period="2026-07")
+    june = application.state(period="2026-06")["report"]
+    july = application.state(period="2026-07")["report"]
+    assert june["summary"]["recognized_to_date"] == "600.00"
+    assert july["summary"]["transaction_price"] == "1380.00"
+    assert july["summary"]["recognized_to_date"] == "773.34"
+    assert july["summary"]["revenue"] == "173.34"
+    assert {(row["obligation_id"], row["revenue"]) for row in july["schedule"] if row["period"] == "2026-07"} == {
+        ("original_service", "86.67"), ("added_service", "86.67")}
+    assert application.state(period="2026-12")["report"]["summary"]["recognized_to_date"] == "1380.00"
+    assert july["modification_links"] == []
 
 
 def test_warning_target_keeps_source_ids_when_contracts_have_the_same_name(tmp_path):
