@@ -1031,7 +1031,7 @@ export function ContractView(props: ViewProps) {
               </tfoot>
             </table>
           </div>}
-          {Boolean(report?.allocation_components?.some((item) => item.scope === "specific")) && <><h3>Specific-allocation conclusions</h3><div className="table-wrap"><table><thead><tr><th>Component</th><th className="number">Included amount</th><th>Target obligations</th><th>Accounting rationale</th></tr></thead><tbody>{report?.allocation_components?.filter((item) => item.scope === "specific").map((item) => <tr key={item.component_id}><td>{item.label}</td><td className="number">{money(item.included_amount, currency)}</td><td>{item.target_obligation_ids.map((id) => report.allocation.find((row) => row.obligation_id === id)?.name || id).join(", ")}</td><td>{item.rationale}</td></tr>)}</tbody></table></div></>}
+          {Boolean(report?.allocation_components?.some((item) => item.scope === "specific")) && <><h3>Specific-allocation conclusions</h3><div className="table-wrap"><table><thead><tr><th>Component</th><th className="number">Included amount</th><th>Target obligations</th><th>Service month</th><th>Accounting rationale</th></tr></thead><tbody>{report?.allocation_components?.filter((item) => item.scope === "specific").map((item) => <tr key={item.component_id}><td>{item.label}</td><td className="number">{money(item.included_amount, currency)}</td><td>{item.target_obligation_ids.map((id) => report.allocation.find((row) => row.obligation_id === id)?.name || id).join(", ")}</td><td>{item.target_period || "All service periods"}</td><td>{item.rationale}</td></tr>)}</tbody></table></div></>}
         </Section>
       )}
       {tab === "Recognition" && (

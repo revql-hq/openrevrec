@@ -17,6 +17,7 @@ export type Component = {
   estimation_method?: string;
   allocation_scope?: "relative_ssp" | "specific";
   target_obligation_ids?: string[];
+  target_period?: string;
   allocation_rationale?: string;
   rationale?: string;
 };
@@ -91,6 +92,7 @@ export type ContractReport = Totals & {
     included_amount: string;
     scope: "relative_ssp" | "specific";
     target_obligation_ids: string[];
+    target_period?: string;
     rationale: string;
   }[];
 };

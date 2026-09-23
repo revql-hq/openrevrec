@@ -407,6 +407,95 @@ def test_specific_allocation_import_uses_structured_target_ids(tmp_path):
     assert preview["state"]["report"]["contracts"][0]["allocation_components"][1]["target_obligation_ids"] == ["pob_a"]
 
 
+def test_variable_bonus_targets_one_service_month_and_later_reassessment_catches_up(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    contract = {
+        "id": "con_1", "name": "Monthly series with June bonus", "customer_id": "cus_1",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [
+            {"id": "fixed", "kind": "fixed", "amount": "1200.00"},
+            {"id": "bonus", "kind": "variable", "amount": "150.00", "included_amount": "120.00", "allocation_scope": "specific",
+             "target_obligation_ids": ["service"], "target_period": "2026-06",
+             "allocation_rationale": "The variable bonus relates only to the distinct June service in the series and meets the allocation objective."},
+        ],
+        "obligations": [{"id": "service", "name": "Monthly service", "kind": "service", "ssp": "1200.00", "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+    }
+    with pytest.raises(ValueError, match="Target service month"):
+        application.execute("create_contract", {**contract, "consideration": [contract["consideration"][0], {**contract["consideration"][1], "target_period": "2027-06"}]}, period="2026-01")
+    with pytest.raises(ValueError, match="one specifically targeted"):
+        application.execute("create_contract", {**contract, "consideration": [contract["consideration"][0], {**contract["consideration"][1], "target_obligation_ids": ["service", "other"]}]}, period="2026-01")
+    with pytest.raises(ValueError, match="time-based service"):
+        application.execute("create_contract", {**contract, "obligations": [{**contract["obligations"][0], "method": "point_in_time"}]}, period="2026-01")
+    with pytest.raises(ValueError, match="reviewed cutover allocation"):
+        application.execute("create_contract", {**contract, "cutover_date": "2026-07-01"}, period="2026-01")
+    application.execute("create_contract", contract, period="2026-01")
+    assert application.state(period="2026-01")["report"]["summary"]["revenue"] == "100.00"
+    june = application.state(period="2026-06")
+    assert june["report"]["summary"]["revenue"] == "220.00"
+    assert june["report"]["contracts"][0]["allocation"][0]["amount"] == "1320.00"
+    assert june["report"]["contracts"][0]["allocation_components"][1]["target_period"] == "2026-06"
+    exported = load_workbook(io.BytesIO(export_bytes(june)))
+    assert exported["Component allocation"]["I3"].value == "2026-06"
+    exported.close()
+    application.execute("reassess_variable_consideration", {"contract_id": "con_1", "component_id": "bonus", "effective_date": "2026-07-01", "included_amount": "150.00", "rationale": "Final June outcome confirmed."}, period="2026-07")
+    july = application.state(period="2026-07")["report"]
+    assert july["summary"]["revenue"] == "130.00"
+    assert july["contracts"][0]["allocation"][0]["amount"] == "1350.00"
+    assert [(row["obligation_id"], row["catch_up"]) for row in july["catch_ups"]] == [("service", "30.00")]
+    assert application.state(period="2026-06")["report"]["summary"]["revenue"] == "220.00"
+    assert sum(row["debit_minor"] for row in july["journals"]) == sum(row["credit_minor"] for row in july["journals"])
+    with pytest.raises(ValueError, match="Prospective modifications"):
+        application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-08-01", "treatment": "prospective", "rationale": "Remove bonus", "consideration": [contract["consideration"][0]]}, period="2026-08")
+    application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-08-01", "treatment": "catch_up", "rationale": "Bonus reversed after final contract review", "consideration": [contract["consideration"][0]]}, period="2026-08")
+    august = application.state(period="2026-08")["report"]
+    assert august["summary"]["revenue"] == "-50.00"
+    assert august["contracts"][0]["allocation"][0]["amount"] == "1200.00"
+    assert [(row["obligation_id"], row["catch_up"]) for row in august["catch_ups"] if row["period"] == "2026-08"] == [("service", "-150.00")]
+    assert application.state(period="2026-09")["report"]["summary"]["revenue"] == "100.00"
+    december = application.state(period="2026-12")["report"]
+    assert december["summary"]["recognized_to_date"] == december["summary"]["transaction_price"] == "1200.00"
+    assert sum(Decimal(row["revenue"]) for row in december["schedule"]) == Decimal("1200.00")
+
+
+def test_period_target_import_and_cutover_boundary(tmp_path):
+    application = app(tmp_path)
+    book = load_workbook(io.BytesIO(template_bytes()))
+    def append(sheet_name, values):
+        sheet = book[sheet_name]
+        headers = [cell.value for cell in sheet[1]]
+        sheet.append([values.get(header) for header in headers])
+    append("Customers", {"id": "cus_1", "name": "Customer"})
+    append("Contracts", {"id": "con_1", "customer_id": "cus_1", "name": "Series", "start_date": "2026-01-01", "end_date": "2026-12-31"})
+    append("Consideration", {"contract_id": "con_1", "id": "fixed", "kind": "fixed", "amount": "1200.00"})
+    append("Consideration", {"contract_id": "con_1", "id": "bonus", "kind": "variable", "amount": "120.00", "included_amount": "120.00", "allocation_scope": "specific", "target_obligation_ids": "service", "target_period": "2026-06", "allocation_rationale": "June outcome relates to the distinct June service."})
+    append("Obligations", {"contract_id": "con_1", "id": "service", "name": "Service", "kind": "service", "ssp": "1200.00", "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-12-31"})
+    data = io.BytesIO()
+    book.save(data)
+    book.close()
+    preview = preview_import_bytes(application, data.getvalue(), period="2026-06")
+    assert preview["state"]["report"]["summary"]["revenue"] == "220.00"
+    import_bytes(application, data.getvalue(), period="2026-06", expected_frontier=preview["frontier"], expected_hash=preview["result"]["file_hash"])
+    assert application.state(period="2026-06")["contracts"][0]["consideration"][1]["target_period"] == "2026-06"
+    with pytest.raises(ValueError, match="reviewed cutover allocation"):
+        application.execute("record_opening_position", {"contract_id": "con_1", "effective_date": "2026-07-01", "source_name": "Legacy", "rationale": "Migration", "billed_to_date": "0.00", "contract_asset": "0.00", "deferred_revenue": "0.00", "opening_obligations": [{"obligation_id": "service", "recognized_to_date": "720.00"}]}, period="2026-07")
+
+
+def test_retargeted_service_month_moves_catch_up_between_obligations(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    fixed = {"id": "fixed", "kind": "fixed", "amount": "1200.00"}
+    bonus = {"id": "bonus", "kind": "variable", "amount": "120.00", "included_amount": "120.00", "allocation_scope": "specific", "target_obligation_ids": ["a"], "target_period": "2026-06", "allocation_rationale": "June service outcome relates to A."}
+    obligations = [{"id": identifier, "name": identifier, "kind": "service", "ssp": "600.00", "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-12-31"} for identifier in ("a", "b")]
+    application.execute("create_contract", {"id": "con_1", "name": "Two series", "customer_id": "cus_1", "start_date": "2026-01-01", "end_date": "2026-12-31", "consideration": [fixed, bonus], "obligations": obligations}, period="2026-01")
+    assert {row["obligation_id"]: row["revenue"] for row in application.state(period="2026-06")["report"]["schedule"] if row["period"] == "2026-06"} == {"a": "170.00", "b": "50.00"}
+    application.execute("modify_contract", {"contract_id": "con_1", "effective_date": "2026-07-01", "treatment": "catch_up", "rationale": "Reviewed conclusion now attributes June bonus to series B", "consideration": [fixed, {**bonus, "target_obligation_ids": ["b"], "allocation_rationale": "June service outcome relates to B."}]}, period="2026-07")
+    july = application.state(period="2026-07")["report"]
+    assert july["summary"]["revenue"] == "100.00"
+    assert {row["obligation_id"]: row["catch_up"] for row in july["catch_ups"] if row["period"] == "2026-07"} == {"a": "-120.00", "b": "120.00"}
+    assert {row["obligation_id"]: row["amount"] for row in july["contracts"][0]["allocation"]} == {"a": "600.00", "b": "720.00"}
+
+
 def accept_review_items(application, period):
     review = application.reports("main", period)
     return {check["id"]: {"disposition": "accepted", "reason": f"Reviewed {check['label']} against source support."} for check in review["checks"] if check["status"] == "review"}

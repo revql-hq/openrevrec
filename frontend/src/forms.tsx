@@ -326,6 +326,7 @@ function ComponentEditor({
     onChange(
       items.map((item, index) => (index === i ? { ...item, ...patch } : item)),
     );
+  const periodTargets = obligations.filter((obligation) => ["exact_days", "monthly", "prorated_monthly"].includes(obligation.method) && obligation.kind !== "material_right");
   return (
     <Section
       title="Consideration"
@@ -345,7 +346,7 @@ function ComponentEditor({
         </Button>
       }
     >
-      <p className="fine-print">Relative SSP across all obligations is the default. You may direct an eligible variable, usage, or credit component to selected obligations with a recorded accounting rationale. Allocation to particular service periods remains outside this workflow.</p>
+      <p className="fine-print">Relative SSP across all obligations is the default. An eligible variable or usage amount may target one service month within one time-based obligation when the accountant documents the allocation conclusion. Credits may target obligations, but not a service month.</p>
       {items.map((item, i) => (
         <div className="editor-row" key={item.id}>
           <div className="form-grid component-grid">
@@ -464,15 +465,16 @@ function ComponentEditor({
               if (event.target.value === "specific") update(i, { allocation_scope: "specific", target_obligation_ids: [], allocation_rationale: "" });
               else onChange(items.map((candidate, index) => {
                 if (index !== i) return candidate;
-                const { allocation_scope: _scope, target_obligation_ids: _targets, allocation_rationale: _rationale, ...rest } = candidate;
+                const { allocation_scope: _scope, target_obligation_ids: _targets, target_period: _period, allocation_rationale: _rationale, ...rest } = candidate;
                 return rest;
               }));
             }}><option value="relative_ssp">Relative SSP across all obligations</option><option value="specific">Specific eligible obligations</option></select></Field>
             {item.allocation_scope === "specific" && <>
-              <fieldset className="target-list"><legend>Target performance obligations</legend>
+              {["variable", "usage"].includes(item.kind) && <Field label="Specific service month (optional)" hint="Use only when the amount relates to a distinct month within one time-based series obligation. A later estimate change catches up in its effective month."><input type="month" value={item.target_period || ""} onChange={(event) => update(i, { target_period: event.target.value, target_obligation_ids: event.target.value ? (item.target_obligation_ids || []).filter((id) => periodTargets.some((obligation) => obligation.id === id)).slice(0, 1) : item.target_obligation_ids || [] })} /></Field>}
+              {item.target_period ? <Field label="Target time-based obligation"><select required value={item.target_obligation_ids?.[0] || ""} onChange={(event) => update(i, { target_obligation_ids: event.target.value ? [event.target.value] : [] })}><option value="">Choose obligation</option>{periodTargets.map((obligation) => <option key={obligation.id} value={obligation.id}>{obligation.name || obligation.id}</option>)}</select></Field> : <fieldset className="target-list"><legend>Target performance obligations</legend>
                 {obligations.map((obligation) => <label key={obligation.id}><input type="checkbox" checked={item.target_obligation_ids?.includes(obligation.id) || false} onChange={(event) => update(i, { target_obligation_ids: event.target.checked ? [...(item.target_obligation_ids || []), obligation.id] : (item.target_obligation_ids || []).filter((id) => id !== obligation.id) })} /> {obligation.name || obligation.id}</label>)}
-              </fieldset>
-              <Field label="Specific-allocation rationale" hint="Record why this component relates specifically to these obligations and why the resulting allocation is consistent with the accounting conclusion."><textarea required rows={2} value={item.allocation_rationale || ""} onChange={(event) => update(i, { allocation_rationale: event.target.value })} /></Field>
+              </fieldset>}
+              <Field label="Specific-allocation rationale" hint={item.target_period ? "Explain why the payment terms relate specifically to this month's distinct service and why allocating the full amount there meets the allocation objective." : "Record why this component relates specifically to these obligations and why the resulting allocation is consistent with the accounting conclusion."}><textarea required rows={2} value={item.allocation_rationale || ""} onChange={(event) => update(i, { allocation_rationale: event.target.value })} /></Field>
             </>}
           </>}
         </div>
@@ -728,7 +730,7 @@ export function ContractForm(
       },
     ],
   );
-  const unsupportedProspectiveTargeting = Boolean(contract && treatment === "prospective" && components.some((item) => item.allocation_scope === "specific"));
+  const unsupportedProspectiveTargeting = Boolean(contract && treatment === "prospective" && [...(initialTerms?.consideration || []), ...components].some((item) => item.allocation_scope === "specific"));
   const termAssessment = {
     term_basis: termBasis,
     term_assessment_rationale: termBasis === "fixed" ? "" : termRationale,

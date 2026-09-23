@@ -19,12 +19,12 @@ TEMPLATE_VERSION = "2"
 SHEETS = {
     "Customers": ["id", "name", "email", "reference", "source_system"],
     "Contracts": ["id", "customer_id", "name", "start_date", "end_date", "rationale", "cutover_date", "term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date", "reference"],
-    "Consideration": ["contract_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale"],
+    "Consideration": ["contract_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale", "target_period"],
     "Obligations": ["contract_id", "id", "name", "kind", "ssp", "method", "start_date", "end_date", "total_units", "exercise_start", "exercise_end", "rationale"],
     "Opening Positions": ["source_id", "contract_id", "effective_date", "billed_to_date", "contract_asset", "deferred_revenue", "source_name", "rationale"],
     "Opening Obligations": ["opening_source_id", "obligation_id", "recognized_to_date", "measure"],
     "Amendments": ["source_id", "contract_id", "effective_date", "treatment", "replace_consideration", "replace_obligations", "rationale", "term_basis", "term_assessment_rationale", "term_reassessment_trigger", "term_review_date"],
-    "Amendment Consideration": ["amendment_source_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale"],
+    "Amendment Consideration": ["amendment_source_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale", "target_period"],
     "Amendment Obligations": ["amendment_source_id", "id", "name", "kind", "ssp", "method", "start_date", "end_date", "total_units", "exercise_start", "exercise_end", "rationale"],
     "Billing": ["contract_id", "effective_date", "amount", "reference", "applies_to_change_set_id", "applies_to_reference", "rationale", "source_id"],
     "Progress": ["contract_id", "obligation_id", "effective_date", "percentage", "rationale", "source_id"],
@@ -82,7 +82,7 @@ def template_bytes():
         ["Progress", "Cumulative percentage 0–100. Usage quantity is incremental; set total_units on its obligation."],
         ["Right exercises", "For a material right exercised before delivery, enter the exercise date, future delivery method and delivery dates on Right Exercises. A point-in-time delivery also needs a 100% Milestones row on its delivery date. Unexercised rights recognize at expiry."],
         ["Consideration kinds", "fixed, variable, usage, credit. Use included_amount for constrained consideration."],
-        ["Specific allocation", "For an eligible variable, usage, or credit component, set allocation_scope to specific, list target_obligation_ids separated by commas, and record allocation_rationale. Otherwise leave these fields blank for relative SSP allocation."],
+        ["Specific allocation", "For an eligible variable, usage, or credit component, set allocation_scope to specific, list target_obligation_ids separated by commas, and record allocation_rationale. For a variable or usage amount targeting one month of one time-based series obligation, also enter target_period as YYYY-MM and only one obligation ID. Otherwise leave these fields blank for relative SSP allocation."],
         ["Amendments", "Each amendment needs a stable source_id, effective date, treatment, and rationale. Set replace_consideration and/or replace_obligations to yes. Related rows must list the COMPLETE replacement set for that section."],
         ["Corrections", "Supply the original change set ID or its prior source_id, the activity type, replacement facts, and a new source_id. The original remains in history."],
         ["Other commands", "Use Commands with command, payload_json, and source_id for policies or advanced actions. Close/reopen and scenario lifecycle require separate review."],
@@ -216,8 +216,8 @@ def export_bytes(state, review=None):
     _sheet(book, "Account transitions", ["Contract ID", "Role", "From account", "To account", "Opening balance", "Treatment", "From dimensions", "To dimensions"],
            [[row[k] for k in ("contract_id", "role", "from_account", "to_account", "opening_balance", "treatment")] + [row.get("from_dimensions", {}), row.get("to_dimensions", {})] for row in report.get("account_transitions", [])])
     _sheet(book, "Allocation support", ["contract_id", "obligation_id", "name", "ssp", "amount"], [[c["id"], a["obligation_id"], a["name"], Decimal(a["ssp"]), Decimal(a["amount"])] for c in report["contracts"] for a in c["allocation"]])
-    _sheet(book, "Component allocation", ["Contract ID", "Component ID", "Component", "Kind", "Included amount", "Scope", "Target obligation IDs", "Accounting rationale"],
-           [[contract["id"], item["component_id"], item["label"], item["kind"], Decimal(item["included_amount"]), item["scope"], ", ".join(item["target_obligation_ids"]), item["rationale"]]
+    _sheet(book, "Component allocation", ["Contract ID", "Component ID", "Component", "Kind", "Included amount", "Scope", "Target obligation IDs", "Accounting rationale", "Target service month"],
+           [[contract["id"], item["component_id"], item["label"], item["kind"], Decimal(item["included_amount"]), item["scope"], ", ".join(item["target_obligation_ids"]), item["rationale"], item.get("target_period", "")]
             for contract in report["contracts"] for item in contract.get("allocation_components", [])])
     _sheet(book, "Activity", ["version", "change_set_id", "scenario_id", "command", "entity_id", "effective_date", "recorded_at", "rationale", "source", "payload"], [[r.get(k, "") for k in ["version", "id", "scenario_id", "command", "entity_id", "effective_date", "recorded_at", "rationale", "source", "payload"]] for r in reversed(state["change_sets"])])
     entity_names = {row["id"]: row["name"] for row in state["contracts"] + state["customers"]}

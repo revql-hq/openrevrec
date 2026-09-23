@@ -102,7 +102,10 @@ export function ChangeDetail(props: ViewProps & { changeSetId: string }) {
   const beforeTerms = beforeContract ? contractTerms(beforeContract, change.effective_date) : undefined;
   const afterTerms = afterContract ? contractTerms(afterContract, change.effective_date) : undefined;
   const termRows: { area: string; item: string; before: string; after: string }[] = [];
-  const describeComponent = (item: NonNullable<typeof beforeTerms>["consideration"][number] | undefined) => item ? `${item.label} · ${humanize(item.kind)} · ${item.amount} gross · ${item.included_amount ?? item.amount} included` : "—";
+  const describeComponent = (item: NonNullable<typeof beforeTerms>["consideration"][number] | undefined) => item ? [
+    item.label, humanize(item.kind), `${item.amount} gross`, `${item.included_amount ?? item.amount} included`,
+    ...(item.allocation_scope === "specific" ? [`targets ${item.target_obligation_ids?.join(", ") || "—"}`, ...(item.target_period ? [`service month ${item.target_period}`] : []), `basis ${item.allocation_rationale || "—"}`] : []),
+  ].join(" · ") : "—";
   const describeObligation = (item: NonNullable<typeof beforeTerms>["obligations"][number] | undefined) => item ? `${item.name} · ${humanize(item.kind)} · ${humanize(item.method)} · SSP ${item.ssp} · ${item.start_date} to ${item.end_date}` : "—";
   for (const id of new Set([...(beforeTerms?.consideration || []).map((item) => item.id), ...(afterTerms?.consideration || []).map((item) => item.id)])) {
     const prior = describeComponent(beforeTerms?.consideration.find((item) => item.id === id));

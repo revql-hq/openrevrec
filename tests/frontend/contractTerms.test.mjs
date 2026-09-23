@@ -57,4 +57,8 @@ test('switching to fixed pricing removes constrained fields without mutating the
   assert.equal(price.included_amount, '25');
   assert.equal(changeComponentKind(fixed, 'usage').included_amount, '100');
   assert.equal(changeComponentKind(price, 'usage').included_amount, '25');
+  const monthly = { ...price, allocation_scope: 'specific', target_obligation_ids: ['service'], target_period: '2026-06', allocation_rationale: 'June outcome' };
+  assert.equal(changeComponentKind(monthly, 'credit').target_period, undefined);
+  assert.equal(changeComponentKind(monthly, 'usage').target_period, '2026-06');
+  assert.equal(changeComponentKind(monthly, 'fixed').target_period, undefined);
 });

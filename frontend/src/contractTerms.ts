@@ -60,7 +60,9 @@ export function changeComponentKind(item: Component, kind: string): Component {
   if (kind === "fixed") {
     delete next.allocation_scope;
     delete next.target_obligation_ids;
+    delete next.target_period;
     delete next.allocation_rationale;
   }
+  if (kind === "credit") delete next.target_period;
   return next;
 }
