@@ -176,6 +176,9 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
     unexpected_opening_obligations = []
     unverified_opening_obligations = []
     mismatched_opening_obligations = []
+    unverified_opening_obligation_measures = []
+    opening_measure_review_rows = []
+    mismatched_opening_obligation_measures = []
     mismatched_source_opening_obligation_totals = []
     for opening in expected_opening_rows:
         key = opening["contract_reference"], opening["cutover_date"]
@@ -184,6 +187,12 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
         if not source_rows and len(actual) == 1 and len(actual[0]["opening_obligations"]) > 1:
             unverified_opening_obligations.append(key)
         if not source_rows:
+            if len(actual) == 1 and len(actual[0]["opening_obligations"]) == 1 and actual[0]["opening_obligations"][0].get("measure") not in (None, ""):
+                obligation = actual[0]["opening_obligations"][0]
+                unverified_opening_obligation_measures.append((key[0], key[1], obligation["obligation_id"]))
+                opening_measure_review_rows.append({"contract_reference": key[0], "cutover_date": key[1],
+                                                       "obligation_id": obligation["obligation_id"], "workspace_measure": obligation["measure"],
+                                                       "activity_id": actual[0]["id"]})
             continue
         source_total = sum((_decimal(row["recognized_to_date"]) for row in source_rows), ZERO)
         if source_total != _decimal(opening["recognized_to_date"]):
@@ -199,6 +208,8 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
                 opening_obligation_rows.append({
                     "contract_reference": key[0], "cutover_date": key[1], "obligation_id": obligation_id,
                     "source_amount": "", "workspace_amount": actual_by_id[obligation_id]["recognized_to_date"],
+                    "source_measure": "", "workspace_measure": actual_by_id[obligation_id].get("measure", ""),
+                    "measure_status": "",
                     "activity_id": actual[0]["id"], "status": "Obligation not in source",
                 })
         for source_row in source_rows:
@@ -207,6 +218,9 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
             result = {"contract_reference": key[0], "cutover_date": key[1], "obligation_id": obligation_id,
                       "source_amount": source_row["recognized_to_date"],
                       "workspace_amount": workspace_row["recognized_to_date"] if workspace_row else "",
+                      "source_measure": source_row.get("measure", ""),
+                      "workspace_measure": workspace_row.get("measure", "") if workspace_row else "",
+                      "measure_status": "",
                       "activity_id": actual[0]["id"] if len(actual) == 1 else ""}
             if not actual:
                 result["status"] = "Opening missing in workspace"
@@ -220,6 +234,23 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
                 mismatched_opening_obligations.append(result)
             else:
                 result["status"] = "Matched"
+            if workspace_row:
+                source_has_measure = "measure" in source_row
+                workspace_has_measure = workspace_row.get("measure") not in (None, "")
+                if workspace_has_measure and not source_has_measure:
+                    result["measure_status"] = "Source measure not supplied"
+                    unverified_opening_obligation_measures.append((key[0], key[1], obligation_id))
+                    opening_measure_review_rows.append({"contract_reference": key[0], "cutover_date": key[1],
+                                                           "obligation_id": obligation_id, "workspace_measure": workspace_row["measure"],
+                                                           "activity_id": actual[0]["id"]})
+                elif source_has_measure and not workspace_has_measure:
+                    result["measure_status"] = "Source measure not used by workspace obligation"
+                    mismatched_opening_obligation_measures.append(result)
+                elif source_has_measure and _decimal(source_row["measure"]) != _decimal(workspace_row["measure"]):
+                    result["measure_status"] = "Cumulative measures differ"
+                    mismatched_opening_obligation_measures.append(result)
+                elif source_has_measure:
+                    result["measure_status"] = "Matched"
             opening_obligation_rows.append(result)
     return {
         "source_name": manifest["source_name"] if manifest else "",
@@ -253,6 +284,9 @@ def _population_comparison(state: dict, period: str, manifest: dict | None) -> d
         "unexpected_opening_obligations": unexpected_opening_obligations,
         "unverified_opening_obligations": unverified_opening_obligations,
         "mismatched_opening_obligations": mismatched_opening_obligations,
+        "unverified_opening_obligation_measures": unverified_opening_obligation_measures,
+        "opening_measure_review_rows": opening_measure_review_rows,
+        "mismatched_opening_obligation_measures": mismatched_opening_obligation_measures,
         "mismatched_source_opening_obligation_totals": mismatched_source_opening_obligation_totals,
         "opening_obligation_rows": opening_obligation_rows,
     }

@@ -1223,8 +1223,9 @@ class Application:
                 raise ValueError("Provide a source opening-obligation list, even when empty.")
             normalized_obligations = []
             for item in obligations:
-                if not isinstance(item, dict) or set(item) != {"contract_reference", "cutover_date", "obligation_id", "recognized_to_date"}:
-                    raise ValueError("Each source opening-obligation row needs a contract reference, cutover date, obligation ID, and cumulative recognized amount.")
+                required = {"contract_reference", "cutover_date", "obligation_id", "recognized_to_date"}
+                if not isinstance(item, dict) or not required <= set(item) or set(item) - required - {"measure"}:
+                    raise ValueError("Each source opening-obligation row needs a contract reference, cutover date, obligation ID, cumulative recognized amount, and optional measure.")
                 row = {"contract_reference": normalize_reference(item["contract_reference"], "Contract reference"),
                        "cutover_date": valid_date(item["cutover_date"], "Source cutover date"),
                        "obligation_id": normalize_reference(item["obligation_id"], "Obligation ID")}
@@ -1234,6 +1235,8 @@ class Application:
                 if value != value.quantize(Decimal("0.01")):
                     raise ValueError("Source opening-obligation amounts must be stated in cents.")
                 row["recognized_to_date"] = f"{value:.2f}"
+                if "measure" in item:
+                    row["measure"] = decimal_string(item["measure"], "Source opening cumulative measure", True)
                 normalized_obligations.append(row)
             obligation_keys = [(item["contract_reference"], item["cutover_date"], item["obligation_id"]) for item in normalized_obligations]
             if len(set(obligation_keys)) != len(obligation_keys):

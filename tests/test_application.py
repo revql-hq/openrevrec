@@ -764,6 +764,58 @@ def test_source_opening_obligations_catch_offsetting_splits_inside_one_contract(
                {**manifest["opening_obligations"][1], "recognized_to_date": "100.00"}]
     application.execute("record_population_manifest", {**manifest, "opening_obligations": correct}, period="2026-09")
     assert next(check for check in application.reports(period="2026-09")["checks"] if check["id"] == "source_population")["status"] == "pass"
+    application.execute("record_population_manifest", {**manifest, "opening_obligations": [{**correct[0], "measure": "1"}, correct[1]]}, period="2026-09")
+    assert application.reports(period="2026-09")["population_comparison"]["mismatched_opening_obligation_measures"][0]["measure_status"] == "Source measure not used by workspace obligation"
+
+
+def test_source_opening_measure_checks_future_recognition_basis(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "contract", "name": "Migrated implementation", "reference": "PROGRESS-1", "customer_id": "customer",
+        "start_date": "2026-01-01", "end_date": "2026-12-31", "cutover_date": "2026-09-01",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "1000.00"}],
+        "obligations": [{"id": "implementation", "name": "Implementation", "kind": "implementation", "ssp": "1000.00",
+                         "method": "progress", "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+    }, period="2026-09")
+    application.execute("record_opening_position", {
+        "contract_id": "contract", "effective_date": "2026-09-01", "billed_to_date": "500.00",
+        "contract_asset": "0.00", "deferred_revenue": "0.00", "source_name": "Legacy progress schedule",
+        "rationale": "Approved August completion estimate", "opening_obligations": [
+            {"obligation_id": "implementation", "recognized_to_date": "500.00", "measure": "50"},
+        ],
+    }, period="2026-09")
+    manifest = {"period": "2026-09", "source_name": "Approved progress schedule", "rationale": "All September cutovers and completion measures.",
+                "contract_references": ["PROGRESS-1"], "billing_references": [], "usage_references": [],
+                "opening_positions": [{"contract_reference": "PROGRESS-1", "cutover_date": "2026-09-01",
+                                       "billed_to_date": "500.00", "contract_asset": "0.00", "deferred_revenue": "0.00", "recognized_to_date": "500.00"}],
+                "opening_obligations": []}
+    application.execute("record_population_manifest", manifest, period="2026-09")
+    comparison = application.reports(period="2026-09")["population_comparison"]
+    assert comparison["unverified_opening_obligation_measures"] == [("PROGRESS-1", "2026-09-01", "implementation")]
+    assert comparison["unverified_opening_obligations"] == []
+    assert comparison["opening_measure_review_rows"][0]["workspace_measure"] == "50"
+    assert next(check for check in application.reports(period="2026-09")["checks"] if check["id"] == "source_population")["count"] == 1
+    unverified_book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-09"), application.reports(period="2026-09"))))
+    assert (unverified_book["Source opening obligations"]["H2"].value,
+            unverified_book["Source opening obligations"]["I2"].value) == (50, "Source measure not supplied")
+    unverified_book.close()
+    source_row = {"contract_reference": "PROGRESS-1", "cutover_date": "2026-09-01",
+                  "obligation_id": "implementation", "recognized_to_date": "500.00"}
+    application.execute("record_population_manifest", {**manifest, "opening_obligations": [source_row]}, period="2026-09")
+    assert application.reports(period="2026-09")["population_comparison"]["unverified_opening_obligation_measures"] == [("PROGRESS-1", "2026-09-01", "implementation")]
+    application.execute("record_population_manifest", {**manifest, "opening_obligations": [{**source_row, "measure": "60"}]}, period="2026-09")
+    comparison = application.reports(period="2026-09")["population_comparison"]
+    assert comparison["mismatched_opening_obligation_measures"][0]["workspace_measure"] == "50"
+    assert comparison["mismatched_opening_obligations"] == []
+    book = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-09"), application.reports(period="2026-09"))))
+    assert (book["Source opening obligations"]["G2"].value, book["Source opening obligations"]["H2"].value,
+            book["Source opening obligations"]["I2"].value) == (60, 50, "Cumulative measures differ")
+    book.close()
+    with pytest.raises(ValueError, match="cannot be negative"):
+        application.execute("record_population_manifest", {**manifest, "opening_obligations": [{**source_row, "measure": "-1"}]}, period="2026-09")
+    application.execute("record_population_manifest", {**manifest, "opening_obligations": [{**source_row, "measure": "50.0"}]}, period="2026-09")
+    assert next(check for check in application.reports(period="2026-09")["checks"] if check["id"] == "source_population")["status"] == "pass"
 
 
 def test_opening_position_preserves_manual_progress_measure(tmp_path):
