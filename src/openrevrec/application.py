@@ -28,6 +28,21 @@ CORRECTABLE_COMMANDS = {"record_billing", "record_progress", "record_usage", "re
 JUDGMENT_COMMANDS = {"create_contract", "record_opening_position", "record_right_exercise", "link_renewal_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "record_rate_change", "set_policy", "reopen_period"}
 COMMANDS = {"create_customer", "create_contract", "link_renewal_contract", "set_policy", "record_control_totals", "record_population_manifest", "record_export_posting", "record_term_review", "close_period", "reopen_period", "add_note", "edit_note", "edit_details", "attach_evidence", "record_judgment_review", "correct_activity"} | set(ACTIVITY_TYPES) | SCENARIO_COMMANDS
 DEFAULT_ACCOUNTS = {"revenue": "4000", "deferred_revenue": "2300", "contract_asset": "1200", "billing_clearing": "1100"}
+DESCRIPTIVE_COMMANDS = {"edit_details", "add_note", "edit_note", "attach_evidence", "record_judgment_review"}
+
+
+def _independent_invoices(left: dict, right: dict) -> bool:
+    """Two identified positive invoices add independently to a contract balance."""
+    if left["command"] != "record_billing" or right["command"] != "record_billing":
+        return False
+    a, b = left["payload"], right["payload"]
+    if Decimal(a["amount"]) <= 0 or Decimal(b["amount"]) <= 0:
+        return False
+    for field in ("reference", "import_source_identity"):
+        if a.get(field) and b.get(field):
+            if a[field] == b[field]:
+                return False
+    return any(a.get(field) and b.get(field) for field in ("reference", "import_source_identity"))
 
 
 def valid_date(value, label="Effective date") -> str:
@@ -1045,6 +1060,21 @@ class Application:
             result["backup_path"] = str(backup_path or "preview")
         return result
 
+    def _scenario_conflicts(self, db, scenario_id, base_version):
+        own = [row for row in self._rows(db, scenario_id) if row["scenario_id"] == scenario_id
+               and row["command"] not in SCENARIO_COMMANDS | DESCRIPTIVE_COMMANDS]
+        main_rows = db.execute("SELECT command, entity_id, version, payload FROM change_sets WHERE scenario_id='main' AND version>? ORDER BY version", (base_version,))
+        conflicts = []
+        for raw in main_rows:
+            main = {**dict(raw), "payload": json.loads(raw["payload"])}
+            if main["command"] in DESCRIPTIVE_COMMANDS:
+                continue
+            if any(proposal["command"] == "set_policy" or main["command"] == "set_policy" or
+                   (proposal["entity_id"] == main["entity_id"] and not _independent_invoices(proposal, main))
+                   for proposal in own):
+                conflicts.append({key: main[key] for key in ("command", "entity_id", "version")})
+        return conflicts
+
     def _scenario_command(self, db, command, payload, source, idempotency_key, request_hash):
         p = copy.deepcopy(payload)
         self._validate_fields(p)
@@ -1073,11 +1103,7 @@ class Application:
             current = self._main_frontier(db)
             own = [r for r in self._rows(db, sid) if r["scenario_id"] == sid and r["command"] not in SCENARIO_COMMANDS]
             if command == "rebase_scenario":
-                descriptive = {"edit_details", "add_note", "edit_note", "attach_evidence", "record_judgment_review"}
-                main_changes = [dict(row) for row in db.execute("SELECT entity_id, command, version FROM change_sets WHERE scenario_id='main' AND version>?", (scenario["base_version"],)) if row["command"] not in descriptive]
-                accounting_own = [row for row in own if row["command"] not in descriptive]
-                touched = {row["entity_id"] for row in accounting_own}
-                conflicts = [row for row in main_changes if row["entity_id"] in touched or (row["command"] == "set_policy" and accounting_own)]
+                conflicts = self._scenario_conflicts(db, sid, scenario["base_version"])
                 if conflicts:
                     labels = ", ".join(f"{row['command']} on {row['entity_id']} (v{row['version']})" for row in conflicts[:5])
                     raise ValueError(f"Main changed the same accounting records: {labels}. Create a new scenario from Main and review these proposals again.")
@@ -1184,9 +1210,7 @@ class Application:
                 scenario = self._state(db, scenario_id, period)
                 base_version = self._scenario(db, scenario_id)["base_version"]
                 proposals = [{"id": row["id"], "command": row["command"], "entity_id": row["entity_id"], "effective_date": row["effective_date"], "rationale": row["rationale"]} for row in self._rows(db, scenario_id) if row["scenario_id"] == scenario_id and row["command"] not in SCENARIO_COMMANDS]
-                descriptive = {"edit_details", "add_note", "edit_note", "attach_evidence", "record_judgment_review"}
-                touched = {row["entity_id"] for row in proposals if row["command"] not in descriptive}
-                conflicts = [{"command": row["command"], "entity_id": row["entity_id"], "version": row["version"]} for row in db.execute("SELECT command, entity_id, version FROM change_sets WHERE scenario_id='main' AND version>? ORDER BY version", (base_version,)) if row["command"] not in descriptive and (row["entity_id"] in touched or row["command"] == "set_policy" and touched)]
+                conflicts = self._scenario_conflicts(db, scenario_id, base_version)
                 return {**compare_reports(main["report"], scenario["report"]), "scenario_id": scenario_id, "base_version": base_version, "main_version": self._main_frontier(db), "proposals": proposals, "conflicts": conflicts}
             finally:
                 db.rollback()
