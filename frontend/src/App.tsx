@@ -29,6 +29,7 @@ import {
   ContractForm,
   ActivityForm,
   RenewalLinkForm,
+  ModificationLinkForm,
   OpeningPositionForm,
   TermReviewForm,
   ScenarioForm,
@@ -70,6 +71,7 @@ export type Dialog = {
     | "contract"
     | "activity"
     | "renewal_link"
+    | "modification_link"
     | "opening_position"
     | "term_review"
     | "scenario"
@@ -505,6 +507,7 @@ export default function App() {
             />
           )}{" "}
           {dialog.type === "renewal_link" && contract && <RenewalLinkForm {...formProps} contract={contract} />}{" "}
+          {dialog.type === "modification_link" && contract && <ModificationLinkForm {...formProps} contract={contract} />}{" "}
           {dialog.type === "opening_position" && contract && (
             <OpeningPositionForm {...formProps} contract={contract} />
           )}{" "}

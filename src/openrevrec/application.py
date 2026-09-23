@@ -25,8 +25,8 @@ ACTIVITY_TYPES = {
 }
 SCENARIO_COMMANDS = {"create_scenario", "apply_scenario", "rebase_scenario", "archive_scenario", "restore_scenario"}
 CORRECTABLE_COMMANDS = {"record_billing", "record_progress", "record_usage", "record_milestone", "record_rate_change"}
-JUDGMENT_COMMANDS = {"create_contract", "record_opening_position", "record_right_exercise", "link_renewal_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "record_rate_change", "set_policy", "reopen_period"}
-COMMANDS = {"create_customer", "create_contract", "link_renewal_contract", "set_policy", "record_control_totals", "record_population_manifest", "record_export_posting", "record_term_review", "close_period", "reopen_period", "add_note", "edit_note", "edit_details", "attach_evidence", "record_judgment_review", "correct_activity"} | set(ACTIVITY_TYPES) | SCENARIO_COMMANDS
+JUDGMENT_COMMANDS = {"create_contract", "record_opening_position", "record_right_exercise", "link_renewal_contract", "link_modification_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "record_rate_change", "set_policy", "reopen_period"}
+COMMANDS = {"create_customer", "create_contract", "link_renewal_contract", "link_modification_contract", "set_policy", "record_control_totals", "record_population_manifest", "record_export_posting", "record_term_review", "close_period", "reopen_period", "add_note", "edit_note", "edit_details", "attach_evidence", "record_judgment_review", "correct_activity"} | set(ACTIVITY_TYPES) | SCENARIO_COMMANDS
 DEFAULT_ACCOUNTS = {"revenue": "4000", "deferred_revenue": "2300", "contract_asset": "1200", "billing_clearing": "1100"}
 DESCRIPTIVE_COMMANDS = {"edit_details", "add_note", "edit_note", "attach_evidence", "record_judgment_review"}
 
@@ -169,7 +169,7 @@ class Application:
         baseline_policy = {"version": 1, "effective_period": "0001-01", "currency": meta["currency"], "rounding": "ROUND_HALF_UP", "ruleset_version": "orr-0.1", "accounts": DEFAULT_ACCOUNTS.copy(), "account_changes": DEFAULT_ACCOUNTS.copy(), "account_overrides": {"contracts": {}, "obligations": {}}, "override_changes": {}, "account_profiles": {}, "profile_changes": {}, "profile_assignments": {}, "profile_assignment_changes": {}, "obligation_profile_assignments": {}, "obligation_profile_assignment_changes": {}, "account_dimension_rules": [], "account_dimension_source": ""}
         state = {"workspace": meta, "scenario_id": scenario_id,
                  "policy": baseline_policy, "policy_versions": [baseline_policy],
-                 "customers": [], "contracts": [], "renewal_links": [], "notes": [], "evidence": [], "judgment_reviews": [], "term_reviews": [], "closes": [], "controls": [], "population_manifests": [], "postings": []}
+                 "customers": [], "contracts": [], "renewal_links": [], "modification_links": [], "notes": [], "evidence": [], "judgment_reviews": [], "term_reviews": [], "closes": [], "controls": [], "population_manifests": [], "postings": []}
         rows = self._rows(db, scenario_id, frontier)
         customers, contracts, notes, closes = {}, {}, {}, {}
         for row in rows:
@@ -188,6 +188,8 @@ class Application:
                 contract["activities"].append({**p, "id": row["id"], "change_set_id": row["id"], "version": row["version"], "type": ACTIVITY_TYPES[command], "recorded_at": row["recorded_at"], "effective_date": row["effective_date"]})
             elif command == "link_renewal_contract":
                 state["renewal_links"].append({**p, "change_set_id": row["id"], "recorded_at": row["recorded_at"], "scenario_id": row["scenario_id"]})
+            elif command == "link_modification_contract":
+                state["modification_links"].append({**p, "change_set_id": row["id"], "recorded_at": row["recorded_at"], "scenario_id": row["scenario_id"]})
             elif command == "correct_activity":
                 contract = contracts.get(p["contract_id"])
                 if contract is None:
@@ -445,6 +447,8 @@ class Application:
                 raise ValueError("This exercised right already has a linked renewal contract.")
             if any(item["renewal_contract_id"] == renewal_id for item in state["renewal_links"]):
                 raise ValueError("A renewal contract cannot carry multiple original rights without a reviewed allocation.")
+            if any(item["added_contract_id"] == renewal_id for item in state["modification_links"]):
+                raise ValueError("An added-service amendment contract cannot also carry an original material right.")
             if p.get("price_basis") != "new_consideration_only":
                 raise ValueError("Confirm that the renewal contract contains only new consideration, excluding the original right allocation.")
             p["additional_consideration"] = decimal_string(p.get("additional_consideration"), "New renewal consideration", True)
@@ -456,6 +460,40 @@ class Application:
             if p.get("effective_date") not in (None, exercise["effective_date"]):
                 raise ValueError("The renewal link's effective date must match the right exercise date.")
             p["effective_date"] = exercise["effective_date"]
+            p["rationale"] = required_text(p, "rationale")
+        elif command == "link_modification_contract":
+            original = next((item for item in state["contracts"] if item["id"] == p.get("contract_id")), None)
+            added = next((item for item in state["contracts"] if item["id"] == p.get("added_contract_id")), None)
+            if original is None or added is None or original["id"] == added["id"]:
+                raise ValueError("Choose an existing original contract and a different added-service contract.")
+            if original["customer_id"] != added["customer_id"]:
+                raise ValueError("A separate-contract modification must have the same customer as the original contract.")
+            p["effective_date"] = valid_date(p.get("effective_date"), "Amendment approval date")
+            if not original["start_date"] < p["effective_date"] <= min(original["end_date"], added["start_date"]):
+                raise ValueError("The amendment approval must follow the original start, fall within its term, and be no later than the added service start.")
+            if any(item["start_date"] < p["effective_date"] for item in added["obligations"]):
+                raise ValueError("Added services cannot start before the amendment approval date.")
+            if any(item["type"] == "billing" and item["effective_date"] < p["effective_date"] for item in added["activities"]):
+                raise ValueError("The added-service contract has billing before the amendment approval date.")
+            if added.get("cutover_date"):
+                raise ValueError("A migrated opening-position contract cannot be the new service in a separate-contract amendment.")
+            if any(item["kind"] != "fixed" for item in added["consideration"]):
+                raise ValueError("Separate-contract amendment linking currently requires fixed added consideration; review variable pricing separately.")
+            if any(item["type"] == "modification" and item["effective_date"] == p["effective_date"] for item in original["activities"]):
+                raise ValueError("An amendment that also changes the original contract needs a mixed-treatment review; do not label the added contract as a separate-contract modification.")
+            if p.get("original_terms_effect") != "unchanged":
+                raise ValueError("Confirm that this amendment does not change the original contract's remaining promises or price.")
+            if p.get("price_basis") != "distinct_at_standalone_price":
+                raise ValueError("Confirm that the added promises are distinct and the amendment price increase reflects their standalone selling prices.")
+            p["additional_consideration"] = decimal_string(p.get("additional_consideration"), "Additional consideration", True)
+            if Decimal(p["additional_consideration"]) <= 0:
+                raise ValueError("A separate-contract amendment needs a positive price increase.")
+            if Decimal(p["additional_consideration"]) != _price(added["consideration"]):
+                raise ValueError("Additional consideration must equal the added contract's initial transaction price.")
+            if any(item["added_contract_id"] == added["id"] for item in state["modification_links"]):
+                raise ValueError("This added-service contract is already linked to an amendment.")
+            if any(item["renewal_contract_id"] == added["id"] for item in state["renewal_links"]):
+                raise ValueError("A renewal contract cannot also be an added-service amendment contract.")
             p["rationale"] = required_text(p, "rationale")
         elif command == "correct_activity":
             p["rationale"] = required_text(p, "rationale")
@@ -571,6 +609,8 @@ class Application:
                 p["rationale"] = p["rationale"].strip()
             if command == "modify_contract":
                 p["rationale"] = required_text(p, "rationale")
+                if any(link["contract_id"] == p["contract_id"] and link["effective_date"] == p["effective_date"] for link in state["modification_links"]):
+                    raise ValueError("This date has a linked separate-contract amendment. A change to the original contract needs a mixed-treatment review.")
                 if p.get("treatment") not in {"prospective", "catch_up"}:
                     raise ValueError("Choose prospective or catch_up treatment. Separate contracts use create_contract.")
                 if "consideration" not in p and "obligations" not in p:
@@ -1044,7 +1084,7 @@ class Application:
         p = self._prepare(db, command, payload, scenario_id)
         result = self._append(db, command, p, scenario_id, source, idempotency_key, request_hash, originating_change_set_id)
         after = self._project(db, scenario_id)
-        if command in ACTIVITY_TYPES or command in {"create_contract", "link_renewal_contract", "set_policy", "correct_activity"}:
+        if command in ACTIVITY_TYPES or command in {"create_contract", "link_renewal_contract", "link_modification_contract", "set_policy", "correct_activity"}:
             # Full replay validates progress, allocation, usage and amendments together.
             _calculation(after, p.get("effective_date", p.get("start_date", date.today().isoformat()))[:7])
             if scenario_id == "main":

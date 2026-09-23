@@ -179,6 +179,7 @@ export type Report = {
   warnings: string[];
   catch_ups?: CatchUp[];
   renewal_links?: RenewalLinkReport[];
+  modification_links?: ModificationLinkReport[];
   closed?: boolean;
   close_id?: string;
 };
@@ -201,6 +202,27 @@ export type RenewalLinkReport = {
   right_revenue: string;
   renewal_revenue: string;
   combined_revenue: string;
+  rationale: string;
+};
+export type ModificationLinkReport = {
+  change_set_id: string;
+  recorded_at: string;
+  contract_id: string;
+  contract_name: string;
+  added_contract_id: string;
+  added_contract_name: string;
+  effective_date: string;
+  price_basis: string;
+  original_terms_effect: string;
+  initial_additional_consideration: string;
+  current_added_price: string;
+  original_revenue: string;
+  added_revenue: string;
+  combined_revenue: string;
+  original_contract_asset: string;
+  original_deferred_revenue: string;
+  added_contract_asset: string;
+  added_deferred_revenue: string;
   rationale: string;
 };
 export type Scenario = {
@@ -330,6 +352,7 @@ export type State = {
   customers: Customer[];
   contracts: Contract[];
   renewal_links?: { contract_id: string; obligation_id: string; renewal_contract_id: string; change_set_id: string }[];
+  modification_links?: { contract_id: string; added_contract_id: string; change_set_id: string; effective_date: string }[];
   scenarios: Scenario[];
   change_sets: Change[];
   closes: Close[];

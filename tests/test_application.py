@@ -166,6 +166,76 @@ def seed(application):
     return contract
 
 
+def test_separate_contract_amendment_link_preserves_two_revenue_schedules(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "original", "customer_id": "cus_1", "name": "Annual service",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "original_price", "kind": "fixed", "amount": "1200"}],
+        "obligations": [{"id": "original_service", "name": "Annual service", "kind": "service", "ssp": "1200",
+                         "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+    }, period="2026-01")
+    application.execute("create_contract", {
+        "id": "added", "customer_id": "cus_1", "name": "Additional service",
+        "start_date": "2026-07-01", "end_date": "2026-09-30",
+        "consideration": [{"id": "added_price", "kind": "fixed", "amount": "300"}],
+        "obligations": [{"id": "added_service", "name": "Additional service", "kind": "service", "ssp": "300",
+                         "method": "monthly", "start_date": "2026-07-01", "end_date": "2026-09-30"}],
+    }, period="2026-07")
+    link = {"contract_id": "original", "added_contract_id": "added", "effective_date": "2026-06-15",
+            "additional_consideration": "300", "price_basis": "distinct_at_standalone_price",
+            "original_terms_effect": "unchanged",
+            "rationale": "The added service is distinct and the amendment increases price by its standalone price."}
+    with pytest.raises(ValueError, match="original contract's remaining promises"):
+        application.execute("link_modification_contract", {**link, "original_terms_effect": "repriced"}, period="2026-07")
+    with pytest.raises(ValueError, match="standalone selling prices"):
+        application.execute("link_modification_contract", {**link, "price_basis": ""}, period="2026-07")
+    with pytest.raises(ValueError, match="initial transaction price"):
+        application.execute("link_modification_contract", {**link, "additional_consideration": "250"}, period="2026-07")
+    application.execute("link_modification_contract", link, period="2026-07")
+    with pytest.raises(ValueError, match="already linked"):
+        application.execute("link_modification_contract", link, period="2026-07")
+    july = application.state(period="2026-07")
+    support = july["report"]["modification_links"][0]
+    assert (support["original_revenue"], support["added_revenue"], support["combined_revenue"]) == ("100.00", "100.00", "200.00")
+    assert july["report"]["summary"]["revenue"] == "200.00"
+    assert {(row["contract_id"], row["revenue"]) for row in july["report"]["schedule"] if row["period"] == "2026-07"} == {
+        ("original", "100.00"), ("added", "100.00")}
+    assert sum(row["debit_minor"] - row["credit_minor"] for row in july["report"]["journals"]) == 0
+    with pytest.raises(ValueError, match="mixed-treatment review"):
+        application.execute("modify_contract", {"contract_id": "original", "effective_date": "2026-06-15",
+            "treatment": "prospective", "consideration": [{"id": "original_price", "kind": "fixed", "amount": "1080"}],
+            "rationale": "Discount the remaining original service"}, period="2026-07")
+    book = load_workbook(io.BytesIO(export_bytes(july)), read_only=True)
+    assert book["Modification links"]["D2"].value == "2026-06-15"
+    assert book["Modification links"]["L2"].value == 200
+    book.close()
+
+
+def test_separate_contract_amendment_link_imports_from_reviewed_workbook(tmp_path):
+    application = app(tmp_path)
+    book = load_workbook(io.BytesIO(template_bytes()))
+    book["Customers"].append(["cus_1", "Customer"])
+    book["Contracts"].append(["original", "cus_1", "Original", "2026-01-01", "2026-12-31"])
+    book["Contracts"].append(["added", "cus_1", "Added", "2026-07-01", "2026-09-30"])
+    book["Consideration"].append(["original", "price", "Service", "fixed", "1200"])
+    book["Consideration"].append(["added", "new_price", "Additional", "fixed", "300"])
+    book["Obligations"].append(["original", "service", "Service", "service", "1200", "monthly", "2026-01-01", "2026-12-31"])
+    book["Obligations"].append(["added", "new_service", "Additional", "service", "300", "monthly", "2026-07-01", "2026-09-30"])
+    book["Modification Links"].append(["original", "added", "2026-06-15", "300", "distinct_at_standalone_price",
+                                        "unchanged", "Distinct added service at standalone price", "amendment:add-service"])
+    data = io.BytesIO()
+    book.save(data)
+    book.close()
+    preview = preview_import_bytes(application, data.getvalue(), period="2026-07")
+    assert preview["state"]["report"]["modification_links"][0]["combined_revenue"] == "200.00"
+    accepted = import_bytes(application, data.getvalue(), period="2026-07",
+                            expected_frontier=preview["frontier"], expected_hash=preview["result"]["file_hash"])
+    assert accepted["result"]["controls"]["counts"]["link_modification_contract"] == 1
+    assert accepted["state"]["report"]["modification_links"][0]["combined_revenue"] == "200.00"
+
+
 def test_opening_position_starts_from_reconciled_legacy_balances_without_backfilling_revenue(tmp_path):
     application = app(tmp_path)
     application.execute("create_customer", {"id": "cus_1", "name": "Customer"})

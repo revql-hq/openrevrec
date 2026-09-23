@@ -124,6 +124,11 @@ export function CommandDialog({
                 after={preview.state.report}
                 currency={state.workspace.currency}
               />
+              {command().command === "link_modification_contract" && preview.state.report.modification_links?.filter((link) => link.contract_id === command().payload.contract_id && link.added_contract_id === command().payload.added_contract_id).map((link) => <Section key={link.change_set_id} title="Separate-contract amendment support" subtitle="The link changes the accounting record and explanation; each contract keeps its own schedule and balance.">
+                <p>{link.contract_name} + {link.added_contract_name} · approved {dateLabel(link.effective_date)}</p>
+                <p>Original revenue {money(link.original_revenue, state.workspace.currency)} + added revenue {money(link.added_revenue, state.workspace.currency)} = {money(link.combined_revenue, state.workspace.currency)} this month.</p>
+                <p className="fine-print">Original asset {money(link.original_contract_asset, state.workspace.currency)} / deferred {money(link.original_deferred_revenue, state.workspace.currency)}; added asset {money(link.added_contract_asset, state.workspace.currency)} / deferred {money(link.added_deferred_revenue, state.workspace.currency)}.</p>
+              </Section>)}
               {Boolean(preview.comparison?.details?.length) && (
                 <Section title="Recognition changes across periods" subtitle="Each changed obligation is shown, even when contract-level increases and decreases offset.">
                   <div className="table-wrap"><table><thead><tr><th>Period</th><th>Contract</th><th>Obligation</th><th className="number">Current</th><th className="number">After change</th><th className="number">Change</th></tr></thead><tbody>
@@ -141,7 +146,7 @@ export function CommandDialog({
                   profileName={(id) => preview.state.policy.account_profiles?.[id]?.name || id}
                 />
               </Section>
-              {["record_opening_position", "link_renewal_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "set_policy", "reopen_period"].includes(command().command) && <Section title="Support this judgment" subtitle="Attach the document or analysis used for this accounting conclusion.">
+              {["record_opening_position", "link_renewal_contract", "link_modification_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "set_policy", "reopen_period"].includes(command().command) && <Section title="Support this judgment" subtitle="Attach the document or analysis used for this accounting conclusion.">
                 <Field label="Supporting file (optional)"><input type="file" onChange={(event) => setSupportFile(event.target.files?.[0] || null)} /></Field>
                 {supportFile && <Field label="Evidence note"><input value={supportNote} onChange={(event) => setSupportNote(event.target.value)} placeholder="What this file supports" /></Field>}
               </Section>}
@@ -917,7 +922,7 @@ export function ContractForm(
             {treatment === "prospective"
               ? "Remaining consideration is recognized prospectively from the effective date."
               : "Revenue is recalculated under the revised terms and the difference is recognized on the effective date."}{" "}
-            A separate-contract conclusion must be recorded as a new contract. This form does not link that contract to its amendment or represent mixed treatments; retain the connection in supporting evidence before using this path.
+            If the whole amendment qualifies as a separate contract, create the added-service contract and use Link added service on the original. This form does not represent mixed treatments; review those outside this workflow.
           </p>
           {treatment === "prospective" && components.some((item) => item.allocation_scope === "specific") && <p className="fine-print">Targeted consideration stays with its named obligation or service month. A price change attributable to already satisfied service needs a catch-up treatment; preview checks that boundary.</p>}
         </>
@@ -1274,6 +1279,28 @@ export function RenewalLinkForm(props: FormProps & { contract: Contract }) {
     {renewal && <p>Original right allocation: <strong>{rightAllocation ? money(rightAllocation, state.workspace.currency) : "See original contract"}</strong>. Initial new consideration: <strong>{money(newPrice, state.workspace.currency)}</strong>.</p>}
     <label className="confirmation-row"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> I reviewed the renewal contract and confirm its price contains only new consideration.</label>
     <Field label="Accounting rationale"><textarea required rows={3} value={rationale} onChange={(event) => setRationale(event.target.value)} placeholder="Explain the renewal price and the carried right allocation." /></Field>
+  </CommandDialog>;
+}
+
+export function ModificationLinkForm(props: FormProps & { contract: Contract }) {
+  const { contract, state } = props;
+  const candidates = state.contracts.filter((item) => item.id !== contract.id && item.customer_id === contract.customer_id &&
+    item.start_date > contract.start_date && !item.cutover_date && item.consideration.every((component) => component.kind === "fixed") &&
+    !(state.modification_links || []).some((link) => link.added_contract_id === item.id) &&
+    !(state.renewal_links || []).some((link) => link.renewal_contract_id === item.id));
+  const [addedId, setAddedId] = useState("");
+  const [effective, setEffective] = useState("");
+  const [confirmed, setConfirmed] = useState(false);
+  const [rationale, setRationale] = useState("");
+  const added = candidates.find((item) => item.id === addedId);
+  const additional = added ? total(added.consideration.map((item) => ["variable", "usage"].includes(item.kind) ? item.included_amount ?? item.amount : item.amount)) : "0.00";
+  return <CommandDialog {...props} title="Link separate-contract amendment" subtitle={`Original: ${contract.name}`} confirmLabel="Link added service" successMessage="Separate-contract amendment linked." canSubmit={Boolean(added && effective && confirmed && rationale.trim())} command={() => ({ command: "link_modification_contract", payload: { contract_id: contract.id, added_contract_id: addedId, effective_date: effective, additional_consideration: additional, price_basis: "distinct_at_standalone_price", original_terms_effect: "unchanged", rationale } })}>
+    <p className="notice">Use this only when the added goods or services are distinct and the amendment's price increase reflects their standalone selling prices, including any appropriate adjustment. Create the added-service contract first. A change to the original service in the same amendment requires a mixed-treatment review outside this link.</p>
+    <Field label="Added-service contract"><select required value={addedId} onChange={(event) => { const next = candidates.find((item) => item.id === event.target.value); setAddedId(event.target.value); setEffective(next ? (next.start_date < contract.end_date ? next.start_date : contract.end_date) : ""); setConfirmed(false); }}><option value="">Choose contract</option>{candidates.map((item) => <option key={item.id} value={item.id}>{item.name} · starts {dateLabel(item.start_date)}</option>)}</select></Field>
+    {candidates.length === 0 && <p className="fine-print">Create an unlinked added-service contract for this customer first.</p>}
+    <div className="form-grid"><Field label="Amendment approval date"><input type="date" required min={new Date(Date.parse(contract.start_date) + 86400000).toISOString().slice(0, 10)} max={added ? (added.start_date < contract.end_date ? added.start_date : contract.end_date) : undefined} value={effective} onChange={(event) => setEffective(event.target.value)} /></Field><Field label="Initial added consideration"><input readOnly value={additional} /></Field></div>
+    <label className="confirmation-row"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> I reviewed the amendment: the added service is distinct, the price increase reflects its standalone price, and the original contract's remaining promises and price are unchanged.</label>
+    <Field label="Accounting rationale"><textarea required rows={3} value={rationale} onChange={(event) => setRationale(event.target.value)} placeholder="Explain why the added promises are distinct and how the price increase reflects standalone selling prices." /></Field>
   </CommandDialog>;
 }
 

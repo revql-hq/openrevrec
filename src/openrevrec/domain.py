@@ -1350,7 +1350,7 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
     previous_assignments = (previous_policy or policy).get("profile_assignments", {})
     if any(not str(accounts[role]).strip() for role in DEFAULT_ACCOUNTS):
         raise ValueError("All four journal account roles require an account code")
-    report: dict[str, Any] = {"period": period, "summary": {}, "contracts": [], "schedule": [], "journals": [], "account_transitions": [], "segment_imbalances": [], "account_dimension_exceptions": [], "account_dimension_unvalidated_accounts": [], "warnings": [], "catch_ups": [], "renewal_links": [],
+    report: dict[str, Any] = {"period": period, "summary": {}, "contracts": [], "schedule": [], "journals": [], "account_transitions": [], "segment_imbalances": [], "account_dimension_exceptions": [], "account_dimension_unvalidated_accounts": [], "warnings": [], "catch_ups": [], "renewal_links": [], "modification_links": [],
                               "policy_version": policy.get("version", 1), "policy_effective_period": policy.get("effective_period", "0001-01"),
                               "policy_accounts": accounts, "policy_account_overrides": overrides,
                               "policy_account_profiles": profiles, "policy_profile_assignments": assignments, "policy_obligation_profile_assignments": obligation_assignments,
@@ -1429,6 +1429,31 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
             if (decimal(source["contract_asset"]) > ZERO and decimal(renewal["deferred_revenue"]) > ZERO
                 or decimal(source["deferred_revenue"]) > ZERO and decimal(renewal["contract_asset"]) > ZERO):
                 report["warnings"].append(f"{names[source['id']]} / {names[renewal['id']]}: linked contracts have offsetting asset and deferred balances; review their presentation before posting.")
+        for link in state.get("modification_links", []):
+            if link["effective_date"][:7] > period:
+                continue
+            original = projected.get(link["contract_id"])
+            added = projected.get(link["added_contract_id"])
+            if original is None or added is None:
+                raise ValueError("A linked separate-contract amendment is missing a reported contract")
+            original_revenue = decimal(original["revenue"])
+            added_revenue = decimal(added["revenue"])
+            report["modification_links"].append({
+                "change_set_id": link["change_set_id"], "recorded_at": link["recorded_at"],
+                "contract_id": original["id"], "contract_name": names[original["id"]],
+                "added_contract_id": added["id"], "added_contract_name": names[added["id"]],
+                "effective_date": link["effective_date"], "price_basis": link["price_basis"],
+                "original_terms_effect": link["original_terms_effect"],
+                "initial_additional_consideration": link["additional_consideration"],
+                "current_added_price": added["transaction_price"],
+                "original_revenue": amount(original_revenue), "added_revenue": amount(added_revenue),
+                "combined_revenue": amount(original_revenue + added_revenue),
+                "original_contract_asset": original["contract_asset"],
+                "original_deferred_revenue": original["deferred_revenue"],
+                "added_contract_asset": added["contract_asset"],
+                "added_deferred_revenue": added["deferred_revenue"],
+                "rationale": link["rationale"],
+            })
         report["summary"] = {key: amount(sum((decimal(item[key]) for item in report["contracts"]), ZERO)) for key in REPORT_AMOUNTS}
     report["schedule"].sort(key=lambda item: (item["period"], item["contract_id"], item["obligation_id"]))
     report["warnings"] = list(dict.fromkeys(report["warnings"]))
