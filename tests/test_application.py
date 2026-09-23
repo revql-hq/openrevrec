@@ -1659,6 +1659,73 @@ def test_billing_credit_links_the_original_invoice_and_does_not_change_price(tmp
         application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-16", "amount": "50.00", "applies_to_change_set_id": original}, period="2026-09")
 
 
+def test_credit_memo_allocates_across_original_invoices_and_preserves_total(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    first = application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-01", "amount": "100.00", "reference": "INV-1"}, period="2026-09")["result"]["change_set_id"]
+    second = application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-02", "amount": "100.00", "reference": "INV-2"}, period="2026-09")["result"]["change_set_id"]
+    credit = {"contract_id": "con_1", "effective_date": "2026-09-15", "amount": "-120.00", "reference": "CM-1", "rationale": "Combined service credit",
+              "credit_allocations": [{"applies_to_change_set_id": first, "amount": "70.00"}, {"applies_to_change_set_id": second, "amount": "50.00"}]}
+    accepted = application.execute("record_billing", credit, period="2026-09")
+    assert accepted["state"]["report"]["summary"]["billings"] == "80.00"
+    assert accepted["state"]["report"]["summary"]["transaction_price"] == "12000.00"
+    assert next(row for row in accepted["state"]["change_sets"] if row["command"] == "record_billing" and row["payload"].get("reference") == "CM-1")["payload"]["credit_allocations"] == credit["credit_allocations"]
+    exported = load_workbook(io.BytesIO(export_bytes(accepted["state"])), read_only=True)
+    assert [(row[2], row[3], row[5]) for row in list(exported["Credit memo allocations"].values)[1:]] == [
+        ("CM-1", first, 70), ("CM-1", second, 50)]
+    exported.close()
+    for invalid, message in [
+        ([{"applies_to_change_set_id": first, "amount": "70.00"}, {"applies_to_change_set_id": second, "amount": "49.99"}], "must equal"),
+        ([{"applies_to_change_set_id": first, "amount": "70.00"}, {"applies_to_change_set_id": first, "amount": "50.00"}], "same original"),
+        ([{"applies_to_change_set_id": first, "amount": "70.001"}, {"applies_to_change_set_id": second, "amount": "49.999"}], "stated in cents"),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            application.execute("record_billing", {**credit, "credit_allocations": invalid}, period="2026-09")
+
+
+def test_scenario_split_credit_remaps_each_original_invoice(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    scenario = application.execute("create_scenario", {"name": "Split credit review"})["result"]["id"]
+    original_ids = [application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-01", "amount": "100.00", "reference": f"INV-{n}"}, scenario_id=scenario, period="2026-09")["result"]["change_set_id"] for n in (1, 2)]
+    application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-05", "amount": "-30.00", "reference": "CM-1", "rationale": "Combined credit", "credit_allocations": [{"applies_to_change_set_id": original_ids[0], "amount": "10.00"}, {"applies_to_change_set_id": original_ids[1], "amount": "20.00"}]}, scenario_id=scenario, period="2026-09")
+    accepted = application.execute("apply_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-09")["state"]
+    main = [row for row in accepted["change_sets"] if row["command"] == "record_billing" and row["scenario_id"] == "main"]
+    targets = {row["id"] for row in main if Decimal(row["payload"]["amount"]) > 0}
+    credit = next(row for row in main if Decimal(row["payload"]["amount"]) < 0)
+    assert {row["applies_to_change_set_id"] for row in credit["payload"]["credit_allocations"]} == targets
+    assert accepted["report"]["summary"]["billings"] == "170.00"
+
+
+@pytest.mark.parametrize("overlap", [False, True])
+def test_split_credit_rebase_checks_every_original_invoice(tmp_path, overlap):
+    application = app(tmp_path)
+    seed(application)
+    originals = [application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-01", "amount": "100.00", "reference": f"INV-{number}"}, period="2026-09")["result"]["change_set_id"] for number in (1, 2, 3)]
+    scenario = application.execute("create_scenario", {"name": "Split credit rebase"})["result"]["id"]
+    application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-10-01", "amount": "-30.00", "reference": "CM-S", "rationale": "Two invoices", "credit_allocations": [{"applies_to_change_set_id": originals[0], "amount": "10.00"}, {"applies_to_change_set_id": originals[1], "amount": "20.00"}]}, scenario_id=scenario, period="2026-10")
+    application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-10-02", "amount": "-5.00", "reference": "CM-M", "rationale": "Separate invoice", "applies_to_change_set_id": originals[1 if overlap else 2]}, period="2026-10")
+    assert bool(application.compare(scenario, "2026-10")["conflicts"]) is overlap
+    if not overlap:
+        application.execute("rebase_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-10")
+        accepted = application.execute("apply_scenario", {"scenario_id": scenario}, scenario_id=scenario, period="2026-10")["state"]
+        assert accepted["report"]["summary"]["billings"] == "-35.00"
+
+
+def test_split_credit_correction_replaces_allocations_without_changing_original_history(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    first = application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-01", "amount": "100.00", "reference": "INV-1"}, period="2026-09")["result"]["change_set_id"]
+    second = application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-02", "amount": "100.00", "reference": "INV-2"}, period="2026-09")["result"]["change_set_id"]
+    original = application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-15", "amount": "-30.00", "reference": "CM-1", "rationale": "Original credit", "credit_allocations": [{"applies_to_change_set_id": first, "amount": "10.00"}, {"applies_to_change_set_id": second, "amount": "20.00"}]}, period="2026-09")["result"]["change_set_id"]
+    corrected = application.execute("correct_activity", {"target_change_set_id": original, "rationale": "Source allocation corrected", "replacement": {"contract_id": "con_1", "effective_date": "2026-09-15", "amount": "-30.00", "reference": "CM-1", "credit_allocations": [{"applies_to_change_set_id": first, "amount": "15.00"}, {"applies_to_change_set_id": second, "amount": "15.00"}]}}, period="2026-09")
+    assert corrected["state"]["report"]["summary"]["billings"] == "170.00"
+    original_change = next(row for row in corrected["state"]["change_sets"] if row["id"] == original)
+    correction_change = next(row for row in corrected["state"]["change_sets"] if row["command"] == "correct_activity")
+    assert original_change["payload"]["credit_allocations"][0]["amount"] == "10.00"
+    assert correction_change["payload"]["replacement"]["credit_allocations"][0]["amount"] == "15.00"
+
+
 def test_scenario_billing_credit_link_points_to_applied_invoice(tmp_path):
     application = app(tmp_path)
     seed(application)
@@ -2719,6 +2786,24 @@ def test_imported_billing_credit_retains_external_original_reference(tmp_path):
     committed = import_bytes(application, output.getvalue(), period="2026-09", expected_frontier=reviewed["frontier"], expected_hash=reviewed["result"]["file_hash"])
     credit = next(row for row in committed["state"]["change_sets"] if row["command"] == "record_billing")
     assert credit["payload"]["applies_to_reference"] == "LEGACY-INV-20"
+
+
+def test_imported_credit_allocations_resolve_original_source_ids(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    book = load_workbook(io.BytesIO(template_bytes()))
+    book["Billing"].append(["con_1", "2026-09-01", "100.00", "INV-1", "", "", "", "erp:invoice-1"])
+    book["Billing"].append(["con_1", "2026-09-01", "100.00", "INV-2", "", "", "", "erp:invoice-2"])
+    book["Billing"].append(["con_1", "2026-09-15", "-120.00", "CM-1", "", "", "Combined credit", "erp:credit-1"])
+    book["Credit Allocations"].append(["erp:credit-1", "erp:invoice-1", "", "", "70.00"])
+    book["Credit Allocations"].append(["erp:credit-1", "erp:invoice-2", "", "", "50.00"])
+    output = io.BytesIO(); book.save(output); book.close()
+    reviewed = preview_import_bytes(application, output.getvalue(), period="2026-09")
+    assert reviewed["state"]["report"]["summary"]["billings"] == "80.00"
+    committed = import_bytes(application, output.getvalue(), period="2026-09", expected_frontier=reviewed["frontier"], expected_hash=reviewed["result"]["file_hash"])
+    invoices = {row["id"] for row in committed["state"]["change_sets"] if row["command"] == "record_billing" and Decimal(row["payload"]["amount"]) > 0}
+    credit = next(row for row in committed["state"]["change_sets"] if row["command"] == "record_billing" and Decimal(row["payload"]["amount"]) < 0)
+    assert {row["applies_to_change_set_id"] for row in credit["payload"]["credit_allocations"]} == invoices
 
 
 def test_import_commit_requires_same_file_and_frontier_as_preview(tmp_path):

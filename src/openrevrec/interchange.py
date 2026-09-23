@@ -29,6 +29,7 @@ SHEETS = {
     "Amendment Obligations": ["amendment_source_id", "id", "name", "kind", "ssp", "method", "start_date", "end_date", "total_units", "exercise_start", "exercise_end", "rationale"],
     "Mixed Allocations": ["amendment_source_id", "obligation_id", "treatment", "amount", "revised_progress"],
     "Billing": ["contract_id", "effective_date", "amount", "reference", "applies_to_change_set_id", "applies_to_reference", "rationale", "source_id", "source_contract_reference"],
+    "Credit Allocations": ["credit_source_id", "applies_to_source_id", "applies_to_change_set_id", "applies_to_reference", "amount"],
     "Rate Changes": ["contract_id", "component_id", "effective_date", "unit_rate", "rationale", "source_id"],
     "Progress": ["contract_id", "obligation_id", "effective_date", "percentage", "rationale", "source_id"],
     "Usage": ["contract_id", "obligation_id", "effective_date", "quantity", "reference", "rationale", "source_id", "invoice_value", "source_contract_reference"],
@@ -94,6 +95,7 @@ def template_bytes():
         ["Specific allocation", "For an eligible variable, usage, or credit component, set allocation_scope to specific, list target_obligation_ids separated by commas, and record allocation_rationale. For a variable or usage amount targeting one month of one time-based series obligation, also enter target_period as YYYY-MM and only one obligation ID. Otherwise leave these fields blank for relative SSP allocation."],
         ["Amendments", "Each amendment needs a stable source_id, effective date, treatment, and rationale. Set replace_consideration and/or replace_obligations to yes. Related rows must list the COMPLETE replacement set for that section. For mixed treatment, add one reviewed lifetime amount for every revised obligation in Mixed Allocations; the amounts must sum to revised consideration. If an integrated progress-method service has a revised completion measure, enter revised_progress as a percentage on its catch-up row."],
         ["Corrections", "Supply the original change set ID or its prior source_id, the activity type, replacement facts, and a new source_id. The original remains in history."],
+        ["Credit allocations", "For a credit covering several invoices, give its Billing or Corrections row a source_id and add one Credit Allocations row per original. Credit_source_id names that credit. Identify each original by an earlier imported Billing source_id, an existing billing change set ID, or an external invoice reference. Positive allocation amounts must sum exactly to the negative credit amount. Do not also set a single original link on Billing."],
         ["Other commands", "Use Commands with command, payload_json, and source_id for policies or advanced actions. Close/reopen and scenario lifecycle require separate review."],
         ["Import behavior", "Preview first. All rows then commit together; a failed import commits no accounting changes."],
         ["Source identity", "Use a stable, system-prefixed source_id for every activity, amendment, correction, or command. A billing invoice reference can substitute for source_id. Reimporting the same source fact is rejected."],
@@ -349,6 +351,11 @@ def export_bytes(state, review=None):
            [[contract["id"], item.get("activity_id", ""), item["effective_date"], item["component_id"], item["component"], item["obligation_id"], item["obligation"], Decimal(item["allocated_change"]), Decimal(item["recognized_to_date"]), item["rationale"]]
             for contract in report["contracts"] for item in contract.get("original_promise_changes", [])])
     _sheet(book, "Activity", ["version", "change_set_id", "scenario_id", "command", "entity_id", "effective_date", "recorded_at", "rationale", "source", "payload"], [[r.get(k, "") for k in ["version", "id", "scenario_id", "command", "entity_id", "effective_date", "recorded_at", "rationale", "source", "payload"]] for r in reversed(state["change_sets"])])
+    _sheet(book, "Credit memo allocations", ["Credit change set", "Scenario", "Credit reference", "Original billing change set", "External original reference", "Credit applied"],
+           [[change["id"], change["scenario_id"], payload.get("reference", ""), allocation.get("applies_to_change_set_id", ""), allocation.get("applies_to_reference", ""), Decimal(allocation["amount"])]
+            for change in reversed(state["change_sets"]) if change["command"] in {"record_billing", "correct_activity"}
+            for payload in [change["payload"].get("replacement", change["payload"])]
+            for allocation in payload.get("credit_allocations") or []])
     entity_names = {row["id"]: row["name"] for row in state["contracts"] + state["customers"]}
     period_end = report["period"] + "-31"
     changes = [row for row in reversed(state["change_sets"]) if row["effective_date"] <= period_end and row["command"] not in {"add_note", "edit_note", "edit_details", "attach_evidence", "record_judgment_review"}]
@@ -557,6 +564,26 @@ def parse_workbook(data):
             if bool(payload.get("target_change_set_id")) == bool(payload.get("target_source_id")):
                 raise ValueError(f"Corrections row {row}: choose exactly one original change set ID or source_id.")
             commands.append(("Corrections", row, "correct_activity", payload))
+        credit_rows = {}
+        for sheet, row, command, payload in commands:
+            if sheet in {"Billing", "Corrections"} and payload.get("source_id"):
+                if payload["source_id"] in credit_rows:
+                    raise ValueError(f"{sheet} row {row}: source_id duplicates a Billing or Corrections row.")
+                credit_rows[payload["source_id"]] = (sheet, row, payload)
+        for row, item in parsed["Credit Allocations"]:
+            source_id = item.get("credit_source_id")
+            if source_id not in credit_rows:
+                raise ValueError(f"Credit Allocations row {row}: credit_source_id must name a Billing or Corrections row with source_id.")
+            sheet, credit_row, payload = credit_rows[source_id]
+            if sheet == "Corrections" and not payload["replacement"].get("amount"):
+                raise ValueError(f"Credit Allocations row {row}: the linked correction must replace a billing amount.")
+            target = payload if sheet == "Billing" else payload["replacement"]
+            if Decimal(str(target.get("amount") or "0")) >= 0:
+                raise ValueError(f"Credit Allocations row {row}: the linked billing amount must be negative.")
+            allocation = {key: value for key, value in item.items() if key != "credit_source_id"}
+            if sum(bool(allocation.get(key)) for key in ("applies_to_source_id", "applies_to_change_set_id", "applies_to_reference")) != 1:
+                raise ValueError(f"Credit Allocations row {row}: choose exactly one original invoice identity.")
+            target.setdefault("credit_allocations", []).append(allocation)
         if not commands:
             raise ValueError("The workbook contains no rows to import.")
         return commands, version
@@ -609,6 +636,15 @@ def _import_bytes(app, data, filename, scenario_id, period, preview, expected_fr
                         if target is None:
                             raise ValueError("Original source_id was not found in this scenario; import the original activity first")
                         payload["target_change_set_id"] = target["id"]
+                    allocation_target = payload.get("replacement", payload)
+                    for allocation in allocation_target.get("credit_allocations") or []:
+                        original_source_id = allocation.pop("applies_to_source_id", None)
+                        if original_source_id:
+                            original_key, _, _ = _source_key(scenario_id, "record_billing", {"source_id": original_source_id})
+                            original = db.execute("SELECT id FROM change_sets WHERE idempotency_key=?", (original_key,)).fetchone()
+                            if original is None:
+                                raise ValueError("Original billing source_id was not found; import that invoice first")
+                            allocation["applies_to_change_set_id"] = original["id"]
                     if template_version == TEMPLATE_VERSION and sheet in {"Opening Positions", "Rate Changes", "Progress", "Usage", "Right Exercises", "Renewal Links", "Modification Links", "Milestones", "Adjustments", "Reassessments", "Amendments", "Corrections", "Commands"} and not payload.get("source_id"):
                         raise ValueError("This activity requires a stable source_id")
                     if template_version == TEMPLATE_VERSION and sheet == "Billing" and not (payload.get("source_id") or payload.get("reference")):

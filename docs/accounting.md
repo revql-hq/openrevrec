@@ -40,7 +40,7 @@ An uncapped metered service has a separate right-to-invoice path for one service
 
 For externally priced usage, include each source usage record ID, delivered quantity, and amount in the independent monthly Source population list. The close comparison identifies missing, unexpected, duplicate, and mismatched records. An older ID-only row remains under review because matching its reference does not verify the units or amount. The reviewer must establish that the independent pricing extract includes all delivered units and that its cutoff matches the accounting period; matching data does not make the B16 judgment automatically.
 
-A negative billing amount is a credit memo and must identify the original invoice or an external original-invoice reference. It changes billed-to-date balances, not the transaction price. A correction to a mistaken billing source fact uses the separate append-only correction command.
+A negative billing amount is a credit memo and must identify its original invoice. A credit spanning several invoices records a positive applied amount against each workspace invoice or external original reference; the applied amounts must equal the memo's signed amount. The form and workbook support this split, and the export lists each allocation. A credit changes billed-to-date balances, not the transaction price. These links record source attribution, not receivables application or the open balance of any invoice; reconcile actual settlement in the source billing or ledger system. A correction to a mistaken billing source fact uses the separate append-only correction command.
 
 ## Opening positions for established contracts
 

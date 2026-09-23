@@ -59,24 +59,37 @@ def _independent_invoices(left: dict, right: dict, originals: dict[str, dict]) -
     if left_amount > 0 and right_amount > 0:
         return True
     if left_amount < 0 and right_amount < 0:
-        if a.get("applies_to_change_set_id") and b.get("applies_to_change_set_id"):
-            first = originals.get(a["applies_to_change_set_id"])
-            second = originals.get(b["applies_to_change_set_id"])
-            return bool(first and second and _distinct_source_identity(first, second))
-        if a.get("applies_to_reference") and b.get("applies_to_reference"):
-            return (a.get("source_contract_reference"), a["applies_to_reference"]) != (b.get("source_contract_reference"), b["applies_to_reference"])
-        return False
+        return all(_distinct_credit_targets(first, second, a, b, originals)
+                   for first in _credit_targets(a) for second in _credit_targets(b))
     if left_amount < 0 < right_amount or right_amount < 0 < left_amount:
         credit, invoice = (a, b) if left_amount < 0 else (b, a)
-        if credit.get("applies_to_change_set_id"):
-            original = originals.get(credit["applies_to_change_set_id"])
-            return bool(original and _distinct_source_identity(original, invoice))
-        # An external-original credit is independent only if the newly added
-        # invoice has its own reference and is not the named original.
-        return bool(credit.get("applies_to_reference") and invoice.get("reference")
-                    and (credit.get("source_contract_reference"), credit["applies_to_reference"])
-                    != (invoice.get("source_contract_reference"), invoice["reference"]))
+        return all(_distinct_credit_target_and_invoice(target, credit, invoice, originals)
+                   for target in _credit_targets(credit))
     return False
+
+
+def _credit_targets(payload: dict) -> list[dict]:
+    return payload.get("credit_allocations") or [payload]
+
+
+def _distinct_credit_targets(left: dict, right: dict, left_credit: dict, right_credit: dict,
+                             originals: dict[str, dict]) -> bool:
+    if left.get("applies_to_change_set_id") and right.get("applies_to_change_set_id"):
+        first, second = originals.get(left["applies_to_change_set_id"]), originals.get(right["applies_to_change_set_id"])
+        return bool(first and second and _distinct_source_identity(first, second))
+    if left.get("applies_to_reference") and right.get("applies_to_reference"):
+        return (left_credit.get("source_contract_reference"), left["applies_to_reference"]) != (right_credit.get("source_contract_reference"), right["applies_to_reference"])
+    return False
+
+
+def _distinct_credit_target_and_invoice(target: dict, credit: dict, invoice: dict,
+                                        originals: dict[str, dict]) -> bool:
+    if target.get("applies_to_change_set_id"):
+        original = originals.get(target["applies_to_change_set_id"])
+        return bool(original and _distinct_source_identity(original, invoice))
+    return bool(target.get("applies_to_reference") and invoice.get("reference")
+                and (credit.get("source_contract_reference"), target["applies_to_reference"])
+                != (invoice.get("source_contract_reference"), invoice["reference"]))
 
 
 def _independent_billing_corrections(left: dict, right: dict, originals: dict[str, dict]) -> bool:
@@ -818,7 +831,7 @@ class Application:
                 raise ValueError("Provide the replacement source facts.")
             target_command = f"record_{target['type']}"
             allowed = {"contract_id", "effective_date", "rationale", "reference", "source_contract_reference"}
-            allowed |= ({"amount", "applies_to_change_set_id", "applies_to_reference"} if target_command == "record_billing" else
+            allowed |= ({"amount", "applies_to_change_set_id", "applies_to_reference", "credit_allocations"} if target_command == "record_billing" else
                         {"component_id", "unit_rate"} if target_command == "record_rate_change" else
                         {"obligation_id", "quantity", "invoice_value"} if target_command == "record_usage" else
                         {"obligation_id", "percentage"})
@@ -879,20 +892,52 @@ class Application:
                     p.pop("source_contract_reference", None)
             if command == "record_billing":
                 if Decimal(p["amount"]) < 0:
-                    original_id = p.get("applies_to_change_set_id")
-                    original_reference = str(p.get("applies_to_reference") or "").strip()
-                    if bool(original_id) == bool(original_reference):
-                        raise ValueError("A billing credit needs exactly one original invoice: a workspace billing entry or an external invoice reference.")
-                    if original_id:
-                        original = next((item for item in contract["activities"] if item["id"] == original_id and item["type"] == "billing" and Decimal(item["amount"]) > 0), None)
-                        if original is None or original["effective_date"] > p["effective_date"]:
-                            raise ValueError("Choose an earlier positive billing entry on this contract for the credit.")
-                        if (original.get("source_contract_reference") or contract.get("reference")) != (p.get("source_contract_reference") or contract.get("reference")):
-                            raise ValueError("A billing credit must use the original invoice's source agreement.")
+                    allocations = p.get("credit_allocations")
+                    if allocations is not None:
+                        if p.get("applies_to_change_set_id") or p.get("applies_to_reference"):
+                            raise ValueError("Use either credit allocations or a single original invoice link.")
+                        if not isinstance(allocations, list) or len(allocations) < 2:
+                            raise ValueError("A split billing credit needs at least two original invoice allocations.")
+                        if Decimal(p["amount"]) != Decimal(p["amount"]).quantize(Decimal("0.01")):
+                            raise ValueError("An allocated billing credit must be stated in cents.")
                     else:
-                        p["applies_to_reference"] = original_reference
+                        allocations = [p]
+                    seen_targets = set()
+                    allocated_total = Decimal(0)
+                    for allocation in allocations:
+                        if not isinstance(allocation, dict) or (p.get("credit_allocations") is not None and set(allocation) - {"applies_to_change_set_id", "applies_to_reference", "amount"}):
+                            raise ValueError("Credit allocations need an original invoice and amount only.")
+                        original_id = allocation.get("applies_to_change_set_id")
+                        raw_reference = allocation.get("applies_to_reference")
+                        if original_id is not None and not isinstance(original_id, str):
+                            raise ValueError("Original billing entry ID must be text.")
+                        if raw_reference is not None and not isinstance(raw_reference, str):
+                            raise ValueError("External original invoice reference must be text.")
+                        original_reference = (raw_reference or "").strip()
+                        if bool(original_id) == bool(original_reference):
+                            raise ValueError("Each billing credit allocation needs exactly one original invoice.")
+                        target_key = ("workspace", original_id) if original_id else ("external", original_reference)
+                        if target_key in seen_targets:
+                            raise ValueError("A credit memo cannot list the same original invoice twice.")
+                        seen_targets.add(target_key)
+                        if original_id:
+                            original = next((item for item in contract["activities"] if item["id"] == original_id and item["type"] == "billing" and Decimal(item["amount"]) > 0), None)
+                            if original is None or original["effective_date"] > p["effective_date"]:
+                                raise ValueError("Choose an earlier positive billing entry on this contract for the credit.")
+                            if (original.get("source_contract_reference") or contract.get("reference")) != (p.get("source_contract_reference") or contract.get("reference")):
+                                raise ValueError("A billing credit must use the original invoice's source agreement.")
+                        else:
+                            allocation["applies_to_reference"] = original_reference
+                        if p.get("credit_allocations") is not None:
+                            allocated = decimal_string(allocation.get("amount"), "Credit allocation", True)
+                            if Decimal(allocated) <= 0 or Decimal(allocated) != Decimal(allocated).quantize(Decimal("0.01")):
+                                raise ValueError("Credit allocation amounts must be positive and stated in cents.")
+                            allocation["amount"] = allocated
+                            allocated_total += Decimal(allocated)
+                    if p.get("credit_allocations") is not None and allocated_total != -Decimal(p["amount"]):
+                        raise ValueError("Credit allocations must equal the credit memo amount.")
                     p["rationale"] = required_text(p, "rationale")
-                elif p.get("applies_to_change_set_id") or p.get("applies_to_reference"):
+                elif p.get("applies_to_change_set_id") or p.get("applies_to_reference") or "credit_allocations" in p:
                     raise ValueError("Original invoice links belong only on negative billing credits.")
             if command == "record_adjustment":
                 p["rationale"] = required_text(p, "rationale")
@@ -1681,8 +1726,13 @@ class Application:
                         copied_payload["target_change_set_id"] = copied_change_ids[copied_payload["target_change_set_id"]]
                     if row["command"] == "correct_activity" and copied_payload.get("target_change_set_id") in copied_change_ids:
                         copied_payload["target_change_set_id"] = copied_change_ids[copied_payload["target_change_set_id"]]
-                    if row["command"] == "record_billing" and copied_payload.get("applies_to_change_set_id") in copied_change_ids:
-                        copied_payload["applies_to_change_set_id"] = copied_change_ids[copied_payload["applies_to_change_set_id"]]
+                    if row["command"] in {"record_billing", "correct_activity"}:
+                        target_payload = copied_payload.get("replacement", copied_payload)
+                        if target_payload.get("applies_to_change_set_id") in copied_change_ids:
+                            target_payload["applies_to_change_set_id"] = copied_change_ids[target_payload["applies_to_change_set_id"]]
+                        for allocation in target_payload.get("credit_allocations") or []:
+                            if allocation.get("applies_to_change_set_id") in copied_change_ids:
+                                allocation["applies_to_change_set_id"] = copied_change_ids[allocation["applies_to_change_set_id"]]
                     copied_key = None
                     if copied_payload.get("import_source_identity") is not None:
                         copied_key = "import:" + hashlib.sha256(dumps(["main", row["command"], copied_payload["import_source_identity"]]).encode()).hexdigest()

@@ -1082,6 +1082,8 @@ export function ActivityForm(
   props: FormProps & { contract: Contract; activity: string; correctionTarget?: Activity },
 ) {
   const { contract, activity, correctionTarget } = props;
+  type CreditAllocation = { applies_to_change_set_id?: string; applies_to_reference?: string; amount: string };
+  const priorAllocations = correctionTarget?.credit_allocations as CreditAllocation[] | undefined;
   const [effective, setEffective] = useState(() => suggestedActivityDate(contract, props.period, activity, correctionTarget?.effective_date));
   const { obligations, consideration } = contractTerms(contract, effective);
   const eligibleObligations = obligations.filter((item) => supportsActivityOnDate(contract, item, activity, effective));
@@ -1106,11 +1108,20 @@ export function ActivityForm(
     [deliveryEnd, setDeliveryEnd] = useState(""),
     [creditOriginal, setCreditOriginal] = useState(typeof correctionTarget?.applies_to_change_set_id === "string" ? correctionTarget.applies_to_change_set_id : typeof correctionTarget?.applies_to_reference === "string" ? "external" : ""),
     [externalInvoice, setExternalInvoice] = useState(typeof correctionTarget?.applies_to_reference === "string" ? correctionTarget.applies_to_reference : ""),
+    [splitCredit, setSplitCredit] = useState(Boolean(priorAllocations?.length)),
+    [creditAllocations, setCreditAllocations] = useState<CreditAllocation[]>(priorAllocations?.map((row) => ({ ...row })) || [{ amount: "" }, { amount: "" }]),
     [rationale, setRationale] = useState("");
   const positiveBillings = eligibleBillingOriginals(contract, effective, sourceContractReference);
   const creditOriginalChoice = creditOriginal === "external" || positiveBillings.some((item) => item.id === creditOriginal) ? creditOriginal : "";
+  const allocationKeys = creditAllocations.map((row) => row.applies_to_change_set_id || (row.applies_to_reference?.trim() ? `external:${row.applies_to_reference.trim()}` : ""));
+  const allocationCents = creditAllocations.map((row) => Math.round(Number(row.amount) * 100));
+  const splitReady = /^-\d+(\.\d{1,2})?$/.test(amount) && creditAllocations.length >= 2 && allocationKeys.every(Boolean) && new Set(allocationKeys).size === allocationKeys.length &&
+    creditAllocations.every((row, index) => Boolean(row.amount) && Number(row.amount) > 0 && /^\d+(\.\d{1,2})?$/.test(row.amount) && Number.isSafeInteger(allocationCents[index]) &&
+      (!row.applies_to_change_set_id || positiveBillings.some((item) => item.id === row.applies_to_change_set_id))) &&
+    allocationCents.reduce((sum, cents) => sum + cents, 0) === Math.round(-Number(amount) * 100);
   const creditReady = activity !== "billing" || !(Number(amount) < 0) ||
-    (creditOriginalChoice === "external" ? Boolean(externalInvoice.trim()) : Boolean(creditOriginalChoice));
+    (splitCredit ? splitReady : creditOriginalChoice === "external" ? Boolean(externalInvoice.trim()) : Boolean(creditOriginalChoice));
+  const setCreditAllocation = (index: number, row: CreditAllocation) => setCreditAllocations((current) => current.map((item, position) => position === index ? row : item));
   const sourceReady = !contract.source_contracts?.length || !["billing", "usage"].includes(activity) || Boolean(sourceContractReference);
   const obligation = eligibleObligations.some((o) => o.id === selectedObligation)
     ? selectedObligation
@@ -1190,7 +1201,7 @@ export function ActivityForm(
             ? { source_contract_reference: sourceContractReference }
             : {}),
           ...(activity === "billing"
-            ? { amount, reference, ...(Number(amount) < 0 ? creditOriginalChoice === "external" ? { applies_to_reference: externalInvoice } : { applies_to_change_set_id: creditOriginalChoice } : {}) }
+            ? { amount, reference, ...(Number(amount) < 0 ? splitCredit ? { credit_allocations: creditAllocations.map((row) => ({ ...row, ...(row.applies_to_reference ? { applies_to_reference: row.applies_to_reference.trim() } : {}) })) } : creditOriginalChoice === "external" ? { applies_to_reference: externalInvoice } : { applies_to_change_set_id: creditOriginalChoice } : {}) }
             : activity === "reassessment"
               ? { component_id: component, included_amount: amount }
               : activity === "rate_change"
@@ -1334,7 +1345,14 @@ export function ActivityForm(
           </Field>
         )}
       </div>
-      {activity === "billing" && Number(amount) < 0 && <><Field label="Original invoice for this credit" hint="Choose an invoice from the same source agreement. A credit memo reduces the billed balance; a contractual price reduction is a separate consideration change."><select required value={creditOriginalChoice} onChange={(event) => setCreditOriginal(event.target.value)}><option value="">Choose original invoice</option>{positiveBillings.map((item) => <option value={item.id} key={item.id}>{item.reference || item.id} · {item.effective_date} · {money(item.amount, props.state.workspace.currency)}</option>)}<option value="external">Original invoice is outside this workspace</option></select></Field>{creditOriginalChoice === "external" && <Field label="External original invoice reference"><input required value={externalInvoice} onChange={(event) => setExternalInvoice(event.target.value)} placeholder="Original invoice ID" /></Field>}</>}
+      {activity === "billing" && Number(amount) < 0 && <>
+        <Field label="Credit applies to" hint="A credit memo reduces the billed balance; a contractual price reduction is a separate consideration change."><select value={splitCredit ? "split" : "single"} onChange={(event) => setSplitCredit(event.target.value === "split")}><option value="single">One original invoice</option><option value="split">Several original invoices</option></select></Field>
+        {!splitCredit && <><Field label="Original invoice"><select required value={creditOriginalChoice} onChange={(event) => setCreditOriginal(event.target.value)}><option value="">Choose original invoice</option>{positiveBillings.map((item) => <option value={item.id} key={item.id}>{item.reference || item.id} · {item.effective_date} · {money(item.amount, props.state.workspace.currency)}</option>)}<option value="external">Original invoice is outside this workspace</option></select></Field>{creditOriginalChoice === "external" && <Field label="External original invoice reference"><input required value={externalInvoice} onChange={(event) => setExternalInvoice(event.target.value)} placeholder="Original invoice ID" /></Field>}</>}
+        {splitCredit && <><p className="fine-print">Allocate the full credit across originals from the same source agreement. This records the source attribution; it does not clear receivables in your ledger.</p>{creditAllocations.map((row, index) => {
+          const choice = row.applies_to_change_set_id || (row.applies_to_reference !== undefined ? "external" : "");
+          return <div key={index} className="form-grid"><Field label={`Original invoice ${index + 1}`}><select required value={choice} onChange={(event) => setCreditAllocation(index, event.target.value === "external" ? { amount: row.amount, applies_to_reference: "" } : { amount: row.amount, ...(event.target.value ? { applies_to_change_set_id: event.target.value } : {}) })}><option value="">Choose original invoice</option>{positiveBillings.map((item) => <option value={item.id} key={item.id}>{item.reference || item.id} · {item.effective_date} · {money(item.amount, props.state.workspace.currency)}</option>)}<option value="external">Original invoice is outside this workspace</option></select></Field>{choice === "external" && <Field label="External invoice reference"><input required value={row.applies_to_reference || ""} onChange={(event) => setCreditAllocation(index, { amount: row.amount, applies_to_reference: event.target.value })} /></Field>}<Field label="Applied credit amount"><input required inputMode="decimal" value={row.amount} onChange={(event) => setCreditAllocation(index, { ...row, amount: event.target.value })} placeholder="0.00" /></Field>{creditAllocations.length > 2 && <Button type="button" onClick={() => setCreditAllocations((current) => current.filter((_, position) => position !== index))}>Remove invoice</Button>}</div>;
+        })}<Button type="button" onClick={() => setCreditAllocations((current) => [...current, { amount: "" }])}>Add invoice</Button><p className="fine-print">Allocated {money((allocationCents.reduce((sum, cents) => sum + (Number.isFinite(cents) ? cents : 0), 0) / 100).toFixed(2), props.state.workspace.currency)} of {money(Math.abs(Number(amount)).toFixed(2), props.state.workspace.currency)}.</p></>}
+      </>}
       {["progress", "milestone"].includes(activity) && obligation && <p className="fine-print">Previously recorded cumulative completion: {priorPercentage}%. Proposed change: {percentage ? Number(percentage) - Number(priorPercentage) : "—"} percentage points. Resulting completion: {percentage || "—"}%.</p>}
       {activity === "usage" && obligation && <p className="fine-print">Previously recorded units: {priorUnits}. This entry adds {quantity || "—"} units; resulting cumulative units: {quantity ? priorUnits + Number(quantity) : "—"}{selectedTerms?.total_units ? " of " + selectedTerms.total_units + " contracted" : ""}.</p>}
       <Field label="Rationale">

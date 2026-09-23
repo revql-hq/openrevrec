@@ -27,6 +27,12 @@ type Detail = {
 
 const JUDGMENT_COMMANDS = new Set(["create_contract", "record_opening_position", "correct_opening_position", "record_right_exercise", "link_renewal_contract", "link_modification_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "record_rate_change", "record_account_runoff", "set_policy", "reopen_period"]);
 
+function creditAllocationsSummary(value: unknown, currency: string): string {
+  if (!Array.isArray(value)) return "—";
+  return value.map((row: { applies_to_change_set_id?: string; applies_to_reference?: string; amount: string }) =>
+    `${row.applies_to_reference || row.applies_to_change_set_id}: ${money(row.amount, currency)}`).join("; ");
+}
+
 function JudgmentReviewPanel({ props, change, reviews, onRecorded }: { props: ViewProps; change: Detail["change"]; reviews: JudgmentReview[]; onRecorded: () => void }) {
   const [reviewer, setReviewer] = useState("");
   const [disposition, setDisposition] = useState<"supported" | "exception">("supported");
@@ -147,6 +153,7 @@ export function ChangeDetail(props: ViewProps & { changeSetId: string }) {
           {typeof change.payload?.applies_to_change_set_id === "string" && <div><dt>Credit applies to</dt><dd><button className="text-button" onClick={() => props.navigate("Activity", String(change.payload?.applies_to_change_set_id))}>{String(change.payload?.applies_to_change_set_id)}</button></dd></div>}
           {typeof change.payload?.applies_to_reference === "string" && <div><dt>External original invoice</dt><dd>{String(change.payload.applies_to_reference)}</dd></div>}
         </dl>
+        {Array.isArray(change.payload?.credit_allocations) && <div className="table-wrap"><table><thead><tr><th>Original invoice</th><th className="number">Credit applied</th></tr></thead><tbody>{(change.payload.credit_allocations as { applies_to_change_set_id?: string; applies_to_reference?: string; amount: string }[]).map((row, index) => <tr key={index}><td>{row.applies_to_change_set_id ? <button className="text-button" onClick={() => props.navigate("Activity", row.applies_to_change_set_id!)}>{row.applies_to_change_set_id}</button> : row.applies_to_reference}</td><td className="number">{money(row.amount, currency)}</td></tr>)}</tbody></table></div>}
         {change.rationale && <p>{change.rationale}</p>}
         {isContract && <Button onClick={() => props.navigate("Contracts", change.entity_id)}>Open contract</Button>}
       </div>
@@ -169,7 +176,7 @@ export function ChangeDetail(props: ViewProps & { changeSetId: string }) {
       </dl>
       <div className="table-wrap"><table><thead><tr><th>Obligation</th><th className="number">Recognized before cutover</th><th className="number">Cumulative measure</th></tr></thead><tbody>{((change.payload?.opening_obligations as { obligation_id: string; recognized_to_date: string; measure?: string }[] | undefined) || []).map((row) => <tr key={row.obligation_id}><td>{afterContract?.obligations.find((item) => item.id === row.obligation_id)?.name || row.obligation_id}</td><td className="number">{money(row.recognized_to_date, currency)}</td><td className="number">{row.measure || "—"}</td></tr>)}</tbody></table></div>
     </Section>}
-    {correctedActivity && replacement && <Section title="Source fact corrected"><div className="table-wrap"><table><thead><tr><th>Field</th><th>Original</th><th>Replacement</th></tr></thead><tbody>{["effective_date", "amount", "percentage", "quantity", "reference", "applies_to_change_set_id", "applies_to_reference"].filter((key) => correctedActivity[key] !== undefined || replacement[key] !== undefined).map((key) => <tr key={key}><td>{humanize(key)}</td><td>{String(correctedActivity[key] ?? "—")}</td><td>{String(replacement[key] ?? "—")}</td></tr>)}</tbody></table></div></Section>}
+    {correctedActivity && replacement && <Section title="Source fact corrected"><div className="table-wrap"><table><thead><tr><th>Field</th><th>Original</th><th>Replacement</th></tr></thead><tbody>{["effective_date", "amount", "percentage", "quantity", "reference", "applies_to_change_set_id", "applies_to_reference", "credit_allocations"].filter((key) => correctedActivity[key] !== undefined || replacement[key] !== undefined).map((key) => <tr key={key}><td>{humanize(key)}</td><td>{key === "credit_allocations" ? creditAllocationsSummary(correctedActivity[key], currency) : String(correctedActivity[key] ?? "—")}</td><td>{key === "credit_allocations" ? creditAllocationsSummary(replacement[key], currency) : String(replacement[key] ?? "—")}</td></tr>)}</tbody></table></div></Section>}
     {correctedOpening && replacementOpening && <Section title="Opening position corrected" subtitle="Accepted cumulative source facts before cutover; later schedules and journal movements are recalculated.">
       <div className="table-wrap"><table><thead><tr><th>Field</th><th>Before</th><th>Replacement</th></tr></thead><tbody>
         {["source_name", "billed_to_date", "contract_asset", "deferred_revenue", "rationale"].map((key) => <tr key={key}><td>{humanize(key)}</td><td>{["billed_to_date", "contract_asset", "deferred_revenue"].includes(key) ? money(String(correctedOpening[key] || 0), currency) : String(correctedOpening[key] || "—")}</td><td>{["billed_to_date", "contract_asset", "deferred_revenue"].includes(key) ? money(String(replacementOpening[key] || 0), currency) : String(replacementOpening[key] || "—")}</td></tr>)}
