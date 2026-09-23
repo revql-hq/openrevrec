@@ -18,13 +18,14 @@ from .domain import _date, _price, _resolved_account, _resolved_dimensions, peri
 ACTIVITY_TYPES = {
     "record_billing": "billing", "record_progress": "progress", "record_usage": "usage",
     "record_milestone": "milestone", "record_adjustment": "adjustment",
+    "record_rate_change": "rate_change",
     "modify_contract": "modification", "reassess_variable_consideration": "reassessment",
     "record_opening_position": "opening_position",
     "record_right_exercise": "right_exercise",
 }
 SCENARIO_COMMANDS = {"create_scenario", "apply_scenario", "rebase_scenario", "archive_scenario", "restore_scenario"}
-CORRECTABLE_COMMANDS = {"record_billing", "record_progress", "record_usage", "record_milestone"}
-JUDGMENT_COMMANDS = {"create_contract", "record_opening_position", "record_right_exercise", "link_renewal_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "set_policy", "reopen_period"}
+CORRECTABLE_COMMANDS = {"record_billing", "record_progress", "record_usage", "record_milestone", "record_rate_change"}
+JUDGMENT_COMMANDS = {"create_contract", "record_opening_position", "record_right_exercise", "link_renewal_contract", "modify_contract", "reassess_variable_consideration", "record_adjustment", "record_rate_change", "set_policy", "reopen_period"}
 COMMANDS = {"create_customer", "create_contract", "link_renewal_contract", "set_policy", "record_control_totals", "record_population_manifest", "record_export_posting", "record_term_review", "close_period", "reopen_period", "add_note", "edit_note", "edit_details", "attach_evidence", "record_judgment_review", "correct_activity"} | set(ACTIVITY_TYPES) | SCENARIO_COMMANDS
 DEFAULT_ACCOUNTS = {"revenue": "4000", "deferred_revenue": "2300", "contract_asset": "1200", "billing_clearing": "1100"}
 
@@ -451,11 +452,14 @@ class Application:
                 raise ValueError("Provide the replacement source facts.")
             target_command = f"record_{target['type']}"
             allowed = {"contract_id", "effective_date", "rationale", "reference"}
-            allowed |= {"amount", "applies_to_change_set_id", "applies_to_reference"} if target_command == "record_billing" else {"obligation_id", "quantity" if target_command == "record_usage" else "percentage"}
+            allowed |= ({"amount", "applies_to_change_set_id", "applies_to_reference"} if target_command == "record_billing" else
+                        {"component_id", "unit_rate"} if target_command == "record_rate_change" else
+                        {"obligation_id", "quantity" if target_command == "record_usage" else "percentage"})
             if set(replacement) - allowed:
                 raise ValueError("Replacement contains fields that do not belong to this activity.")
-            if replacement.get("contract_id") != target["contract_id"] or (target_command != "record_billing" and replacement.get("obligation_id") != target.get("obligation_id")):
-                raise ValueError("Correct the original contract and obligation; use a reviewed change for reassignment.")
+            target_field = "component_id" if target_command == "record_rate_change" else "obligation_id"
+            if replacement.get("contract_id") != target["contract_id"] or (target_command != "record_billing" and replacement.get(target_field) != target.get(target_field)):
+                raise ValueError("Correct the original contract and component or obligation; use a reviewed change for reassignment.")
             replacement["rationale"] = p["rationale"]
             p["replacement"] = self._prepare(db, target_command, replacement, scenario_id)
             p["contract_id"] = target["contract_id"]
@@ -537,6 +541,19 @@ class Application:
                     raise ValueError("Cumulative completion must be between 0 and 100.")
             if command == "record_usage":
                 p["quantity"] = decimal_string(p.get("quantity"), "Quantity", True)
+            if command == "record_rate_change":
+                if len(consideration) != 1 or consideration[0]["kind"] != "metered" or p.get("component_id") != consideration[0]["id"]:
+                    raise ValueError("Choose the metered consideration component for this rate change.")
+                if not contract["start_date"] <= p["effective_date"] <= contract["end_date"]:
+                    raise ValueError("A metered rate change must fall within the service term.")
+                if scenario_id == "main" and any(close["status"] == "closed" and close["period"] >= p["effective_date"][:7] for close in state["closes"]):
+                    raise ValueError("This rate change is effective in a closed period; explicitly reopen it before changing the rate.")
+                p["unit_rate"] = decimal_string(p.get("unit_rate"), "Unit rate", True)
+                if Decimal(p["unit_rate"]) <= 0:
+                    raise ValueError("Unit rate must be positive.")
+                if not isinstance(p.get("rationale"), str) or not p["rationale"].strip():
+                    raise ValueError("A rate change needs the accountant's renewed invoice-value conclusion.")
+                p["rationale"] = p["rationale"].strip()
             if command == "modify_contract":
                 p["rationale"] = required_text(p, "rationale")
                 if p.get("treatment") not in {"prospective", "catch_up"}:

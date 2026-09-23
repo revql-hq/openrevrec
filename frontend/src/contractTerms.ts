@@ -42,6 +42,12 @@ export function contractTerms(contract: Contract, effectiveDate: string) {
           ? { ...item, included_amount: activity.included_amount as string }
           : item,
       );
+    } else if (activity.type === "rate_change") {
+      consideration = consideration.map((item) =>
+        item.id === activity.component_id
+          ? { ...item, unit_rate: activity.unit_rate as string }
+          : item,
+      );
     }
   }
   return { consideration, obligations, termAssessment };

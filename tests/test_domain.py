@@ -128,7 +128,7 @@ def test_metered_rate_requires_explicit_eligibility_and_rejects_unsupported_term
         validate_contract(invalid)
     invalid = deepcopy(item)
     invalid["activities"] = [event("modification", treatment="prospective", rationale="Rate changed")]
-    with pytest.raises(ValueError, match="billing and usage only"):
+    with pytest.raises(ValueError, match="billing, usage, and dated rate changes only"):
         validate_contract(invalid)
 
 

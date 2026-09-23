@@ -27,6 +27,7 @@ SHEETS = {
     "Amendment Consideration": ["amendment_source_id", "id", "label", "kind", "amount", "included_amount", "potential_amount", "estimated_amount", "estimation_method", "rationale", "allocation_scope", "target_obligation_ids", "allocation_rationale", "target_period", "unit_rate", "pricing_basis", "rounding_period"],
     "Amendment Obligations": ["amendment_source_id", "id", "name", "kind", "ssp", "method", "start_date", "end_date", "total_units", "exercise_start", "exercise_end", "rationale"],
     "Billing": ["contract_id", "effective_date", "amount", "reference", "applies_to_change_set_id", "applies_to_reference", "rationale", "source_id"],
+    "Rate Changes": ["contract_id", "component_id", "effective_date", "unit_rate", "rationale", "source_id"],
     "Progress": ["contract_id", "obligation_id", "effective_date", "percentage", "rationale", "source_id"],
     "Usage": ["contract_id", "obligation_id", "effective_date", "quantity", "reference", "rationale", "source_id"],
     "Right Exercises": ["contract_id", "obligation_id", "effective_date", "delivery_method", "delivery_start", "delivery_end", "rationale", "source_id"],
@@ -34,11 +35,11 @@ SHEETS = {
     "Milestones": ["contract_id", "obligation_id", "effective_date", "percentage", "rationale", "source_id"],
     "Adjustments": ["contract_id", "obligation_id", "effective_date", "amount", "rationale", "source_id"],
     "Reassessments": ["contract_id", "component_id", "effective_date", "included_amount", "rationale", "source_id"],
-    "Corrections": ["source_id", "target_change_set_id", "target_source_id", "activity_type", "contract_id", "obligation_id", "effective_date", "amount", "percentage", "quantity", "reference", "rationale"],
+    "Corrections": ["source_id", "target_change_set_id", "target_source_id", "activity_type", "contract_id", "obligation_id", "effective_date", "amount", "percentage", "quantity", "reference", "rationale", "component_id", "unit_rate"],
     "Notes": ["entity_id", "kind", "body", "due_date", "source_id"],
     "Commands": ["command", "payload_json", "source_id"],
 }
-COMMAND_BY_SHEET = {"Customers": "create_customer", "Billing": "record_billing", "Progress": "record_progress", "Usage": "record_usage", "Right Exercises": "record_right_exercise", "Renewal Links": "link_renewal_contract", "Milestones": "record_milestone", "Adjustments": "record_adjustment", "Reassessments": "reassess_variable_consideration", "Notes": "add_note"}
+COMMAND_BY_SHEET = {"Customers": "create_customer", "Billing": "record_billing", "Rate Changes": "record_rate_change", "Progress": "record_progress", "Usage": "record_usage", "Right Exercises": "record_right_exercise", "Renewal Links": "link_renewal_contract", "Milestones": "record_milestone", "Adjustments": "record_adjustment", "Reassessments": "reassess_variable_consideration", "Notes": "add_note"}
 
 
 def safe_cell(value):
@@ -83,7 +84,8 @@ def template_bytes():
         ["Progress", "Cumulative percentage 0–100. Usage quantity is incremental; set total_units on finite usage obligations. Metered obligations have no unit cap."],
         ["Right exercises", "For a material right exercised before delivery, enter the exercise date, future delivery method and delivery dates on Right Exercises. A point-in-time delivery also needs a 100% Milestones row on its delivery date. Unexercised rights recognize at expiry."],
         ["Renewal links", "After entering both contracts and the right exercise, use Renewal Links to pair them. The renewal contract must cover the same delivery dates and contain only the NEW consideration; enter its initial transaction price in additional_consideration and new_consideration_only in price_basis. The old right allocation remains on the original contract. Review offsetting balances before posting."],
-        ["Consideration kinds", "fixed, variable, usage, metered, credit. Use included_amount for constrained consideration. Metered requires amount 0, positive unit_rate, pricing_basis right_to_invoice, rounding_period calendar_month, and an accountant rationale; it currently supports only one service obligation and no opening position or amendment."],
+        ["Consideration kinds", "fixed, variable, usage, metered, credit. Use included_amount for constrained consideration. Metered requires amount 0, positive unit_rate, pricing_basis right_to_invoice, rounding_period calendar_month, and an accountant rationale; it supports one service obligation, dated rate changes, and no opening position or other amendment."],
+        ["Rate changes", "Use Rate Changes for a new positive unit_rate effective before that day's usage. Enter the metered component ID and explain why invoice value at the revised rate still corresponds to delivered value. One rate change per effective date; each calendar month rounds once after valuing its usage at the applicable dates' rates."],
         ["Specific allocation", "For an eligible variable, usage, or credit component, set allocation_scope to specific, list target_obligation_ids separated by commas, and record allocation_rationale. For a variable or usage amount targeting one month of one time-based series obligation, also enter target_period as YYYY-MM and only one obligation ID. Otherwise leave these fields blank for relative SSP allocation."],
         ["Amendments", "Each amendment needs a stable source_id, effective date, treatment, and rationale. Set replace_consideration and/or replace_obligations to yes. Related rows must list the COMPLETE replacement set for that section."],
         ["Corrections", "Supply the original change set ID or its prior source_id, the activity type, replacement facts, and a new source_id. The original remains in history."],
@@ -241,6 +243,15 @@ def export_bytes(state, review=None):
     _sheet(book, "Component allocation", ["Contract ID", "Component ID", "Component", "Kind", "Included amount", "Scope", "Target obligation IDs", "Accounting rationale", "Target service month", "Targeted amount recognized to date", "Unit rate", "Pricing basis", "Rounding period"],
            [[contract["id"], item["component_id"], item["label"], item["kind"], Decimal(item["included_amount"]), item["scope"], ", ".join(item["target_obligation_ids"]), item["rationale"], item.get("target_period", ""), Decimal(item["recognized_to_date"]) if item.get("recognized_to_date") is not None else "", item.get("unit_rate", ""), item.get("pricing_basis", ""), item.get("rounding_period", "")]
             for contract in report["contracts"] for item in contract.get("allocation_components", [])])
+    _sheet(book, "Metered rate history", ["Contract ID", "Effective date", "Unit rate", "Accounting conclusion", "Activity ID"],
+           [[contract["id"], item["effective_date"], item["unit_rate"], item["rationale"], item["activity_id"]]
+            for contract in report["contracts"] for item in contract.get("metered_rate_history", [])])
+    _sheet(book, "Metered usage valuation", ["Contract ID", "Activity ID", "Delivery date", "Calendar month", "Units", "Applied rate", "Unrounded value"],
+           [[contract["id"], item["activity_id"], item["effective_date"], item["period"], item["quantity"], item["unit_rate"], item["unrounded_value"]]
+            for contract in report["contracts"] for item in contract.get("metered_usage_valuation", [])])
+    _sheet(book, "Metered monthly revenue", ["Contract ID", "Calendar month", "Units", "Unrounded value", "Recognized revenue"],
+           [[contract["id"], item["period"], item["quantity"], item["unrounded_value"], Decimal(item["revenue"])]
+            for contract in report["contracts"] for item in contract.get("metered_monthly_values", [])])
     _sheet(book, "Original promise changes", ["Contract ID", "Activity ID", "Effective date", "Component ID", "Component", "Original obligation ID", "Original obligation", "Allocated change", "Recognized to date", "Accounting rationale"],
            [[contract["id"], item.get("activity_id", ""), item["effective_date"], item["component_id"], item["component"], item["obligation_id"], item["obligation"], Decimal(item["allocated_change"]), Decimal(item["recognized_to_date"]), item["rationale"]]
             for contract in report["contracts"] for item in contract.get("original_promise_changes", [])])
@@ -425,9 +436,9 @@ def parse_workbook(data):
                 commands.extend((sheet, row, command, p) for row, p in parsed[sheet])
         for row, item in parsed["Corrections"]:
             activity_type = item.get("activity_type")
-            if activity_type not in {"billing", "progress", "usage", "milestone"}:
-                raise ValueError(f"Corrections row {row}: choose billing, progress, usage, or milestone activity_type.")
-            replacement = {key: item[key] for key in ("contract_id", "obligation_id", "effective_date", "amount", "percentage", "quantity", "reference") if key in item}
+            if activity_type not in {"billing", "progress", "usage", "milestone", "rate_change"}:
+                raise ValueError(f"Corrections row {row}: choose billing, progress, usage, milestone, or rate_change activity_type.")
+            replacement = {key: item[key] for key in ("contract_id", "obligation_id", "component_id", "effective_date", "amount", "percentage", "quantity", "unit_rate", "reference") if key in item}
             payload = {"replacement": replacement, "rationale": item.get("rationale", ""), "source_id": item.get("source_id", "")}
             if item.get("target_change_set_id"):
                 payload["target_change_set_id"] = item["target_change_set_id"]
@@ -489,7 +500,7 @@ def _import_bytes(app, data, filename, scenario_id, period, preview, expected_fr
                         if target is None:
                             raise ValueError("Original source_id was not found in this scenario; import the original activity first")
                         payload["target_change_set_id"] = target["id"]
-                    if template_version == TEMPLATE_VERSION and sheet in {"Opening Positions", "Progress", "Usage", "Right Exercises", "Renewal Links", "Milestones", "Adjustments", "Reassessments", "Amendments", "Corrections", "Commands"} and not payload.get("source_id"):
+                    if template_version == TEMPLATE_VERSION and sheet in {"Opening Positions", "Rate Changes", "Progress", "Usage", "Right Exercises", "Renewal Links", "Milestones", "Adjustments", "Reassessments", "Amendments", "Corrections", "Commands"} and not payload.get("source_id"):
                         raise ValueError("This activity requires a stable source_id")
                     if template_version == TEMPLATE_VERSION and sheet == "Billing" and not (payload.get("source_id") or payload.get("reference")):
                         raise ValueError("Billing requires a source_id or invoice reference")

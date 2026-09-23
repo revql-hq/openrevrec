@@ -464,7 +464,7 @@ function ComponentEditor({
             </p>
           )}
           {item.kind === "metered" && <>
-            <p className="fine-print">Use only for one service obligation set to Metered units, with no minimum, tiers, overages, or other consideration. Units are aggregated by calendar month, then multiplied by the rate and rounded to cents. Future units are not forecast.</p>
+            <p className="fine-print">Use only for one service obligation set to Metered units, with no minimum, tiers, overages, or other consideration. Each delivered unit uses the rate effective on its date; the month's value is rounded once to cents. Future units are not forecast.</p>
             <div className="form-grid">
               <Field label="Price per unit"><input type="number" min="0" step="any" required value={item.unit_rate || ""} onChange={(event) => update(i, { unit_rate: event.target.value })} /></Field>
               <Field label="Invoice-value conclusion" hint="Explain why the amount invoiced per unit corresponds directly to the value of service delivered to the customer."><textarea required rows={3} value={item.rationale || ""} onChange={(event) => update(i, { rationale: event.target.value })} /></Field>
@@ -1020,6 +1020,7 @@ export function ActivityForm(
       correctionTarget?.percentage || (activity === "milestone" ? "100" : ""),
     ),
     [quantity, setQuantity] = useState(correctionTarget?.quantity || ""),
+    [unitRate, setUnitRate] = useState(String(correctionTarget?.unit_rate || "")),
     [reference, setReference] = useState(correctionTarget?.reference || ""),
     [deliveryMethod, setDeliveryMethod] = useState(""),
     [deliveryStart, setDeliveryStart] = useState(""),
@@ -1069,6 +1070,7 @@ export function ActivityForm(
     billing: "Record billing",
     progress: "Update progress",
     usage: "Record units delivered",
+    rate_change: "Change invoice-value rate",
     milestone: "Record satisfaction milestone",
     right_exercise: "Exercise material right",
     adjustment: "Record revenue adjustment",
@@ -1080,6 +1082,7 @@ export function ActivityForm(
     progress: "Enter cumulative completion, from 0 to 100 percent.",
     usage:
       selectedTerms?.method === "metered" ? "Record incremental units delivered. The reviewed rate recognizes revenue from actual units; no quantity cap or forecast is assumed." : "Record incremental units delivered against the total contracted units.",
+    rate_change: "The revised rate applies to units delivered on or after its effective date. Earlier units retain their original rate; each month rounds once after all usage is valued.",
     milestone:
       "Record cumulative satisfaction. Use 100% for a completed point-in-time obligation.",
     right_exercise:
@@ -1104,6 +1107,8 @@ export function ActivityForm(
             ? { amount, reference, ...(Number(amount) < 0 ? creditOriginal === "external" ? { applies_to_reference: externalInvoice } : { applies_to_change_set_id: creditOriginal } : {}) }
             : activity === "reassessment"
               ? { component_id: component, included_amount: amount }
+              : activity === "rate_change"
+                ? { component_id: consideration[0].id, unit_rate: unitRate }
               : activity === "right_exercise"
                 ? { obligation_id: obligation, delivery_method: deliveryMethod, delivery_start: deliveryStart, delivery_end: deliveryEnd }
               : {
@@ -1135,7 +1140,7 @@ export function ActivityForm(
             onChange={(e) => setEffective(e.target.value)}
           />
         </Field>
-        {activity !== "billing" && activity !== "reassessment" && (
+        {activity !== "billing" && activity !== "reassessment" && activity !== "rate_change" && (
           <Field label="Performance obligation" hint={!eligibleObligations.length ? "No obligation uses a compatible satisfaction method at this date." : undefined}>
             <select
               required
@@ -1214,7 +1219,8 @@ export function ActivityForm(
             />
           </Field>
         )}
-        {activity !== "reassessment" && activity !== "right_exercise" && (
+        {activity === "rate_change" && <Field label="Revised price per unit" hint={`Rate currently effective on this date: ${consideration[0]?.unit_rate || "—"} ${props.state.workspace.currency}/unit.`}><input type="number" min="0" step="any" required value={unitRate} onChange={(event) => setUnitRate(event.target.value)} /></Field>}
+        {activity !== "reassessment" && activity !== "right_exercise" && activity !== "rate_change" && (
           <Field
             label={
               activity === "billing"
@@ -1238,10 +1244,10 @@ export function ActivityForm(
       <Field label="Rationale">
         <textarea
           rows={3}
-          required={Boolean(correctionTarget) || ["adjustment", "reassessment", "right_exercise"].includes(activity) || (activity === "billing" && Number(amount) < 0)}
+          required={Boolean(correctionTarget) || ["adjustment", "reassessment", "right_exercise", "rate_change"].includes(activity) || (activity === "billing" && Number(amount) < 0)}
           value={rationale}
           onChange={(e) => setRationale(e.target.value)}
-          placeholder="Explain the activity and supporting evidence."
+          placeholder={activity === "rate_change" ? "Why does invoice value at the new rate still correspond to value delivered? Cite the approved rate source." : "Explain the activity and supporting evidence."}
         />
       </Field>
     </CommandDialog>

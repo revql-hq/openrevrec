@@ -1365,6 +1365,80 @@ def test_metered_usage_correction_reprices_open_period_and_closed_period_is_prot
         }, period="2026-02")
 
 
+def test_metered_rate_changes_use_delivery_date_and_round_once_per_month(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "cus_1", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "con_1", "name": "Metered service", "customer_id": "cus_1",
+        "start_date": "2026-01-01", "end_date": "2026-12-31",
+        "consideration": [{"id": "meter", "kind": "metered", "amount": "0", "unit_rate": "0.015",
+                           "pricing_basis": "right_to_invoice", "rounding_period": "calendar_month",
+                           "rationale": "Invoice value tracks delivered units."}],
+        "obligations": [{"id": "units", "name": "Units", "kind": "service", "ssp": "0", "method": "metered",
+                         "start_date": "2026-01-01", "end_date": "2026-12-31"}],
+    }, period="2026-01")
+    application.execute("record_usage", {"contract_id": "con_1", "obligation_id": "units",
+                                          "effective_date": "2026-01-10", "quantity": "1001"}, period="2026-01")
+    application.execute("record_usage", {"contract_id": "con_1", "obligation_id": "units",
+                                          "effective_date": "2026-01-15", "quantity": "9"}, period="2026-01")
+    january_before = application.state(period="2026-01")["report"]
+    assert january_before["summary"]["revenue"] == "15.15"
+    with pytest.raises(ValueError, match="conclusion"):
+        application.execute("record_rate_change", {"contract_id": "con_1", "component_id": "meter",
+            "effective_date": "2026-01-15", "unit_rate": "0.017"}, period="2026-01")
+    first_change = application.execute("record_rate_change", {"contract_id": "con_1", "component_id": "meter",
+        "effective_date": "2026-01-15", "unit_rate": "0.017",
+        "rationale": "Approved schedule confirms the revised price reflects delivered units."}, period="2026-01")["result"]["change_set_id"]
+    january = application.state(period="2026-01")["report"]
+    assert january["summary"]["revenue"] == "15.17"
+    contract = january["contracts"][0]
+    assert [(item["effective_date"], item["unit_rate"]) for item in contract["metered_rate_history"]] == [
+        ("2026-01-01", "0.015"), ("2026-01-15", "0.017")]
+    assert [(item["quantity"], item["unit_rate"]) for item in contract["metered_usage_valuation"]] == [
+        ("1001", "0.015"), ("9", "0.017")]
+    assert contract["metered_monthly_values"] == [{"period": "2026-01", "quantity": "1010",
+        "unrounded_value": "15.168", "revenue": "15.17"}]
+    assert sum(item["debit_minor"] - item["credit_minor"] for item in january["journals"]) == 0
+    with pytest.raises(ValueError, match="one metered rate change"):
+        application.execute("record_rate_change", {"contract_id": "con_1", "component_id": "meter",
+            "effective_date": "2026-01-15", "unit_rate": "0.018", "rationale": "Duplicate date"}, period="2026-01")
+    with pytest.raises(ValueError, match="different from the preceding rate"):
+        application.execute("record_rate_change", {"contract_id": "con_1", "component_id": "meter",
+            "effective_date": "2026-02-10", "unit_rate": "0.017", "rationale": "Unchanged rate"}, period="2026-02")
+    application.execute("record_usage", {"contract_id": "con_1", "obligation_id": "units",
+                                          "effective_date": "2026-02-01", "quantity": "1"}, period="2026-02")
+    application.execute("record_usage", {"contract_id": "con_1", "obligation_id": "units",
+                                          "effective_date": "2026-02-12", "quantity": "20"}, period="2026-02")
+    second_change = application.execute("record_rate_change", {"contract_id": "con_1", "component_id": "meter",
+        "effective_date": "2026-02-10", "unit_rate": "0.019",
+        "rationale": "Approved February price remains directly tied to units delivered."}, period="2026-02")["result"]["change_set_id"]
+    february = application.state(period="2026-02")["report"]
+    assert february["summary"]["revenue"] == "0.40"
+    assert february["summary"]["recognized_to_date"] == "15.57"
+    support = load_workbook(io.BytesIO(export_bytes(application.state(period="2026-02"))), read_only=True)
+    monthly_row = list(support["Metered monthly revenue"].values)[-1]
+    assert monthly_row[:4] == ("con_1", "2026-02", "21", "0.397")
+    assert monthly_row[4] == 0.4
+    assert [(row[4], row[5], row[6]) for row in list(support["Metered usage valuation"].values)[-2:]] == [
+        ("1", "0.017", "0.017"), ("20", "0.019", "0.380")]
+    assert list(support["Metered rate history"].values)[-1][4] == second_change
+    support.close()
+    application.execute("close_period", {"period": "2026-01", "review_dispositions": accept_review_items(application, "2026-01")}, period="2026-01")
+    corrected = application.execute("correct_activity", {"target_change_set_id": second_change,
+        "rationale": "Corrected approved February rate source", "replacement": {"contract_id": "con_1",
+        "component_id": "meter", "effective_date": "2026-02-10", "unit_rate": "0.023"}}, period="2026-02")
+    assert corrected["state"]["report"]["summary"]["revenue"] == "0.48"
+    assert application.state(period="2026-01")["report"]["summary"]["revenue"] == "15.17"
+    with pytest.raises(ValueError, match="closed period"):
+        application.execute("correct_activity", {"target_change_set_id": first_change,
+            "rationale": "Retrospective correction", "replacement": {"contract_id": "con_1",
+            "component_id": "meter", "effective_date": "2026-01-15", "unit_rate": "0.020"}}, period="2026-02")
+    with pytest.raises(ValueError, match="closed period"):
+        application.execute("record_rate_change", {"contract_id": "con_1", "component_id": "meter",
+            "effective_date": "2026-01-25", "unit_rate": "0.021",
+            "rationale": "Late rate change after the accepted close"}, period="2026-02")
+
+
 def test_metered_rate_and_units_import_from_structured_workbook(tmp_path):
     application = app(tmp_path)
     book = load_workbook(io.BytesIO(template_bytes()))
@@ -1389,6 +1463,44 @@ def test_metered_rate_and_units_import_from_structured_workbook(tmp_path):
     allocation = list(support["Component allocation"].values)
     assert allocation[1][-3:] == ("1.25", "right_to_invoice", "calendar_month")
     support.close()
+
+
+def test_metered_rate_change_import_and_source_correction(tmp_path):
+    application = app(tmp_path)
+    book = load_workbook(io.BytesIO(template_bytes()))
+    book["Customers"].append(["cus_1", "Customer"])
+    book["Contracts"].append(["con_1", "cus_1", "Metered service", "2026-01-01", "2026-12-31"])
+    consideration = {"contract_id": "con_1", "id": "meter", "label": "Service units", "kind": "metered",
+                     "amount": "0", "unit_rate": "0.015", "pricing_basis": "right_to_invoice",
+                     "rounding_period": "calendar_month", "rationale": "Invoice value tracks delivered units."}
+    headers = [cell.value for cell in book["Consideration"][1]]
+    book["Consideration"].append([consideration.get(key) for key in headers])
+    book["Obligations"].append(["con_1", "units", "Units", "service", "0", "metered", "2026-01-01", "2026-12-31"])
+    book["Rate Changes"].append(["con_1", "meter", "2026-01-15", "0.017",
+                                 "New approved unit rate reflects delivered value.", "rate:jan-15"])
+    book["Usage"].append(["con_1", "units", "2026-01-10", "1001", "MTR-1", "", "usage:jan-10"])
+    book["Usage"].append(["con_1", "units", "2026-01-15", "9", "MTR-2", "", "usage:jan-15"])
+    data = io.BytesIO()
+    book.save(data)
+    book.close()
+    preview = preview_import_bytes(application, data.getvalue(), period="2026-01")
+    assert preview["state"]["report"]["summary"]["revenue"] == "15.17"
+    committed = import_bytes(application, data.getvalue(), period="2026-01")
+    assert committed["state"]["report"]["summary"]["revenue"] == "15.17"
+    correction_book = load_workbook(io.BytesIO(template_bytes()))
+    correction = {"source_id": "correction:rate-1", "target_source_id": "rate:jan-15",
+                  "activity_type": "rate_change", "contract_id": "con_1", "component_id": "meter",
+                  "effective_date": "2026-01-15", "unit_rate": "0.019",
+                  "rationale": "Corrected approved rate schedule"}
+    correction_headers = [cell.value for cell in correction_book["Corrections"][1]]
+    correction_book["Corrections"].append([correction.get(key) for key in correction_headers])
+    corrected_data = io.BytesIO()
+    correction_book.save(corrected_data)
+    correction_book.close()
+    corrected = import_bytes(application, corrected_data.getvalue(), period="2026-01")
+    assert corrected["state"]["report"]["summary"]["revenue"] == "15.19"
+    assert [row["type"] for row in corrected["state"]["contracts"][0]["activities"]].count("rate_change") == 1
+    assert corrected["state"]["contracts"][0]["activities"][0]["unit_rate"] == "0.019"
 
 
 def test_customer_external_reference_is_unique_within_its_source_system(tmp_path):

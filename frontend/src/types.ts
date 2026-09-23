@@ -47,6 +47,8 @@ export type Activity = {
   amount?: string;
   percentage?: string;
   quantity?: string;
+  unit_rate?: string;
+  component_id?: string;
   reference?: string;
   rationale?: string;
   [key: string]: unknown;
@@ -115,6 +117,9 @@ export type ContractReport = Totals & {
     recognized_to_date: string;
     rationale: string;
   }[];
+  metered_rate_history?: { effective_date: string; unit_rate: string; rationale: string; activity_id: string }[];
+  metered_usage_valuation?: { activity_id: string; effective_date: string; period: string; quantity: string; unit_rate: string; unrounded_value: string }[];
+  metered_monthly_values?: { period: string; quantity: string; unrounded_value: string; revenue: string }[];
 };
 export type Journal = {
   id: string;

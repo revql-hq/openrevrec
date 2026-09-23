@@ -73,3 +73,18 @@ test('switching to fixed pricing removes constrained fields without mutating the
   assert.equal(changeComponentKind(monthly, 'usage').target_period, '2026-06');
   assert.equal(changeComponentKind(monthly, 'fixed').target_period, undefined);
 });
+
+test('metered rate changes appear only from their delivery-effective date', () => {
+  const metered = {
+    consideration: [{ id: 'meter', kind: 'metered', unit_rate: '0.015' }],
+    obligations: [{ id: 'units', method: 'metered' }],
+    activities: [
+      { type: 'rate_change', component_id: 'meter', effective_date: '2026-02-10', unit_rate: '0.019' },
+      { type: 'rate_change', component_id: 'meter', effective_date: '2026-01-15', unit_rate: '0.017' },
+    ],
+  };
+  assert.equal(contractTerms(metered, '2026-01-14').consideration[0].unit_rate, '0.015');
+  assert.equal(contractTerms(metered, '2026-01-15').consideration[0].unit_rate, '0.017');
+  assert.equal(contractTerms(metered, '2026-02-10').consideration[0].unit_rate, '0.019');
+  assert.equal(metered.consideration[0].unit_rate, '0.015');
+});

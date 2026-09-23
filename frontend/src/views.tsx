@@ -735,7 +735,7 @@ export function ContractView(props: ViewProps) {
   const customer = state.customers.find((c) => c.id === contract.customer_id);
   const effectiveTerms = contractTerms(contract, `${props.period}-31`);
   const isMetered = effectiveTerms.consideration.some((item) => item.kind === "metered");
-  const availableAction = isMetered && !["billing", "usage"].includes(action) ? "billing" : action;
+  const availableAction = isMetered && !["billing", "usage", "rate_change"].includes(action) ? "billing" : action;
   const termReview = termReviewStatus(state, contract, `${props.period}-31`);
   const shownTerms = termsView === "effective" ? effectiveTerms : contract;
   const serviceDates = effectiveTerms.obligations.flatMap((obligation) => [obligation.start_date, obligation.end_date]).sort();
@@ -772,6 +772,7 @@ export function ContractView(props: ViewProps) {
             <option value="billing">Billing</option>
             {!isMetered && <option value="progress">Progress</option>}
             <option value="usage">Units delivered</option>
+            {isMetered && <option value="rate_change">Change unit rate</option>}
             {!isMetered && <option value="milestone">Satisfaction milestone</option>}
             {effectiveTerms.obligations.some((item) => item.kind === "material_right") && <option value="right_exercise">Exercise material right</option>}
             {!isMetered && <option value="reassessment">Consideration reassessment</option>}
@@ -821,7 +822,7 @@ export function ContractView(props: ViewProps) {
       </div>
       {tab === "Overview" && (
         <>
-          {isMetered && <p className="notice">Invoice-value rate: {effectiveTerms.consideration[0].unit_rate} {currency}/unit. Revenue includes delivered units only; future volume is unknown.</p>}
+          {isMetered && <p className="notice">Rate at period end: {effectiveTerms.consideration[0].unit_rate} {currency}/unit. Usage retains the rate effective on its delivery date; future volume is unknown.</p>}
           <div className="detail-columns">
             <Section title="Contract details">
               <dl className="definition-list">
@@ -940,7 +941,7 @@ export function ContractView(props: ViewProps) {
               </tbody>
             </table>
           </div>
-          {isMetered && <p className="fine-print">Units are aggregated by calendar month before the rate is applied and rounded to cents.</p>}
+          {isMetered && <><p className="fine-print">Each usage row uses the rate effective on its delivery date. The month's unrounded values are summed, then rounded once to cents.</p>{report && <><h3>Rate history</h3><div className="table-wrap"><table><thead><tr><th>Effective date</th><th className="number">Rate per unit</th><th>Invoice-value conclusion</th></tr></thead><tbody>{report.metered_rate_history?.map((item, index) => <tr key={`${item.effective_date}:${index}`}><td>{dateLabel(item.effective_date)}</td><td className="number">{item.unit_rate} {currency}</td><td>{item.rationale}</td></tr>)}</tbody></table></div><h3>Monthly usage valuation</h3><div className="table-wrap"><table><thead><tr><th>Month</th><th className="number">Units</th><th className="number">Unrounded value</th><th className="number">Revenue</th></tr></thead><tbody>{report.metered_monthly_values?.map((item) => <tr key={item.period}><td>{monthLabel(item.period)}</td><td className="number">{item.quantity}</td><td className="number">{item.unrounded_value}</td><td className="number">{money(item.revenue, currency)}</td></tr>)}</tbody></table></div></>}</>}
         </Section>
       )}
       {tab === "Obligations" && (
@@ -1171,6 +1172,8 @@ function ActivityTable({
                   ? Number(a.contract_asset || 0) > 0 ? `Opening asset ${money(String(a.contract_asset), currency)}` : Number(a.deferred_revenue || 0) > 0 ? `Opening deferred ${money(String(a.deferred_revenue), currency)}` : "No opening net balance"
                   : a.type === "right_exercise"
                   ? `Delivery ${dateLabel(String(a.delivery_start))} to ${dateLabel(String(a.delivery_end))}`
+                  : a.type === "rate_change"
+                  ? `${a.unit_rate} ${currency}/unit`
                   : a.amount !== undefined
                   ? money(a.amount, currency)
                   : a.percentage !== undefined
@@ -1182,7 +1185,7 @@ function ActivityTable({
                         : "—"}
               </td>
               <td className="muted wrap">{a.rationale || "—"}</td>
-              {onCorrect && <td>{["billing", "progress", "usage", "milestone"].includes(a.type) && <Button type="button" onClick={() => onCorrect(a)}>Correct</Button>}{Boolean(a.corrects) && <small className="cell-subtitle">Corrected from {String(a.corrects)}</small>}</td>}
+              {onCorrect && <td>{["billing", "progress", "usage", "milestone", "rate_change"].includes(a.type) && <Button type="button" onClick={() => onCorrect(a)}>Correct</Button>}{Boolean(a.corrects) && <small className="cell-subtitle">Corrected from {String(a.corrects)}</small>}</td>}
             </tr>
           ))}
         </tbody>

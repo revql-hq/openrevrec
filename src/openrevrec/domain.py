@@ -29,7 +29,7 @@ ONE = Decimal("1")
 METHODS = {"exact_days", "monthly", "prorated_monthly", "point_in_time", "progress", "usage", "metered", "milestone"}
 KINDS = {"service", "implementation", "license", "support", "product", "material_right", "other"}
 CONSIDERATION_KINDS = {"fixed", "variable", "usage", "metered", "credit"}
-ACTIVITY_TYPES = {"billing", "progress", "usage", "milestone", "adjustment", "modification", "reassessment", "opening_position", "right_exercise"}
+ACTIVITY_TYPES = {"billing", "progress", "usage", "milestone", "adjustment", "modification", "reassessment", "opening_position", "right_exercise", "rate_change"}
 REPORT_AMOUNTS = (
     "transaction_price", "revenue", "recognized_to_date", "billings", "billed_to_date",
     "deferred_revenue", "contract_asset", "remaining_revenue",
@@ -373,7 +373,7 @@ def _ordered_activities(contract: dict) -> list[dict]:
     # Terms take effect at the beginning of a day, before that day's delivery.
     # Preserve command order within each phase, including successive revisions.
     def phase(item: dict) -> int:
-        return (0 if item.get("type") in {"modification", "reassessment"} else
+        return (0 if item.get("type") in {"modification", "reassessment", "rate_change"} else
                 1 if item.get("type") == "right_exercise" else
                 3 if item.get("type") == "adjustment" else 2)
 
@@ -407,8 +407,8 @@ def validate_contract(contract: dict) -> None:
     activities = contract.get("activities", [])
     if not isinstance(activities, list):
         raise ValueError("activities must be a list")
-    if components[0]["kind"] == "metered" and (declared_cutover or any(item.get("type") not in {"billing", "usage"} for item in activities)):
-        raise ValueError("Metered right-to-invoice contracts support billing and usage only; opening balances, amendments, and adjustments need separate review")
+    if components[0]["kind"] == "metered" and (declared_cutover or any(item.get("type") not in {"billing", "usage", "rate_change"} for item in activities)):
+        raise ValueError("Metered right-to-invoice contracts support billing, usage, and dated rate changes only; opening balances and other amendments need separate review")
     seen = set()
     for activity in activities:
         if not isinstance(activity, dict):
@@ -441,6 +441,8 @@ def validate_contract(contract: dict) -> None:
     pre_mod_targeted_variable_ids: set[str] = set()
     original_variable_bases: dict[str, tuple[dict, list[dict], bool]] = {}
     reassessed_original_variables: set[str] = set()
+    metered_rate = decimal(components[0]["unit_rate"]) if components[0]["kind"] == "metered" else None
+    rate_change_dates: set[str] = set()
     for activity in _ordered_activities(contract):
         kind = activity.get("type")
         if kind not in ACTIVITY_TYPES:
@@ -592,6 +594,22 @@ def validate_contract(contract: dict) -> None:
             if original_basis:
                 reassessed_original_variables.add(component["id"])
             continue
+        if kind == "rate_change":
+            if metered_rate is None or activity.get("component_id") != components[0]["id"]:
+                raise ValueError("A rate change requires the current metered component")
+            day = activity["effective_date"]
+            if not obligations[0]["start_date"] <= day <= obligations[0]["end_date"]:
+                raise ValueError("A metered rate change must fall within the service term")
+            if day in rate_change_dates:
+                raise ValueError("Record only one metered rate change per effective date")
+            revised_rate = decimal(activity.get("unit_rate"), "unit_rate")
+            if revised_rate <= ZERO or revised_rate == metered_rate:
+                raise ValueError("The revised metered unit rate must be positive and different from the preceding rate")
+            if not str(activity.get("rationale", "")).strip():
+                raise ValueError("A rate change needs the accountant's renewed invoice-value conclusion")
+            rate_change_dates.add(day)
+            metered_rate = revised_rate
+            continue
         if kind == "billing":
             decimal(activity.get("amount"), "billing amount")
             continue
@@ -737,12 +755,20 @@ def _project_metered(contract: dict, selected: str) -> tuple[dict, list[dict], l
     selected_end = period_end(selected)
     previous_end = selected_end.replace(day=1) - timedelta(days=1)
     units_by_month: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    value_by_month: dict[str, Decimal] = defaultdict(lambda: ZERO)
     billings: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    rate_history = [{"effective_date": contract["start_date"], "unit_rate": str(rate),
+                     "rationale": component["rationale"], "activity_id": ""}]
+    usage_valuation = []
     billed = prior_billed = ZERO
     for activity in _ordered_activities(contract):
         day = _date(activity["effective_date"])
         month = day.strftime("%Y-%m")
-        if activity["type"] == "billing":
+        if activity["type"] == "rate_change":
+            rate = decimal(activity["unit_rate"], "unit_rate")
+            rate_history.append({"effective_date": activity["effective_date"], "unit_rate": str(rate),
+                                 "rationale": activity["rationale"], "activity_id": activity.get("id", "")})
+        elif activity["type"] == "billing":
             value = money(decimal(activity["amount"]))
             billings[month] += value
             if day <= selected_end:
@@ -750,10 +776,16 @@ def _project_metered(contract: dict, selected: str) -> tuple[dict, list[dict], l
             if day <= previous_end:
                 prior_billed += value
         else:
-            units_by_month[month] += decimal(activity["quantity"], "quantity")
-    schedule = {month: money(units * rate) for month, units in units_by_month.items()}
+            units = decimal(activity["quantity"], "quantity")
+            value = units * rate
+            units_by_month[month] += units
+            value_by_month[month] += value
+            usage_valuation.append({"activity_id": activity.get("id", ""), "effective_date": activity["effective_date"],
+                                    "period": month, "quantity": str(units), "unit_rate": str(rate), "unrounded_value": str(value)})
+    schedule = {month: money(value) for month, value in value_by_month.items()}
     selected_earned = sum((value for month, value in schedule.items() if month <= selected), ZERO)
     prior_earned = sum((value for month, value in schedule.items() if month < selected), ZERO)
+    selected_rate = next((item["unit_rate"] for item in reversed(rate_history) if item["effective_date"] <= selected_end.isoformat()), component["unit_rate"])
     ending_deferred, ending_asset = max(ZERO, billed - selected_earned), max(ZERO, selected_earned - billed)
     beginning_deferred, beginning_asset = max(ZERO, prior_billed - prior_earned), max(ZERO, prior_earned - prior_billed)
     report = {
@@ -768,9 +800,14 @@ def _project_metered(contract: dict, selected: str) -> tuple[dict, list[dict], l
                                    "kind": "metered", "included_amount": amount(selected_earned),
                                    "recognized_to_date": amount(selected_earned), "scope": "relative_ssp",
                                    "target_obligation_ids": [], "target_period": "", "rationale": component["rationale"],
-                                   "unit_rate": str(rate), "pricing_basis": component["pricing_basis"],
+                                   "unit_rate": selected_rate, "pricing_basis": component["pricing_basis"],
                                    "rounding_period": component["rounding_period"]}],
         "original_promise_changes": [], "cutover_period": None,
+        "metered_rate_history": [item for item in rate_history if item["effective_date"] <= selected_end.isoformat()],
+        "metered_usage_valuation": [item for item in usage_valuation if item["period"] <= selected],
+        "metered_monthly_values": [{"period": month, "quantity": str(units_by_month[month]),
+                                     "unrounded_value": str(value_by_month[month]), "revenue": amount(value)}
+                                    for month, value in sorted(schedule.items()) if month <= selected],
         "beginning_deferred_revenue": amount(beginning_deferred), "beginning_contract_asset": amount(beginning_asset),
         "catch_ups": [],
     }
