@@ -221,6 +221,9 @@ def export_bytes(state, review=None):
     _sheet(book, "Component allocation", ["Contract ID", "Component ID", "Component", "Kind", "Included amount", "Scope", "Target obligation IDs", "Accounting rationale", "Target service month", "Targeted amount recognized to date"],
            [[contract["id"], item["component_id"], item["label"], item["kind"], Decimal(item["included_amount"]), item["scope"], ", ".join(item["target_obligation_ids"]), item["rationale"], item.get("target_period", ""), Decimal(item["recognized_to_date"]) if item.get("recognized_to_date") is not None else ""]
             for contract in report["contracts"] for item in contract.get("allocation_components", [])])
+    _sheet(book, "Original promise changes", ["Contract ID", "Activity ID", "Effective date", "Component ID", "Component", "Original obligation ID", "Original obligation", "Allocated change", "Recognized to date", "Accounting rationale"],
+           [[contract["id"], item.get("activity_id", ""), item["effective_date"], item["component_id"], item["component"], item["obligation_id"], item["obligation"], Decimal(item["allocated_change"]), Decimal(item["recognized_to_date"]), item["rationale"]]
+            for contract in report["contracts"] for item in contract.get("original_promise_changes", [])])
     _sheet(book, "Activity", ["version", "change_set_id", "scenario_id", "command", "entity_id", "effective_date", "recorded_at", "rationale", "source", "payload"], [[r.get(k, "") for k in ["version", "id", "scenario_id", "command", "entity_id", "effective_date", "recorded_at", "rationale", "source", "payload"]] for r in reversed(state["change_sets"])])
     entity_names = {row["id"]: row["name"] for row in state["contracts"] + state["customers"]}
     period_end = report["period"] + "-31"

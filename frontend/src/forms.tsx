@@ -1034,16 +1034,26 @@ export function ActivityForm(
     ? selectedComponent
     : variableComponents[0]?.id || "";
   const preModificationVariableIds = new Set<string>();
+  const changedOriginalPromiseIds = new Set<string>();
   let componentsBeforeAmendment = contract.consideration;
-  for (const change of [...contract.activities].filter((item) => item.type === "modification" && item.effective_date <= effective).sort((a, b) => a.effective_date.localeCompare(b.effective_date) || (a.version || 0) - (b.version || 0))) {
+  for (const change of [...contract.activities].filter((item) => ["modification", "reassessment"].includes(item.type) && item.effective_date <= effective).sort((a, b) => a.effective_date.localeCompare(b.effective_date) || (a.version || 0) - (b.version || 0))) {
+    if (change.type === "reassessment") {
+      componentsBeforeAmendment = componentsBeforeAmendment.map((item) => item.id === change.component_id ? { ...item, included_amount: String(change.included_amount) } : item);
+      continue;
+    }
+    const revised = (change.consideration as Component[] | undefined) || componentsBeforeAmendment;
     if (change.treatment === "prospective") {
       for (const item of componentsBeforeAmendment) {
-        if (item.allocation_scope === "specific" && ["variable", "usage"].includes(item.kind)) preModificationVariableIds.add(item.id);
+        if (!["variable", "usage"].includes(item.kind)) continue;
+        preModificationVariableIds.add(item.id);
+        const next = revised.find((candidate) => candidate.id === item.id);
+        if (!next || Number(next.included_amount ?? next.amount) !== Number(item.included_amount ?? item.amount) || (next.allocation_scope || "relative_ssp") !== (item.allocation_scope || "relative_ssp") || (next.target_period || "") !== (item.target_period || "") || JSON.stringify(next.target_obligation_ids || []) !== JSON.stringify(item.target_obligation_ids || [])) changedOriginalPromiseIds.add(item.id);
       }
     }
-    componentsBeforeAmendment = (change.consideration as Component[] | undefined) || componentsBeforeAmendment;
+    componentsBeforeAmendment = revised;
   }
   const reassessmentNeedsOriginalPromise = activity === "reassessment" && preModificationVariableIds.has(component);
+  const changedOriginalPromise = reassessmentNeedsOriginalPromise && changedOriginalPromiseIds.has(component);
   const names: Record<string, string> = {
     billing: "Record billing",
     progress: "Update progress",
@@ -1073,7 +1083,7 @@ export function ActivityForm(
       {...props}
       title={correctionTarget ? `Correct ${activity}` : names[activity]}
       subtitle={correctionTarget ? `${contract.name} · replaces the selected source activity while retaining its history` : contract.name}
-      canSubmit={!reassessmentNeedsOriginalPromise}
+      canSubmit={!changedOriginalPromise}
       command={() => {
         const payload = {
           contract_id: contract.id,
@@ -1102,7 +1112,8 @@ export function ActivityForm(
       successMessage={correctionTarget ? `${humanize(activity)} source fact corrected.` : `${humanize(activity)} recorded.`}
     >
       <p className="notice">{correctionTarget ? "Replace the original source facts. The original entry stays in change history; this correction recalculates all affected periods." : descriptions[activity]}</p>
-      {reassessmentNeedsOriginalPromise && <p className="warning">This targeted variable amount was promised before a prospective amendment. Its later change needs an original-promise allocation treatment that this form cannot calculate.</p>}
+      {changedOriginalPromise && <p className="warning">This variable amount changed as part of a prospective amendment. A later estimate change needs a reviewed split between the original and amended promises.</p>}
+      {reassessmentNeedsOriginalPromise && !changedOriginalPromise && <p className="fine-print">This amount predates a prospective amendment. Its change follows the original allocation, with revenue for services already delivered recognized in this period. Preview checks whether the original promise and satisfaction path remain identifiable.</p>}
       {activity === "milestone" && selectedTerms?.kind === "material_right" && <p className="fine-print">{selectedRightExercise ? `This exercised right requires a 100% delivery milestone on ${dateLabel(String(selectedRightExercise.delivery_start))}.` : "A milestone for an unexercised right represents delivery within its exercise window, not an election with later delivery."}</p>}
       <div className="form-grid">
         <Field label="Effective date">

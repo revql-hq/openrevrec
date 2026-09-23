@@ -98,6 +98,17 @@ export type ContractReport = Totals & {
     target_period?: string;
     rationale: string;
   }[];
+  original_promise_changes?: {
+    activity_id?: string | null;
+    effective_date: string;
+    component_id: string;
+    component: string;
+    obligation_id: string;
+    obligation: string;
+    allocated_change: string;
+    recognized_to_date: string;
+    rationale: string;
+  }[];
 };
 export type Journal = {
   id: string;
