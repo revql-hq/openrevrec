@@ -842,6 +842,28 @@ class Application:
                 raise ValueError("Correct the original contract and component or obligation; use a reviewed change for reassignment.")
             replacement["rationale"] = p["rationale"]
             p["replacement"] = self._prepare(db, target_command, replacement, scenario_id)
+            if target_command == "record_billing" and Decimal(target["amount"]) > 0:
+                contract = next(item for item in state["contracts"] if item["id"] == target["contract_id"])
+                invoice_ids = {target["id"]}
+                corrections = {change["id"]: change["payload"]["target_change_set_id"]
+                               for change in state["change_sets"] if change["command"] == "correct_activity"}
+                previous_id = corrections.get(target["id"])
+                while previous_id and previous_id not in invoice_ids:
+                    invoice_ids.add(previous_id)
+                    previous_id = corrections.get(previous_id)
+                linked_credits = [activity for activity in contract["activities"] if activity["type"] == "billing"
+                                  and Decimal(activity["amount"]) < 0 and any(
+                                      allocation.get("applies_to_change_set_id") in invoice_ids
+                                      for allocation in _credit_targets(activity))]
+                if linked_credits:
+                    corrected_invoice = p["replacement"]
+                    if Decimal(corrected_invoice["amount"]) <= 0:
+                        raise ValueError("Correct the linked credits before changing their original invoice to a nonpositive amount.")
+                    corrected_source = corrected_invoice.get("source_contract_reference") or contract.get("reference")
+                    if any(corrected_invoice["effective_date"] > credit["effective_date"] or
+                           corrected_source != (credit.get("source_contract_reference") or contract.get("reference"))
+                           for credit in linked_credits):
+                        raise ValueError("Correct the linked credits before moving their original invoice after the credit or to another source agreement.")
             p["contract_id"] = target["contract_id"]
             p["effective_date"] = p["replacement"]["effective_date"]
         elif command == "record_opening_position":

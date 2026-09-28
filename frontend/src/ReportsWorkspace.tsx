@@ -100,7 +100,7 @@ export type Review = {
     mismatched_opening_obligation_measures?: { contract_reference: string; cutover_date: string; obligation_id: string; source_obligation_reference?: string; source_measure: string; workspace_measure: string; activity_id: string }[];
     mismatched_source_opening_obligation_totals?: { contract_reference: string; cutover_date: string; source_total: string; source_opening_total: string }[];
   };
-  exceptions: { evidence: { change_set_id: string; entity_name: string; command: string; review_status: string; linked_file_count: number }[]; warnings: { message: string; contract_id: string | null; obligation_id: string | null; related_contract_id: string | null }[] };
+  exceptions: { evidence: { change_set_id: string; entity_name: string; command: string; review_status: string; linked_file_count: number }[]; warnings: { message: string; contract_id: string | null; obligation_id: string | null; related_contract_id: string | null; change_set_id?: string | null }[] };
   counts: {
     contracts: number;
     open_tasks: number;
@@ -461,7 +461,7 @@ function WarningRows({ review, props }: { review: Review; props: ViewProps }) {
       <span className="warning-message">{warning}
         {(messageCounts.get(warning) ?? 0) > 1 && target?.contract_id && <small>Contract ID: {target.contract_id}</small>}
       </span>
-      {target?.contract_id && <Button onClick={() => props.navigate("Contracts", target.contract_id || undefined, target.obligation_id ? "Recognition" : "Overview", target.obligation_id || undefined)}>Open contract</Button>}
+      {target?.change_set_id ? <Button onClick={() => props.navigate("Activity", target.change_set_id || undefined)}>Open activity</Button> : target?.contract_id && <Button onClick={() => props.navigate("Contracts", target.contract_id || undefined, target.obligation_id ? "Recognition" : "Overview", target.obligation_id || undefined)}>Open contract</Button>}
       {target?.related_contract_id && <Button onClick={() => props.navigate("Contracts", target.related_contract_id || undefined, "Allocation")}>Open related</Button>}
     </div>;
   })}</div>;

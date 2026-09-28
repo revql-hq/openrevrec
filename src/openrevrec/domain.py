@@ -1578,6 +1578,51 @@ def _journals(report: dict, period: str, accounts: dict[str, str], overrides: di
     return result, transitions, warnings, segment_imbalances, positions, runoff_pending
 
 
+def _billing_credit_warnings(contract: dict, changes: list[dict], period: str) -> list[dict]:
+    """Review source attribution; this is not an accounts-receivable balance."""
+    previous_invoice_id = {change["id"]: change["payload"]["target_change_set_id"]
+                           for change in changes if change["command"] == "correct_activity"}
+    invoice_by_historical_id = {}
+    for invoice in contract.get("activities", []):
+        if invoice.get("type") != "billing" or decimal(invoice["amount"]) <= ZERO:
+            continue
+        current_id = invoice["id"]
+        seen = set()
+        while current_id and current_id not in seen:
+            invoice_by_historical_id[current_id] = invoice
+            seen.add(current_id)
+            current_id = previous_invoice_id.get(current_id)
+    credited_by_invoice: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    warnings = []
+    for credit in contract.get("activities", []):
+        if credit.get("type") != "billing" or decimal(credit["amount"]) >= ZERO or credit["effective_date"][:7] > period:
+            continue
+        allocations = credit.get("credit_allocations") or [{"applies_to_change_set_id": credit.get("applies_to_change_set_id"), "amount": -decimal(credit["amount"])}]
+        for allocation in allocations:
+            original_id = allocation.get("applies_to_change_set_id")
+            if not original_id:
+                continue  # The external billing system owns this original.
+            invoice = invoice_by_historical_id.get(original_id)
+            if invoice is None:
+                warnings.append({"message": f"{contract['name']}: credit {credit.get('reference') or credit['id']} names an original invoice that is no longer a positive billing entry; review its attribution.",
+                                 "change_set_id": credit["id"]})
+                continue
+            if (invoice["effective_date"] > credit["effective_date"] or
+                    (invoice.get("source_contract_reference") or contract.get("reference")) !=
+                    (credit.get("source_contract_reference") or contract.get("reference"))):
+                warnings.append({"message": f"{contract['name']}: credit {credit.get('reference') or credit['id']} no longer matches its original invoice date or source agreement; review its attribution.",
+                                 "change_set_id": credit["id"]})
+            credited_by_invoice[invoice["id"]] += decimal(allocation["amount"])
+    for invoice in contract.get("activities", []):
+        if invoice.get("type") != "billing" or invoice["effective_date"][:7] > period:
+            continue
+        attributed = credited_by_invoice[invoice["id"]]
+        if attributed > decimal(invoice["amount"]):
+            warnings.append({"message": f"{contract['name']}: credits attributed to invoice {invoice.get('reference') or invoice['id']} total {amount(attributed)}, above its {invoice['amount']} billing amount; reconcile the source credit application.",
+                             "change_set_id": invoice["id"]})
+    return warnings
+
+
 def calculate(state: dict, period: str, _runoff_cache: dict[str, dict] | None = None) -> dict:
     """Project every contract and derive balanced journals for a selected month.
 
@@ -1652,8 +1697,8 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
                               "policy_account_profiles": profiles, "policy_profile_assignments": assignments, "policy_obligation_profile_assignments": obligation_assignments,
                               "policy_account_dimension_rules": policy.get("account_dimension_rules", []), "policy_account_dimension_source": policy.get("account_dimension_source", ""),
                               "policy_account_dimension_coverage": policy.get("account_dimension_coverage", "listed")}
-    def record_warning(message: str, contract_id: str | None = None, obligation_id: str | None = None, related_contract_id: str | None = None) -> None:
-        report["warning_details"].append({"message": message, "contract_id": contract_id, "obligation_id": obligation_id, "related_contract_id": related_contract_id})
+    def record_warning(message: str, contract_id: str | None = None, obligation_id: str | None = None, related_contract_id: str | None = None, change_set_id: str | None = None) -> None:
+        report["warning_details"].append({"message": message, "contract_id": contract_id, "obligation_id": obligation_id, "related_contract_id": related_contract_id, "change_set_id": change_set_id})
 
     identifiers = set()
     with localcontext() as context:
@@ -1678,6 +1723,8 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
             report["catch_ups"].extend(catch_ups)
             for warning in warnings:
                 record_warning(warning["message"], warning.get("contract_id"), warning.get("obligation_id"))
+            for warning in _billing_credit_warnings(contract, state.get("change_sets", []), period):
+                record_warning(warning["message"], contract["id"], change_set_id=warning["change_set_id"])
             journals, transitions, transition_warnings, segment_imbalances, positions, runoff_pending = _journals(
                 projection, period, accounts, overrides, profiles, assignments, obligation_assignments, schedule,
                 previous_accounts, previous_overrides, previous_profiles, previous_assignments,
@@ -1769,7 +1816,7 @@ catch-up conclusion supersedes that prior cumulative carrying amount.
     unique_warnings = []
     seen_warnings = set()
     for detail in report["warning_details"]:
-        identity = (detail["message"], detail["contract_id"], detail["obligation_id"], detail["related_contract_id"])
+        identity = (detail["message"], detail["contract_id"], detail["obligation_id"], detail["related_contract_id"], detail["change_set_id"])
         if identity not in seen_warnings:
             seen_warnings.add(identity)
             unique_warnings.append(detail)

@@ -1726,6 +1726,38 @@ def test_split_credit_correction_replaces_allocations_without_changing_original_
     assert correction_change["payload"]["replacement"]["credit_allocations"][0]["amount"] == "15.00"
 
 
+def test_invoice_correction_preserves_existing_credit_original_after_multiple_corrections(tmp_path):
+    application = app(tmp_path)
+    seed(application)
+    invoice = application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-01", "amount": "100.00", "reference": "INV-1"}, period="2026-09")["result"]["change_set_id"]
+    application.execute("record_billing", {"contract_id": "con_1", "effective_date": "2026-09-05", "amount": "-10.00", "reference": "CM-1", "applies_to_change_set_id": invoice, "rationale": "Invoice correction"}, period="2026-09")
+    corrected = application.execute("correct_activity", {"target_change_set_id": invoice, "rationale": "Invoice dated incorrectly", "replacement": {"contract_id": "con_1", "effective_date": "2026-09-04", "amount": "100.00", "reference": "INV-1"}}, period="2026-09")["result"]["change_set_id"]
+    for replacement, message in [
+        ({"contract_id": "con_1", "effective_date": "2026-09-06", "amount": "100.00", "reference": "INV-1"}, "after the credit"),
+        ({"contract_id": "con_1", "effective_date": "2026-09-04", "amount": "0.00", "reference": "INV-1"}, "nonpositive amount"),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            application.execute("correct_activity", {"target_change_set_id": corrected, "rationale": "Incorrect source invoice", "replacement": replacement}, period="2026-09")
+    assert application.state(period="2026-09")["report"]["summary"]["billings"] == "90.00"
+
+
+def test_invoice_correction_cannot_strand_split_credit_on_another_source_agreement(tmp_path):
+    application = app(tmp_path)
+    application.execute("create_customer", {"id": "customer", "name": "Customer"})
+    application.execute("create_contract", {
+        "id": "combined", "customer_id": "customer", "name": "Combined service", "reference": "AG-A",
+        "start_date": "2026-01-01", "end_date": "2026-02-28",
+        "source_contracts": [{"reference": "AG-A", "agreement_date": "2026-01-01"}, {"reference": "AG-B", "agreement_date": "2026-01-02"}],
+        "combination_basis": "single_obligation", "combination_rationale": "One integrated same-customer service",
+        "consideration": [{"id": "price", "kind": "fixed", "amount": "300.00"}],
+        "obligations": [{"id": "service", "name": "Service", "kind": "service", "ssp": "300.00", "method": "monthly", "start_date": "2026-01-01", "end_date": "2026-02-28"}],
+    }, period="2026-01")
+    invoice_ids = [application.execute("record_billing", {"contract_id": "combined", "effective_date": "2026-01-15", "amount": "100.00", "reference": f"INV-{number}", "source_contract_reference": "AG-A"}, period="2026-01")["result"]["change_set_id"] for number in (1, 2)]
+    application.execute("record_billing", {"contract_id": "combined", "effective_date": "2026-01-20", "amount": "-30.00", "reference": "CM-1", "source_contract_reference": "AG-A", "rationale": "Shared credit", "credit_allocations": [{"applies_to_change_set_id": invoice_ids[0], "amount": "10.00"}, {"applies_to_change_set_id": invoice_ids[1], "amount": "20.00"}]}, period="2026-01")
+    with pytest.raises(ValueError, match="another source agreement"):
+        application.execute("correct_activity", {"target_change_set_id": invoice_ids[0], "rationale": "Correct source agreement", "replacement": {"contract_id": "combined", "effective_date": "2026-01-15", "amount": "100.00", "reference": "INV-1", "source_contract_reference": "AG-B"}}, period="2026-01")
+
+
 def test_scenario_billing_credit_link_points_to_applied_invoice(tmp_path):
     application = app(tmp_path)
     seed(application)
